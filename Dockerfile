@@ -21,13 +21,13 @@ WORKDIR /app
 COPY rust-toolchain.toml .
 
 # Copy workspace files
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml ./
 COPY crates ./crates
 COPY src ./src
 COPY benches ./benches
 
-# Update cargo index and clear cache to prevent stale lock file issues
-RUN cargo update --aggressive
+# Generate and lock dependencies
+RUN cargo fetch
 
 # Build release binary
 RUN cargo build --release --bin dchat
