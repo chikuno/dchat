@@ -1,0 +1,11 @@
+[package]
+name = "dchat-data"
+version = "0.1.0"
+edition = "2021"
+authors = ["dchat contributors"]
+description = "Data storage directory for dchat databases and persistent files"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# This crate is just a container for data files
+# No code dependencies needed

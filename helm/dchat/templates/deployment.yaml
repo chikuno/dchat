@@ -1,0 +1,148 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dchat.fullname" . }}
+  labels:
+    {{- include "dchat.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "dchat.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "dchat.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "dchat.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: {{ .Chart.Name }}
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 12 }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        args:
+          - "--role"
+          - "{{ .Values.dchat.role }}"
+          {{- if .Values.dchat.config }}
+          - "--config"
+          - "/etc/dchat/config.yaml"
+          {{- end }}
+        ports:
+          - name: relay
+            containerPort: 7070
+            protocol: TCP
+          - name: metrics
+            containerPort: 9090
+            protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: metrics
+          initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+          timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+          failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: metrics
+          initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds }}
+          periodSeconds: {{ .Values.readinessProbe.periodSeconds }}
+          timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds }}
+          failureThreshold: {{ .Values.readinessProbe.failureThreshold }}
+        resources:
+          {{- toYaml .Values.resources | nindent 12 }}
+        env:
+          - name: RUST_LOG
+            value: {{ .Values.env.rustLog | quote }}
+          - name: DATABASE_HOST
+            valueFrom:
+              secretKeyRef:
+                name: {{ include "dchat.fullname" . }}-db
+                key: host
+          - name: DATABASE_PORT
+            valueFrom:
+              secretKeyRef:
+                name: {{ include "dchat.fullname" . }}-db
+                key: port
+          - name: DATABASE_NAME
+            valueFrom:
+              secretKeyRef:
+                name: {{ include "dchat.fullname" . }}-db
+                key: database
+          - name: DATABASE_USER
+            valueFrom:
+              secretKeyRef:
+                name: {{ include "dchat.fullname" . }}-db
+                key: username
+          - name: DATABASE_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: {{ include "dchat.fullname" . }}-db
+                key: password
+          - name: CHAIN_RPC_URL
+            valueFrom:
+              configMapKeyRef:
+                name: {{ include "dchat.fullname" . }}
+                key: chain-rpc-url
+          - name: NETWORK_BOOTSTRAP_PEERS
+            valueFrom:
+              configMapKeyRef:
+                name: {{ include "dchat.fullname" . }}
+                key: bootstrap-peers
+          {{- range $key, $value := .Values.env.extra }}
+          - name: {{ $key }}
+            value: {{ $value | quote }}
+          {{- end }}
+        volumeMounts:
+          - name: data
+            mountPath: /data
+          {{- if .Values.dchat.config }}
+          - name: config
+            mountPath: /etc/dchat
+            readOnly: true
+          {{- end }}
+          - name: tmp
+            mountPath: /tmp
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ if .Values.persistence.existingClaim }}{{ .Values.persistence.existingClaim }}{{- else }}{{ include "dchat.fullname" . }}{{- end }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- if .Values.dchat.config }}
+        - name: config
+          configMap:
+            name: {{ include "dchat.fullname" . }}-config
+        {{- end }}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

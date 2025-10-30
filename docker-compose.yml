@@ -1,0 +1,140 @@
+services:
+  # PostgreSQL database (optional, for production)
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: dchat
+      POSTGRES_USER: dchat
+      POSTGRES_PASSWORD: dchat_dev
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dchat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Relay node 1
+  relay1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dchat-relay1
+    environment:
+      - RUST_LOG=info,dchat=debug,dchat_network=debug
+      - DCHAT_RELAY_ID=relay1
+    command: relay --listen 0.0.0.0:7070
+    ports:
+      - "7070:7070"
+      - "7071:7071"
+      - "9090:9090"
+    volumes:
+      - relay1_data:/var/lib/dchat/data
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  # Relay node 2
+  relay2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dchat-relay2
+    environment:
+      - RUST_LOG=info,dchat=debug,dchat_network=debug
+      - DCHAT_RELAY_ID=relay2
+    command: relay --listen 0.0.0.0:7072
+    ports:
+      - "7072:7072"
+      - "7073:7073"
+      - "9091:9091"
+    volumes:
+      - relay2_data:/var/lib/dchat/data
+    depends_on:
+      - relay1
+    restart: unless-stopped
+
+  # Relay node 3
+  relay3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dchat-relay3
+    environment:
+      - RUST_LOG=info,dchat=debug,dchat_network=debug
+      - DCHAT_RELAY_ID=relay3
+    command: relay --listen 0.0.0.0:7074
+    ports:
+      - "7074:7074"
+      - "7075:7075"
+      - "9092:9092"
+    volumes:
+      - relay3_data:/var/lib/dchat/data
+    depends_on:
+      - relay1
+      - relay2
+    restart: unless-stopped
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: dchat-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    ports:
+      - "9093:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - relay1
+      - relay2
+      - relay3
+    restart: unless-stopped
+
+  # Grafana for metrics visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: dchat-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # Jaeger for distributed tracing
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: dchat-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  relay1_data:
+  relay2_data:
+  relay3_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  default:
+    name: dchat-network
+    driver: bridge

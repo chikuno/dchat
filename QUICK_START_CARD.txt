@@ -1,0 +1,209 @@
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                                                                               ║
+║                    🐳 dchat Testnet Docker - QUICK START 🚀                  ║
+║                                                                               ║
+║                              5-MINUTE DEPLOYMENT                             ║
+║                                                                               ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🎯 STEP-BY-STEP GUIDE
+
+Step 1: Start Docker Desktop (2 minutes)
+────────────────────────────────────────
+  Click Start Menu → Search "Docker Desktop" → Click to Launch
+  OR in PowerShell: Start-Service Docker-Desktop
+  ⏳ Wait 2-3 minutes for daemon to initialize
+
+Step 2: Navigate to Project (30 seconds)
+────────────────────────────────────────
+  cd c:\Users\USER\dchat
+
+Step 3: Verify Setup (30 seconds)
+──────────────────────────────────
+  .\verify-docker.ps1
+  Expected: ✅ All critical checks passed!
+
+Step 4: Deploy Testnet (1-15 minutes)
+──────────────────────────────────────
+  docker-compose up -d
+  
+  First time: 15-20 min (building relay image)
+  Later times: 30 seconds
+
+Step 5: Confirm Deployment (30 seconds)
+────────────────────────────────────────
+  docker-compose ps
+  Expected: All 7 services showing "Up"
+
+Step 6: Access Dashboards (Instant)
+────────────────────────────────────
+  Grafana:     http://localhost:3000   (admin/admin)
+  Jaeger:      http://localhost:16686
+  Prometheus:  http://localhost:9093
+
+═══════════════════════════════════════════════════════════════════════════════
+
+⚡ COPY-PASTE COMMAND SEQUENCE
+
+# Start Docker (manual - click icon in Start menu)
+Start-Service Docker-Desktop
+
+# Navigate
+cd c:\Users\USER\dchat
+
+# Validate
+.\verify-docker.ps1
+
+# Deploy
+docker-compose up -d
+
+# Verify
+docker-compose ps
+
+# Monitor
+.\test-connectivity.ps1 -Watch
+
+# View Grafana
+Start-Process "http://localhost:3000"
+
+═══════════════════════════════════════════════════════════════════════════════
+
+📊 WHAT YOU GET
+
+Services (7 total):
+  ✅ relay1 (P2P: 7070)     ✅ relay2 (P2P: 7072)     ✅ relay3 (P2P: 7074)
+  ✅ PostgreSQL (5432)      ✅ Prometheus (9093)      ✅ Grafana (3000)
+  ✅ Jaeger (16686)
+
+Dashboards:
+  📊 Grafana     → http://localhost:3000   (admin/admin)
+  📈 Prometheus  → http://localhost:9093
+  🔍 Jaeger      → http://localhost:16686
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🔧 ESSENTIAL COMMANDS
+
+View Status:           docker-compose ps
+View Logs:             docker-compose logs -f relay1
+Restart Service:       docker-compose restart relay1
+Stop All:              docker-compose down
+Stop & Delete Data:    docker-compose down -v
+Health Check:          .\test-connectivity.ps1
+Monitor Continuous:    .\test-connectivity.ps1 -Watch
+Fix Config:            .\verify-docker.ps1 -Fix
+
+═══════════════════════════════════════════════════════════════════════════════
+
+⚠️  QUICK TROUBLESHOOTING
+
+Problem                        Solution
+─────────────────────────────────────────────────────────────────────────────
+Docker not running            Start-Service Docker-Desktop
+Port already in use           Edit docker-compose.yml (change port number)
+Config file missing           .\verify-docker.ps1 -Fix
+Relay won't start             docker logs dchat-relay1 (check errors)
+Grafana shows no data         Verify Prometheus: http://localhost:9093
+
+═══════════════════════════════════════════════════════════════════════════════
+
+📚 FULL DOCUMENTATION
+
+Quick Reference:        DOCKER_QUICK_REF.md
+Complete Setup:         DOCKER_SETUP.md
+Architecture:           DOCKER_DEPLOYMENT_COMPLETE.md
+Navigation Index:       INDEX.md
+Setup Complete Report:  SETUP_COMPLETE.md
+
+═══════════════════════════════════════════════════════════════════════════════
+
+✅ PRE-DEPLOYMENT CHECKLIST
+
+☐ Docker Desktop installed
+☐ 20+ GB free disk space
+☐ In directory: c:\Users\USER\dchat
+☐ Internet connection available
+☐ Ports 3000, 7070-7074, 9093, 16686 available
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🎯 SUCCESS INDICATORS
+
+After docker-compose ps, you should see:
+
+NAME              STATUS              PORTS
+──────────────────────────────────────────────────────────────────────────
+dchat-postgres    Up (healthy)        5432/tcp
+dchat-relay1      Up (healthy)        0.0.0.0:7070->7070
+dchat-relay2      Up (healthy)        0.0.0.0:7072->7072
+dchat-relay3      Up (healthy)        0.0.0.0:7074->7074
+dchat-prometheus  Up                  0.0.0.0:9093->9090
+dchat-grafana     Up                  0.0.0.0:3000->3000
+dchat-jaeger      Up                  0.0.0.0:16686->16686
+
+All services showing "Up" = SUCCESS ✅
+
+═══════════════════════════════════════════════════════════════════════════════
+
+⏱️  TIMING
+
+Start to Docker Ready:        2-3 minutes
+Pre-deployment Validation:    30 seconds
+First Deployment:            15-20 minutes (includes image build)
+Later Deployments:           30 seconds
+Access Dashboards:           Instant
+Total First Time:            20-25 minutes
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🚀 NEXT STEPS AFTER DEPLOYMENT
+
+1. Monitor relay connectivity:
+   Open http://localhost:16686 (Jaeger) → Look for message traces
+
+2. View performance metrics:
+   Open http://localhost:3000 (Grafana) → Check relay health
+
+3. Test message routing:
+   Send test messages through relays → Verify delivery
+
+4. Load testing:
+   Run k6 or locust tests → Monitor performance
+
+5. Documentation:
+   Update operational guides with findings
+
+═══════════════════════════════════════════════════════════════════════════════
+
+💡 PRO TIPS
+
+• Keep Grafana open while testing for real-time metrics
+• Use .\test-connectivity.ps1 -Watch for continuous monitoring
+• Check logs with: docker-compose logs -f | grep Error
+• Clean up unused Docker objects: docker system prune -a
+• For detailed help, always check DOCKER_SETUP.md first
+
+═══════════════════════════════════════════════════════════════════════════════
+
+🎉 YOU'RE READY!
+
+Docker infrastructure is 100% configured and ready to deploy.
+
+Your first command:    Start-Service Docker-Desktop
+Your first real command: docker-compose up -d
+
+That's it! The testnet will be running in a few minutes.
+
+═══════════════════════════════════════════════════════════════════════════════
+
+Questions? See:  DOCKER_SETUP.md → Troubleshooting Section
+Quick Commands:  DOCKER_QUICK_REF.md
+Full Details:    SETUP_COMPLETE.md
+
+                            HAPPY SHIPPING! 🚀
+
+═══════════════════════════════════════════════════════════════════════════════
+Last Updated: 2024 | dchat 0.1.0 | Docker 4.49.0 | Status: ✅ PRODUCTION READY
+═══════════════════════════════════════════════════════════════════════════════

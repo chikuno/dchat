@@ -1,0 +1,30 @@
+[package]
+name = "dchat-governance"
+version = "0.1.0"
+edition = "2021"
+
+license.workspace = true
+[dependencies]
+# Core dependencies
+dchat-core = { path = "../dchat-core" }
+dchat-crypto = { path = "../dchat-crypto" }
+dchat-privacy = { path = "../dchat-privacy" }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+
+# Time handling
+chrono = "0.4"
+
+# Randomness
+rand = "0.8"
+
+# UUID
+uuid = { version = "1.6", features = ["v4", "serde"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+[dev-dependencies]
+tokio = { version = "1.35", features = ["full"] }

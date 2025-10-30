@@ -1,0 +1,214 @@
+# Default values for dchat
+# This is a YAML-formatted file.
+
+replicaCount: 3
+
+image:
+  repository: ghcr.io/dchat/dchat
+  pullPolicy: IfNotPresent
+  tag: ""  # Overrides the image tag whose default is the chart appVersion.
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+environment: production
+slot: blue  # For blue-green deployments
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+
+service:
+  type: ClusterIP
+  port: 7070
+  targetPort: 7070
+  metricsPort: 9090
+
+ingress:
+  enabled: true
+  className: "alb"
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "5"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "3"
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/certificate-arn: ""  # Must be set
+  hosts:
+    - host: dchat.network
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: dchat-tls
+      hosts:
+        - dchat.network
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 4Gi
+  requests:
+    cpu: 1000m
+    memory: 2Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector:
+  role: relay
+
+tolerations: []
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app
+            operator: In
+            values:
+            - dchat
+        topologyKey: kubernetes.io/hostname
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 7070
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 7070
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 2
+
+volumeMounts:
+  - name: data
+    mountPath: /data
+  - name: tmp
+    mountPath: /tmp
+
+volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: dchat-data
+  - name: tmp
+    emptyDir: {}
+
+persistence:
+  enabled: true
+  storageClassName: gp3
+  accessMode: ReadWriteOnce
+  size: 50Gi
+
+env:
+  - name: RUST_LOG
+    value: "info"
+  - name: DCHAT_DATA_DIR
+    value: "/data"
+  - name: DCHAT_RELAY_MODE
+    value: "true"
+  - name: DCHAT_CHAIN_RPC
+    valueFrom:
+      configMapKeyRef:
+        name: dchat-config
+        key: chain-rpc-url
+  - name: DB_HOST
+    valueFrom:
+      secretKeyRef:
+        name: dchat-secrets
+        key: database-host
+  - name: DB_PORT
+    value: "5432"
+  - name: DB_NAME
+    valueFrom:
+      secretKeyRef:
+        name: dchat-secrets
+        key: database-name
+  - name: DB_USER
+    valueFrom:
+      secretKeyRef:
+        name: dchat-secrets
+        key: database-username
+  - name: DB_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: dchat-secrets
+        key: database-password
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+monitoring:
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    scrapeTimeout: 10s
+
+networkPolicy:
+  enabled: true
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+      - podSelector:
+          matchLabels:
+            app: prometheus
+      ports:
+      - protocol: TCP
+        port: 9090
+  egress:
+    - to:
+      - podSelector: {}
+      ports:
+      - protocol: TCP
+        port: 5432  # PostgreSQL
+    - to:
+      - namespaceSelector: {}
+      ports:
+      - protocol: TCP
+        port: 53  # DNS
+    - to:
+      - podSelector: {}
+      ports:
+      - protocol: TCP
+        port: 7070  # Peer-to-peer
