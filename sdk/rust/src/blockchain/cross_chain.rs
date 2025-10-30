@@ -95,6 +95,7 @@ pub struct CrossChainBridge {
     /// Pending transactions
     pending_txs: Arc<RwLock<HashMap<String, CrossChainTransaction>>>,
     /// RPC endpoint for bridge service
+    #[allow(dead_code)]
     bridge_rpc_url: String,
 }
 
@@ -123,7 +124,7 @@ impl CrossChainBridge {
         let bridge_tx_id = Uuid::new_v4().to_string();
 
         // Create wallet on currency chain
-        let wallet = self
+        let _wallet = self
             .currency_chain
             .create_wallet(user_id, stake_amount * 2)
             .await
@@ -139,7 +140,7 @@ impl CrossChainBridge {
             .map_err(|e| format!("Failed to register user: {}", e))?;
 
         // Stake tokens on currency chain
-        let stake_tx_id = self
+        let _stake_tx_id = self
             .currency_chain
             .stake(user_id, stake_amount, 2592000) // 30 days
             .await
@@ -152,7 +153,7 @@ impl CrossChainBridge {
             stake_amount,
         };
 
-        let mut cross_tx = CrossChainTransaction {
+        let cross_tx = CrossChainTransaction {
             id: bridge_tx_id.clone(),
             operation,
             user_id: user_id.to_string(),
@@ -262,15 +263,15 @@ impl CrossChainBridge {
             if let Some(tx) = txs.get_mut(bridge_tx_id) {
                 // Check chat chain confirmations
                 if let Some(chat_tx_id) = &tx.chat_chain_tx_id {
-                    if let Ok(chat_tx) = self.chat_chain.get_transaction(chat_tx_id).await {
-                        tx.chat_confirmations = chat_tx.confirmations;
+                    if let Ok(Some(chat_tx)) = self.chat_chain.get_transaction(chat_tx_id).await {
+                        tx.chat_confirmations = chat_tx.confirmations as u64;
                     }
                 }
 
                 // Check currency chain confirmations
                 if let Some(currency_tx_id) = &tx.currency_chain_tx_id {
-                    if let Ok(currency_tx) = self.currency_chain.get_transaction(currency_tx_id).await {
-                        tx.currency_confirmations = currency_tx.confirmations;
+                    if let Ok(Some(currency_tx)) = self.currency_chain.get_transaction(currency_tx_id).await {
+                        tx.currency_confirmations = currency_tx.confirmations as u64;
                     }
                 }
 
@@ -327,8 +328,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_user_with_stake() {
-        let chat_chain = Arc::new(ChatChainClient::new("http://localhost:8545".to_string()));
-        let currency_chain = Arc::new(CurrencyChainClient::new("http://localhost:8546".to_string()));
+        let chat_chain = Arc::new(ChatChainClient::new("http://localhost:8545".to_string(), None));
+        let currency_chain = Arc::new(CurrencyChainClient::new("http://localhost:8546".to_string(), None));
         let bridge = CrossChainBridge::new(chat_chain, currency_chain, "http://localhost:8548".to_string());
 
         let user_id = "alice";
@@ -353,8 +354,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_channel_with_fee() {
-        let chat_chain = Arc::new(ChatChainClient::new("http://localhost:8545".to_string()));
-        let currency_chain = Arc::new(CurrencyChainClient::new("http://localhost:8546".to_string()));
+        let chat_chain = Arc::new(ChatChainClient::new("http://localhost:8545".to_string(), None));
+        let currency_chain = Arc::new(CurrencyChainClient::new("http://localhost:8546".to_string(), None));
         let bridge = CrossChainBridge::new(chat_chain, currency_chain, "http://localhost:8548".to_string());
 
         let owner = "alice";
@@ -379,8 +380,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_user_transactions() {
-        let chat_chain = Arc::new(ChatChainClient::new("http://localhost:8545".to_string()));
-        let currency_chain = Arc::new(CurrencyChainClient::new("http://localhost:8546".to_string()));
+        let chat_chain = Arc::new(ChatChainClient::new("http://localhost:8545".to_string(), None));
+        let currency_chain = Arc::new(CurrencyChainClient::new("http://localhost:8546".to_string(), None));
         let bridge = CrossChainBridge::new(chat_chain, currency_chain, "http://localhost:8548".to_string());
 
         let user_id = "bob";
@@ -401,8 +402,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_concurrent_operations() {
-        let chat_chain = Arc::new(ChatChainClient::new("http://localhost:8545".to_string()));
-        let currency_chain = Arc::new(CurrencyChainClient::new("http://localhost:8546".to_string()));
+        let chat_chain = Arc::new(ChatChainClient::new("http://localhost:8545".to_string(), None));
+        let currency_chain = Arc::new(CurrencyChainClient::new("http://localhost:8546".to_string(), None));
         let bridge = Arc::new(CrossChainBridge::new(
             chat_chain,
             currency_chain,

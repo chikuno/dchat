@@ -1830,7 +1830,7 @@ async fn load_identity_from_file(path: &PathBuf) -> Result<Identity> {
 
 /// Generate docker-compose for testnet
 fn generate_testnet_compose(
-    data_dir: &PathBuf,
+    data_dir: &Path,
     num_validators: usize,
     num_relays: usize,
     num_clients: usize,
@@ -3795,7 +3795,7 @@ fn format_tokens(amount: u64) -> String {
     let len = s.len();
     
     for (i, c) in s.chars().enumerate() {
-        if i > 0 && (len - i) % 3 == 0 {
+        if i > 0 && (len - i).is_multiple_of(3) {
             result.push(',');
         }
         result.push(c);

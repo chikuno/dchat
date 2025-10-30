@@ -425,7 +425,7 @@ impl TokenomicsManager {
             }
 
             // Check if this block should trigger distribution
-            if (current_block - schedule.start_block) % schedule.interval_blocks == 0 {
+            if (current_block - schedule.start_block).is_multiple_of(schedule.interval_blocks) {
                 let mint_id = self.mint_tokens(
                     schedule.amount_per_interval,
                     match schedule.recipient_type {

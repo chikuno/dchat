@@ -45,7 +45,9 @@ pub struct CurrencyChainTransaction {
 
 #[derive(Debug, Clone)]
 pub struct CurrencyChainClient {
+    #[allow(dead_code)]
     rpc_url: String,
+    #[allow(dead_code)]
     ws_url: Option<String>,
     transactions: Arc<RwLock<HashMap<String, CurrencyChainTransaction>>>,
     current_block: Arc<RwLock<u64>>,
@@ -131,7 +133,7 @@ impl CurrencyChainClient {
     }
 
     /// Stake tokens for rewards
-    pub async fn stake(&self, user_id: &str, amount: u64, lock_duration_seconds: i64) -> anyhow::Result<String> {
+    pub async fn stake(&self, user_id: &str, amount: u64, _lock_duration_seconds: i64) -> anyhow::Result<String> {
         let mut wallets = self.wallets.write().await;
 
         let wallet = wallets

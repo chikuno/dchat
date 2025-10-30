@@ -109,7 +109,7 @@ impl ChannelAccessManager {
     pub fn update_user_tokens(&mut self, user_id: UserId, token_id: String, amount: u64) {
         self.user_tokens
             .entry(user_id)
-            .or_insert_with(HashMap::new)
+            .or_default()
             .insert(token_id, amount);
     }
     
@@ -117,7 +117,7 @@ impl ChannelAccessManager {
     pub fn add_user_nft(&mut self, user_id: UserId, nft_token_id: String) {
         self.user_nfts
             .entry(user_id)
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(nft_token_id);
     }
     
@@ -228,7 +228,7 @@ impl ChannelAccessManager {
         
         self.members
             .entry(channel_id)
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(user_id);
         
         Ok(())

@@ -2,7 +2,7 @@
 # Production-ready with security hardening
 
 # Stage 1: Build environment
-FROM rust:1.75-bookworm AS builder
+FROM rust:1.80-bookworm AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

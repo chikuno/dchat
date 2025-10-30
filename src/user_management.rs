@@ -233,7 +233,7 @@ impl UserManager {
             .send_direct_message(
                 &sender_uuid,
                 &recipient_uuid,
-                message_id.clone(),
+                message_id,
             )
             .map_err(|e| {
                 error!("Failed to record on chat chain: {}", e);
@@ -357,7 +357,7 @@ impl UserManager {
             .post_to_channel(
                 &sender_uuid,
                 &channel_uuid,
-                message_id.clone(),
+                message_id,
             )
             .map_err(|e| {
                 error!("Failed to post to chat chain: {}", e);

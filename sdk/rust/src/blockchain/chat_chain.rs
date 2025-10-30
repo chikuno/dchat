@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use base64::Engine;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ChatChainTxType {
@@ -32,7 +33,9 @@ pub struct ChatChainTransaction {
 
 #[derive(Debug, Clone)]
 pub struct ChatChainClient {
+    #[allow(dead_code)]
     rpc_url: String,
+    #[allow(dead_code)]
     ws_url: Option<String>,
     transactions: Arc<RwLock<HashMap<String, ChatChainTransaction>>>,
     current_block: Arc<RwLock<u64>>,
@@ -63,7 +66,7 @@ impl ChatChainClient {
             tx_type: ChatChainTxType::RegisterUser,
             sender: user_id.to_string(),
             data: serde_json::json!({
-                "public_key": base64::encode(&public_key),
+                "public_key": base64::engine::general_purpose::STANDARD.encode(&public_key),
                 "timestamp": chrono::Utc::now().timestamp(),
             }),
             status: "pending".to_string(),

@@ -92,7 +92,7 @@ impl BotFather {
         
         let mut owner_index = self.owner_index.write().unwrap();
         owner_index.entry(owner_id)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(bot_id);
         drop(owner_index);
         
