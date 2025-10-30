@@ -69,7 +69,7 @@ DOCKER_BUILDKIT=1 docker build -t dchat:latest
 
             or 
 
-docker build -t dchat:latest .
+docker build -t dchat:latest .  ## ( copy with the dot)
 
 docker-compose -f docker-compose-production.yml up -d
 

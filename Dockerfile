@@ -2,7 +2,7 @@
 # Production-ready with security hardening
 
 # Stage 1: Build environment
-FROM rust:nightly-slim
+FROM rust:nightly-slim as builder
 
 # Create app directory
 WORKDIR /usr/src/app
