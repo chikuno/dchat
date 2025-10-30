@@ -31,13 +31,6 @@ ssh user@rpc.webnetcore.top
 git clone https://github.com/chikuno/dchat.git /opt/dchat
 cd /opt/dchat
 
-# Initialize build environment (REQUIRED - fixes Rust version issues)
-chmod +x scripts/build-init.sh
-./scripts/build-init.sh
-
-# Create keys directory
-mkdir -p validator_keys
-
 
 # install nightly 
 
@@ -47,6 +40,16 @@ rustup override set nightly
 
 cargo --version
 rustc --version
+
+
+# Initialize build environment (REQUIRED - fixes Rust version issues)
+chmod +x scripts/build-init.sh
+./scripts/build-init.sh
+
+# Create keys directory
+mkdir -p validator_keys
+
+
 
 
 
