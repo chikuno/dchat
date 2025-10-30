@@ -21,13 +21,21 @@ This guide provides complete step-by-step instructions for deploying the dchat t
 
 ### For Experienced Operators (5-minute setup)
 
+**IMPORTANT: Run build initialization first** to ensure all dependencies are correct:
+
 ```bash
 # SSH into remote server
 ssh user@rpc.webnetcore.top
 
-# Clone and deploy
+# Clone repository
 git clone https://github.com/chikuno/dchat.git /opt/dchat
 cd /opt/dchat
+
+# Initialize build environment (REQUIRED - fixes Rust version issues)
+chmod +x scripts/build-init.sh
+./scripts/build-init.sh
+
+# Create keys directory
 mkdir -p validator_keys
 
 # Generate keys
@@ -126,6 +134,36 @@ git branch -a
 git log --oneline -5
 ```
 
+### Step 1.5: Initialize Build Environment (REQUIRED)
+
+**This step is CRITICAL** - it fixes the `edition2024` Rust compatibility error:
+
+```bash
+# Run the build initialization script
+cd /opt/dchat
+
+# On Linux/macOS
+chmod +x scripts/build-init.sh
+./scripts/build-init.sh
+
+# On Windows (PowerShell)
+powershell -ExecutionPolicy Bypass -File scripts/build-init.ps1
+```
+
+This script will:
+- ✅ Update Rust to version 1.82 (required for the project)
+- ✅ Install system dependencies (OpenSSL, SQLite, etc.)
+- ✅ Clear cargo cache to prevent stale versions
+- ✅ Update all dependencies to compatible versions
+- ✅ Test the build configuration
+
+**Expected output:**
+```
+✅ Rust toolchain set to 1.82
+✅ Library build successful
+Ready to build dchat! 🚀
+```
+
 ### Step 2: Generate Validator Keys
 
 **IMPORTANT**: Keep these keys secure. They control your validators.
@@ -135,12 +173,9 @@ git log --oneline -5
 mkdir -p /opt/dchat/validator_keys
 cd /opt/dchat
 
-# Build key generator
-cargo build --release --bin key-generator
-
 # Generate 4 validator keys
 for i in {1..4}; do
-    ./target/release/key-generator -o validator_keys/validator$i.key -t ed25519
+    cargo run --release --bin key-generator -- -o validator_keys/validator$i.key -t ed25519
     chmod 400 validator_keys/validator$i.key
 done
 

@@ -2,7 +2,7 @@
 # Production-ready with security hardening
 
 # Stage 1: Build environment
-FROM rust:1.80-bookworm AS builder
+FROM rust:1.82-bookworm AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -17,11 +17,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Create app directory
 WORKDIR /app
 
+# Copy rust toolchain
+COPY rust-toolchain.toml .
+
 # Copy workspace files
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY src ./src
 COPY benches ./benches
+
+# Update cargo index and clear cache to prevent stale lock file issues
+RUN cargo update --aggressive
 
 # Build release binary
 RUN cargo build --release --bin dchat
