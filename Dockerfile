@@ -2,20 +2,14 @@
 # Production-ready with security hardening
 
 # Stage 1: Build environment
-FROM rust:nightly-slim as builder
+FROM rustlang/rust:nightly
 
-# Create app directory
 WORKDIR /usr/src/app
-
-# Copy your source code
 COPY . .
 
-# Install dependencies and build with nightly
-RUN rustup default nightly && \
-    cargo build --release --bin dchat
+RUN cargo build --release
 
-CMD ["./target/release/dchat"]
-
+CMD ["./target/release/your_binary"]
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

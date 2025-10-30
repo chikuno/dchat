@@ -65,9 +65,10 @@ cargo run --release --bin key-generator -- -o validator_keys/validator3.key
 cargo run --release --bin key-generator -- -o validator_keys/validator4.key
 
 # Build and deploy
-DOCKER_BUILDKIT=1 docker build -t dchat:latest 
+docker pull rustlang/rust:nightly
+docker pull debian:bookworm-slim
 
-            or 
+
 
 docker build -t dchat:latest .  ## ( copy with the dot)
 
