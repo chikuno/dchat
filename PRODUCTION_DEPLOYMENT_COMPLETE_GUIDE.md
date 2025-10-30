@@ -508,6 +508,40 @@ curl -s 'http://localhost:16686/api/traces?service=dchat-validator1'
 
 ## 🔧 Troubleshooting
 
+### Docker build fails at "COPY Cargo.toml Cargo.lock ./"
+
+This happens when `Cargo.lock` is missing from the build context or excluded by `.dockerignore`.
+
+Fix:
+
+1) Verify the file exists at the repo root:
+
+```bash
+ls -la Cargo.lock
+```
+
+If it does not exist, generate it:
+
+```bash
+cargo generate-lockfile
+```
+
+2) Ensure `.dockerignore` does not exclude `Cargo.lock` and that you are building from the repository root (the same folder containing `Cargo.toml`, `Cargo.lock`, and `Dockerfile`).
+
+3) Pull the latest repository version. The Dockerfile now copies `Cargo.lock` explicitly:
+
+```bash
+git pull origin main
+```
+
+4) Rebuild without cache to invalidate any stale layers:
+
+```bash
+docker build --no-cache -t dchat:latest .
+```
+
+If the error persists, confirm you are not building from a subfolder and that `Cargo.lock` is present in the current directory when running `docker build`.
+
 ### Service Won't Start
 
 ```bash

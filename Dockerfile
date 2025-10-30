@@ -21,7 +21,8 @@ WORKDIR /app
 COPY rust-toolchain.toml .
 
 # Copy workspace files
-COPY Cargo.toml ./
+# Include Cargo.lock for reproducible builds and better Docker layer caching
+COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY src ./src
 COPY benches ./benches
