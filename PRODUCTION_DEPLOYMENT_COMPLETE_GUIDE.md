@@ -38,6 +38,23 @@ chmod +x scripts/build-init.sh
 # Create keys directory
 mkdir -p validator_keys
 
+
+# install nightly 
+
+rustup install nightly
+
+rustup override set nightly
+
+cargo --version
+rustc --version
+
+
+
+#generate bin 
+
+cargo run --bin dchat
+
+
 # Generate keys
 cargo run --release --bin key-generator -- -o validator_keys/validator1.key
 cargo run --release --bin key-generator -- -o validator_keys/validator2.key
@@ -45,7 +62,12 @@ cargo run --release --bin key-generator -- -o validator_keys/validator3.key
 cargo run --release --bin key-generator -- -o validator_keys/validator4.key
 
 # Build and deploy
+DOCKER_BUILDKIT=1 docker build -t dchat:latest 
+
+            or 
+
 docker build -t dchat:latest .
+
 docker-compose -f docker-compose-production.yml up -d
 
 # Verify

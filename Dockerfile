@@ -2,7 +2,20 @@
 # Production-ready with security hardening
 
 # Stage 1: Build environment
-FROM rust:1.82-bookworm AS builder
+FROM rust:nightly-slim
+
+# Create app directory
+WORKDIR /usr/src/app
+
+# Copy your source code
+COPY . .
+
+# Install dependencies and build with nightly
+RUN rustup default nightly && \
+    cargo build --release --bin dchat
+
+CMD ["./target/release/dchat"]
+
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
