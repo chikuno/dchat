@@ -1,0 +1,486 @@
+# dchat Testnet Deployment - Remote Server Configuration
+# Optimized for rpc.webnetcore.top:8080
+# Production-ready with resource limits, health checks, and monitoring
+
+version: '3.9'
+
+services:
+  # ============================================================================
+  # VALIDATORS (4 nodes - BFT Consensus)
+  # ============================================================================
+  validator1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dchat-validator1
+    hostname: validator1.dchat.local
+    environment:
+      - RUST_LOG=info,dchat=debug,dchat_chain=debug
+      - DCHAT_NODE_TYPE=validator
+      - DCHAT_NODE_ID=validator1
+      - DCHAT_VALIDATOR_KEY_FILE=/validator_keys/validator1.key
+      - DCHAT_LISTEN_ADDR=0.0.0.0:7070
+      - DCHAT_BOOTSTRAP_PEERS=validator2:7070,validator3:7070,validator4:7070,relay1:7080
+      - DCHAT_RPC_ADDR=0.0.0.0:7071
+      - DCHAT_METRICS_ADDR=0.0.0.0:9090
+      - DCHAT_CONSENSUS_TIMEOUT=3000
+      - DCHAT_BLOCK_TIME=3000
+    command: validator --key /validator_keys/validator1.key --stake 10000 --producer
+    ports:
+      - "7070:7070"
+      - "7071:7071"
+      - "9090:9090"
+    volumes:
+      - validator1_data:/var/lib/dchat/data
+      - ./validator_keys:/validator_keys:ro
+    networks:
+      - dchat-testnet
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7071/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    resources:
+      limits:
+        cpus: '1.5'
+        memory: 2G
+      reservations:
+        cpus: '1'
+        memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  validator2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dchat-validator2
+    hostname: validator2.dchat.local
+    environment:
+      - RUST_LOG=info,dchat=debug,dchat_chain=debug
+      - DCHAT_NODE_TYPE=validator
+      - DCHAT_NODE_ID=validator2
+      - DCHAT_VALIDATOR_KEY_FILE=/validator_keys/validator2.key
+      - DCHAT_LISTEN_ADDR=0.0.0.0:7070
+      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,validator3:7070,validator4:7070,relay1:7080
+      - DCHAT_RPC_ADDR=0.0.0.0:7071
+      - DCHAT_METRICS_ADDR=0.0.0.0:9090
+      - DCHAT_CONSENSUS_TIMEOUT=3000
+      - DCHAT_BLOCK_TIME=3000
+    command: validator --key /validator_keys/validator2.key --stake 10000 --producer
+    ports:
+      - "7072:7070"
+      - "7073:7071"
+      - "9091:9090"
+    volumes:
+      - validator2_data:/var/lib/dchat/data
+      - ./validator_keys:/validator_keys:ro
+    networks:
+      - dchat-testnet
+    depends_on:
+      validator1:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7071/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    resources:
+      limits:
+        cpus: '1.5'
+        memory: 2G
+      reservations:
+        cpus: '1'
+        memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  validator3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dchat-validator3
+    hostname: validator3.dchat.local
+    environment:
+      - RUST_LOG=info,dchat=debug,dchat_chain=debug
+      - DCHAT_NODE_TYPE=validator
+      - DCHAT_NODE_ID=validator3
+      - DCHAT_VALIDATOR_KEY_FILE=/validator_keys/validator3.key
+      - DCHAT_LISTEN_ADDR=0.0.0.0:7070
+      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,validator2:7070,validator4:7070,relay1:7080
+      - DCHAT_RPC_ADDR=0.0.0.0:7071
+      - DCHAT_METRICS_ADDR=0.0.0.0:9090
+      - DCHAT_CONSENSUS_TIMEOUT=3000
+      - DCHAT_BLOCK_TIME=3000
+    command: validator --key /validator_keys/validator3.key --stake 10000 --producer
+    ports:
+      - "7074:7070"
+      - "7075:7071"
+      - "9092:9090"
+    volumes:
+      - validator3_data:/var/lib/dchat/data
+      - ./validator_keys:/validator_keys:ro
+    networks:
+      - dchat-testnet
+    depends_on:
+      validator1:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7071/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    resources:
+      limits:
+        cpus: '1.5'
+        memory: 2G
+      reservations:
+        cpus: '1'
+        memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  validator4:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dchat-validator4
+    hostname: validator4.dchat.local
+    environment:
+      - RUST_LOG=info,dchat=debug,dchat_chain=debug
+      - DCHAT_NODE_TYPE=validator
+      - DCHAT_NODE_ID=validator4
+      - DCHAT_VALIDATOR_KEY_FILE=/validator_keys/validator4.key
+      - DCHAT_LISTEN_ADDR=0.0.0.0:7070
+      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,validator2:7070,validator3:7070,relay1:7080
+      - DCHAT_RPC_ADDR=0.0.0.0:7071
+      - DCHAT_METRICS_ADDR=0.0.0.0:9090
+      - DCHAT_CONSENSUS_TIMEOUT=3000
+      - DCHAT_BLOCK_TIME=3000
+    command: validator --key /validator_keys/validator4.key --stake 10000 --producer
+    ports:
+      - "7076:7070"
+      - "7077:7071"
+      - "9093:9090"
+    volumes:
+      - validator4_data:/var/lib/dchat/data
+      - ./validator_keys:/validator_keys:ro
+    networks:
+      - dchat-testnet
+    depends_on:
+      validator1:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7071/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    resources:
+      limits:
+        cpus: '1.5'
+        memory: 2G
+      reservations:
+        cpus: '1'
+        memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # ============================================================================
+  # RELAY NODES (4 nodes - Message Delivery)
+  # ============================================================================
+  relay1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dchat-relay1
+    hostname: relay1.dchat.local
+    environment:
+      - RUST_LOG=info,dchat=debug,dchat_relay=debug
+      - DCHAT_NODE_TYPE=relay
+      - DCHAT_NODE_ID=relay1
+      - DCHAT_RELAY_ID=relay1
+      - DCHAT_LISTEN_ADDR=0.0.0.0:7080
+      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,validator2:7070,validator3:7070,validator4:7070
+      - DCHAT_RPC_ADDR=0.0.0.0:7081
+      - DCHAT_METRICS_ADDR=0.0.0.0:9100
+      - DCHAT_RELAY_STAKE=100
+    command: relay --listen 0.0.0.0:7080 --stake 1000
+    ports:
+      - "7080:7080"
+      - "7081:7081"
+      - "9100:9100"
+    volumes:
+      - relay1_data:/var/lib/dchat/data
+    networks:
+      - dchat-testnet
+    depends_on:
+      validator1:
+        condition: service_healthy
+      validator2:
+        condition: service_healthy
+      validator3:
+        condition: service_healthy
+      validator4:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7081/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    resources:
+      limits:
+        cpus: '1'
+        memory: 1.5G
+      reservations:
+        cpus: '0.75'
+        memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  relay2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dchat-relay2
+    hostname: relay2.dchat.local
+    environment:
+      - RUST_LOG=info,dchat=debug,dchat_relay=debug
+      - DCHAT_NODE_TYPE=relay
+      - DCHAT_NODE_ID=relay2
+      - DCHAT_RELAY_ID=relay2
+      - DCHAT_LISTEN_ADDR=0.0.0.0:7080
+      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080
+      - DCHAT_RPC_ADDR=0.0.0.0:7081
+      - DCHAT_METRICS_ADDR=0.0.0.0:9100
+      - DCHAT_RELAY_STAKE=100
+    command: relay --listen 0.0.0.0:7080 --stake 1000
+    ports:
+      - "7082:7080"
+      - "7083:7081"
+      - "9101:9100"
+    volumes:
+      - relay2_data:/var/lib/dchat/data
+    networks:
+      - dchat-testnet
+    depends_on:
+      relay1:
+        condition: service_healthy
+    restart: unless-stopped
+    resources:
+      limits:
+        cpus: '1'
+        memory: 1.5G
+      reservations:
+        cpus: '0.75'
+        memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  relay3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dchat-relay3
+    hostname: relay3.dchat.local
+    environment:
+      - RUST_LOG=info,dchat=debug,dchat_relay=debug
+      - DCHAT_NODE_TYPE=relay
+      - DCHAT_NODE_ID=relay3
+      - DCHAT_RELAY_ID=relay3
+      - DCHAT_LISTEN_ADDR=0.0.0.0:7080
+      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080
+      - DCHAT_RPC_ADDR=0.0.0.0:7081
+      - DCHAT_METRICS_ADDR=0.0.0.0:9100
+      - DCHAT_RELAY_STAKE=100
+    command: relay --listen 0.0.0.0:7080 --stake 1000
+    ports:
+      - "7084:7080"
+      - "7085:7081"
+      - "9102:9100"
+    volumes:
+      - relay3_data:/var/lib/dchat/data
+    networks:
+      - dchat-testnet
+    depends_on:
+      relay1:
+        condition: service_healthy
+    restart: unless-stopped
+    resources:
+      limits:
+        cpus: '1'
+        memory: 1.5G
+      reservations:
+        cpus: '0.75'
+        memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  relay4:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dchat-relay4
+    hostname: relay4.dchat.local
+    environment:
+      - RUST_LOG=info,dchat=debug,dchat_relay=debug
+      - DCHAT_NODE_TYPE=relay
+      - DCHAT_NODE_ID=relay4
+      - DCHAT_RELAY_ID=relay4
+      - DCHAT_LISTEN_ADDR=0.0.0.0:7080
+      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080
+      - DCHAT_RPC_ADDR=0.0.0.0:7081
+      - DCHAT_METRICS_ADDR=0.0.0.0:9100
+      - DCHAT_RELAY_STAKE=100
+    command: relay --listen 0.0.0.0:7080 --stake 1000
+    ports:
+      - "7086:7080"
+      - "7087:7081"
+      - "9103:9100"
+    volumes:
+      - relay4_data:/var/lib/dchat/data
+    networks:
+      - dchat-testnet
+    depends_on:
+      relay1:
+        condition: service_healthy
+    restart: unless-stopped
+    resources:
+      limits:
+        cpus: '1'
+        memory: 1.5G
+      reservations:
+        cpus: '0.75'
+        memory: 1G
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # ============================================================================
+  # MONITORING
+  # ============================================================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: dchat-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+      - '--storage.tsdb.retention.time=7d'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - dchat-testnet
+    restart: unless-stopped
+    resources:
+      limits:
+        cpus: '1'
+        memory: 1G
+      reservations:
+        cpus: '0.5'
+        memory: 512M
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: dchat-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - dchat-testnet
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    resources:
+      limits:
+        cpus: '0.5'
+        memory: 512M
+      reservations:
+        cpus: '0.25'
+        memory: 256M
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: dchat-jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    networks:
+      - dchat-testnet
+    restart: unless-stopped
+    resources:
+      limits:
+        cpus: '0.5'
+        memory: 512M
+      reservations:
+        cpus: '0.25'
+        memory: 256M
+
+volumes:
+  # Validators
+  validator1_data:
+  validator2_data:
+  validator3_data:
+  validator4_data:
+  
+  # Relays
+  relay1_data:
+  relay2_data:
+  relay3_data:
+  relay4_data:
+  
+  # Monitoring
+  prometheus_data:
+  grafana_data:
+
+networks:
+  dchat-testnet:
+    name: dchat-testnet
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
