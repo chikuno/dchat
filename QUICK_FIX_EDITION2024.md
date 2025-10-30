@@ -3,16 +3,16 @@
 ## The Error You Saw
 ```
 error: feature `edition2024` is required
-The package requires the Cargo feature called `edition2024`, but that feature is not stabilized in this version of Cargo (1.75.0).
+The package requires the Cargo feature called `edition2024`, but that feature is not stabilized in this version of Cargo (1.82.0).
 ```
 
 ## The Fix (Choose ONE)
 
 ### ⚡ Quick Fix (2 minutes)
 ```bash
-# Update Rust
-rustup update 1.82
-rustup default 1.82
+# Update Rust to 1.83+ (required for edition2024 support)
+rustup update 1.83
+rustup default 1.83
 
 # Clear cache
 cargo clean
@@ -47,16 +47,19 @@ docker-compose -f docker-compose-production.yml up -d
 
 | Problem | Solution |
 |---------|----------|
-| Rust 1.75 too old | Updated to Rust 1.82 |
-| Docker using old Rust | Updated Dockerfile to rust:1.82 |
-| Stale cache | Added `cargo update --aggressive` |
-| Incompatible deps | Pinned: dirs=4.0, reqwest=0.11, config=0.13 |
+| Rust 1.82 Cargo can't handle edition2024 | Updated to Rust 1.83 (Cargo 1.83+) |
+| Docker using old Rust | Updated Dockerfile to rust:1.83-bookworm |
+| Stale cache and deps | Added `cargo update --aggressive` and pinned dirs to 5.0 |
+| Incompatible deps | Pinned: dirs=5.0, reqwest=0.11, config=0.13 |
 | Manual setup hard | Created `scripts/build-init.sh` and `.ps1` |
 
 ## Verify It Works
 ```bash
 $ rustc --version
-rustc 1.82.0 (...)
+rustc 1.83.0 (...)
+
+$ cargo --version
+cargo 1.83.0 (...)
 
 $ cargo build --lib
 Finished dev [...] target(s) in 2.34s
@@ -65,9 +68,9 @@ Finished dev [...] target(s) in 2.34s
 
 ## Key Changes Made
 
-1. ✅ Created `rust-toolchain.toml` (pins Rust 1.82)
-2. ✅ Updated `Dockerfile` (uses rust:1.82)
-3. ✅ Updated `Cargo.toml` (compatible versions)
+1. ✅ Created `rust-toolchain.toml` (pins Rust 1.83)
+2. ✅ Updated `Dockerfile` (uses rust:1.83-bookworm)
+3. ✅ Updated `Cargo.toml` (dirs 4.0 → 5.0 for compatibility)
 4. ✅ Created `scripts/build-init.sh` (Linux/macOS)
 5. ✅ Created `scripts/build-init.ps1` (Windows)
 6. ✅ Created `BUILD_FIXES.md` (detailed guide)
