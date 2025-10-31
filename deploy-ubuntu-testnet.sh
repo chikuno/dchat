@@ -511,32 +511,9 @@ start_testnet() {
     log_info "Stopping existing containers..."
     docker compose -f docker-compose-testnet.yml -p dchat-testnet down 2>/dev/null || true
     
-    # Remove any stopped Prometheus containers that might hold the port
-    log_info "Cleaning up any existing Prometheus containers..."
-    docker ps -a | grep prometheus | awk '{print $1}' | xargs -r docker rm -f 2>/dev/null || true
-    
-    # Free port 9090 if occupied
-    log_info "Checking port 9090 availability..."
-    local port_9090_pid=$(sudo lsof -ti :9090 2>/dev/null || lsof -ti :9090 2>/dev/null)
-    if [[ -n "$port_9090_pid" ]]; then
-        log_warning "Port 9090 in use by PID $port_9090_pid, killing..."
-        sudo kill -9 $port_9090_pid 2>/dev/null || kill -9 $port_9090_pid 2>/dev/null || true
-        sleep 2
-    fi
-    
-    # Force free port 9090 using multiple methods
-    sudo fuser -k 9090/tcp 2>/dev/null || true
-    
-    # Verify port is free
-    if ss -tlnp | grep -q ':9090 '; then
-        log_error "Port 9090 is still in use after cleanup attempts!"
-        log_error "Checking what's using it:"
-        sudo ss -tlnp | grep ':9090 ' || true
-        sudo lsof -i :9090 || true
-        fail "Cannot free port 9090. Please manually kill the process using this port."
-    fi
-    
-    log "Port 9090 freed ✓"
+    # Remove any stopped containers that might hold ports
+    log_info "Cleaning up stopped containers..."
+    docker ps -a -q --filter "label=com.docker.compose.project=dchat-testnet" | xargs -r docker rm -f 2>/dev/null || true
     
     # Start the testnet
     log_info "Starting containers..."
@@ -686,7 +663,7 @@ show_deployment_status() {
     
     log "Access Points:"
     log "  • Grafana:    http://${server_ip}:3000 (admin/admin)"
-    log "  • Prometheus: http://${server_ip}:9090"
+    log "  • Prometheus: http://${server_ip}:9095"
     log "  • Jaeger UI:  http://${server_ip}:16686"
     log ""
     
@@ -715,7 +692,7 @@ test_endpoints() {
         "http://localhost:7073/health:Validator2"
         "http://localhost:7075/health:Validator3"
         "http://localhost:7077/health:Validator4"
-        "http://localhost:9090/-/healthy:Prometheus"
+        "http://localhost:9095/-/healthy:Prometheus"
         "http://localhost:3000/api/health:Grafana"
     )
     
