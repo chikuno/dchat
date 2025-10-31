@@ -45,6 +45,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 \
     libsqlite3-0 \
     libc6 \
+    curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -73,9 +74,9 @@ ENV RUST_LOG=info
 ENV DCHAT_DATA_DIR=/var/lib/dchat/data
 ENV DCHAT_CONFIG_DIR=/var/lib/dchat/config
 
-# Health check
+# Health check (will be overridden by docker-compose)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD dchat health --url http://127.0.0.1:8080/health || exit 1
+    CMD curl -f http://127.0.0.1:7071/health || exit 1
 
 # Run as relay node by default
 ENTRYPOINT ["/usr/local/bin/dchat"]
