@@ -115,14 +115,19 @@ function Generate-ValidatorKeys {
                 exit 1
             }
             
-            # Secure permissions
-            & chmod 400 $KeyFile
             Write-Log "✓ Generated $KeyFile" "SUCCESS"
         }
         else {
             Write-Log "Key already exists: $KeyFile" "WARN"
         }
     }
+    
+    # Fix permissions for Docker container (UID 1000)
+    Write-Log "Setting correct permissions for Docker containers..."
+    & sudo chown -R 1000:1000 $ValidatorKeysDir
+    & chmod 755 $ValidatorKeysDir
+    & chmod 644 $ValidatorKeysDir/*.key
+    Write-Log "✓ Permissions set (owner: 1000:1000, keys: 644)" "SUCCESS"
     
     Pop-Location
 }
@@ -207,15 +212,21 @@ function Build-DockerImage {
         Pop-Location
         exit 1
     }
-    
-    Write-Log "✓ Docker image built successfully" "SUCCESS"
-    Pop-Location
-}
-
 function Start-Testnet {
     Write-Log "Starting dchat testnet..."
     
     Push-Location $DeployDir
+    
+    # Free port 9090 if occupied
+    Write-Log "Checking port 9090 availability..."
+    $Port9090Process = & sudo lsof -ti :9090 2>$null
+    if ($Port9090Process) {
+        Write-Log "Port 9090 in use by PID $Port9090Process, killing..." "WARN"
+        & sudo kill -9 $Port9090Process
+        Start-Sleep -Seconds 2
+    }
+    & sudo fuser -k 9090/tcp 2>$null
+    Write-Log "✓ Port 9090 freed" "SUCCESS"
     
     & docker-compose -f docker-compose-production.yml up -d 2>&1 | Tee-Object -FilePath "$LogsDir/compose-up.log"
     
@@ -229,6 +240,11 @@ function Start-Testnet {
     Pop-Location
     
     # Wait for services to be ready
+    Write-Log "Waiting for services to be healthy..."
+    Start-Sleep -Seconds 30
+    
+    Check-ServiceHealth
+}   # Wait for services to be ready
     Write-Log "Waiting for services to be healthy..."
     Start-Sleep -Seconds 30
     

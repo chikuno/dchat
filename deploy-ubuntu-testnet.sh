@@ -412,15 +412,15 @@ validate_validator_keys() {
         if [[ ! -f "$keyfile" ]]; then
             fail "Missing validator key: $keyfile. Run generate-validator-keys.ps1 first."
         fi
-        
-        # Check file permissions (should not be world-readable)
-        local perms=$(stat -c "%a" "$keyfile")
-        if [[ "$perms" != "600" ]] && [[ "$perms" != "400" ]]; then
-            log_warning "Validator key $keyfile has permissive permissions: $perms"
-            chmod 600 "$keyfile" || log_warning "Failed to secure key permissions"
-        fi
     done
     
+    # Fix permissions for Docker container (UID 1000)
+    log "Setting correct permissions for Docker containers..."
+    chown -R 1000:1000 "$keydir" || log_warning "Failed to set ownership to 1000:1000"
+    chmod 755 "$keydir"
+    chmod 644 "$keydir"/*.key
+    
+    log "Validator key permissions set (owner: 1000:1000, keys: 644) ✓"
     log "Validator keys validated ✓"
 }
 
@@ -510,6 +510,17 @@ start_testnet() {
     # Stop any existing containers
     log_info "Stopping existing containers..."
     docker compose -f docker-compose-testnet.yml -p dchat-testnet down 2>/dev/null || true
+    
+    # Free port 9090 if occupied
+    log_info "Checking port 9090 availability..."
+    local port_9090_pid=$(lsof -ti :9090 2>/dev/null)
+    if [[ -n "$port_9090_pid" ]]; then
+        log_warning "Port 9090 in use by PID $port_9090_pid, killing..."
+        kill -9 $port_9090_pid 2>/dev/null || true
+        sleep 2
+    fi
+    fuser -k 9090/tcp 2>/dev/null || true
+    log "Port 9090 freed ✓"
     
     # Start the testnet
     log_info "Starting containers..."
