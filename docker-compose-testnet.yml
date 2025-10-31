@@ -270,6 +270,11 @@ services:
     depends_on:
       - relay1
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   relay4:
     build:
@@ -299,6 +304,11 @@ services:
     depends_on:
       - relay1
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   relay5:
     build:
@@ -328,6 +338,11 @@ services:
     depends_on:
       - relay1
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   relay6:
     build:
@@ -357,6 +372,11 @@ services:
     depends_on:
       - relay1
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   relay7:
     build:
@@ -386,6 +406,11 @@ services:
     depends_on:
       - relay1
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7081/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # ============================================================================
   # USER NODES (3 nodes for end-user communication)
