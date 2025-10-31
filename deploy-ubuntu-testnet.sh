@@ -388,14 +388,33 @@ install_nginx() {
         systemctl enable nginx || log_warning "Failed to enable nginx service"
     fi
     
-    # Check if nginx config files exist
-    if [[ ! -f "$REPO_ROOT/nginx-testnet-http.conf" ]]; then
-        log_warning "nginx-testnet-http.conf not found in project root"
-        log_warning "Skipping nginx configuration"
-        return 0
+    # Determine which nginx config to use
+    local nginx_config_source=""
+    local config_type=""
+    
+    if [[ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]]; then
+        # SSL certificates exist - use full HTTPS config
+        if [[ -f "$REPO_ROOT/nginx-testnet.conf" ]]; then
+            nginx_config_source="$REPO_ROOT/nginx-testnet.conf"
+            config_type="HTTPS (SSL certificates found)"
+        else
+            log_warning "nginx-testnet.conf not found, falling back to HTTP-only"
+            nginx_config_source="$REPO_ROOT/nginx-testnet-http.conf"
+            config_type="HTTP-only (HTTPS config not found)"
+        fi
+    else
+        # No SSL certificates - use HTTP-only config
+        if [[ -f "$REPO_ROOT/nginx-testnet-http.conf" ]]; then
+            nginx_config_source="$REPO_ROOT/nginx-testnet-http.conf"
+            config_type="HTTP-only (no SSL certificates)"
+        else
+            log_warning "No nginx config files found"
+            log_warning "Skipping nginx configuration"
+            return 0
+        fi
     fi
     
-    log "Configuring nginx for dchat testnet (HTTP-only initially)..."
+    log "Configuring nginx for dchat testnet ($config_type)..."
     
     # Backup existing default config if present
     if [[ -f /etc/nginx/sites-enabled/default ]]; then
@@ -403,8 +422,9 @@ install_nginx() {
         log "Backed up default nginx config"
     fi
     
-    # Copy HTTP-only nginx config (before SSL certificates exist)
-    cp "$REPO_ROOT/nginx-testnet-http.conf" /etc/nginx/sites-available/dchat-testnet || fail "Failed to copy nginx config"
+    # Copy appropriate nginx config
+    cp "$nginx_config_source" /etc/nginx/sites-available/dchat-testnet || fail "Failed to copy nginx config"
+    log "Using config: $(basename "$nginx_config_source")"
     
     # Create symlink in sites-enabled
     ln -sf /etc/nginx/sites-available/dchat-testnet /etc/nginx/sites-enabled/dchat-testnet || fail "Failed to create nginx symlink"
@@ -416,11 +436,25 @@ install_nginx() {
     systemctl reload nginx || fail "Failed to reload nginx"
     
     log "nginx configured successfully ✓"
-    log "External access:"
-    log "  • Health Check:  http://$(hostname -I | awk '{print $1}')/health"
-    log "  • Prometheus:    http://$(hostname -I | awk '{print $1}')/prometheus/"
-    log "  • Grafana:       http://$(hostname -I | awk '{print $1}')/grafana/"
-    log "  • Jaeger:        http://$(hostname -I | awk '{print $1}')/jaeger/"
+    
+    # Show external access URLs based on SSL status
+    if [[ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]]; then
+        log "External access (HTTPS):"
+        log "  • Health Check:  https://$DOMAIN/health"
+        log "  • Status:        https://$DOMAIN/status"
+        log "  • Prometheus:    https://$DOMAIN/prometheus/"
+        log "  • Grafana:       https://$DOMAIN/grafana/"
+        log "  • Jaeger:        https://$DOMAIN/jaeger/"
+        log ""
+        log "Note: HTTP requests will redirect to HTTPS"
+    else
+        log "External access (HTTP only - no SSL):"
+        log "  • Health Check:  http://4.222.211.71/health"
+        log "  • Status:        http://4.222.211.71/status"
+        log "  • Prometheus:    http://4.222.211.71/prometheus/"
+        log "  • Grafana:       http://4.222.211.71/grafana/"
+        log "  • Jaeger:        http://4.222.211.71/jaeger/"
+    fi
 }
 
 ################################################################################
@@ -433,17 +467,12 @@ setup_letsencrypt_ssl() {
         return 0
     fi
     
-    if [[ $SKIP_NGINX -eq 1 ]]; then
-        log "Skipping SSL setup (nginx not installed)"
-        return 0
-    fi
-    
     log "Setting up Let's Encrypt SSL certificate for $DOMAIN..."
     
     # Check if certbot is installed
     if ! command_exists certbot; then
         log "Installing certbot..."
-        apt-get install -y certbot python3-certbot-nginx || fail "Failed to install certbot"
+        apt-get install -y certbot || fail "Failed to install certbot"
     else
         log "certbot already installed ✓"
     fi
@@ -456,36 +485,51 @@ setup_letsencrypt_ssl() {
         local expiry_date=$(openssl x509 -enddate -noout -in "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" | cut -d= -f2)
         log "Certificate expires: $expiry_date"
         
-        # Update nginx config to use the certificate
-        update_nginx_ssl_config
         return 0
     fi
     
-    log_info "Obtaining SSL certificate from Let's Encrypt..."
-    log_info "This will use DNS validation through Cloudflare..."
-    
-    # Since domain is behind Cloudflare, we need to use DNS validation
-    # First, try to get certificate using HTTP challenge (requires Cloudflare proxy off temporarily)
-    log_warning "IMPORTANT: For Let's Encrypt to work with Cloudflare:"
-    log_warning "1. Temporarily disable Cloudflare proxy (gray cloud) for $DOMAIN"
-    log_warning "2. Wait 2-3 minutes for DNS propagation"
-    log_warning "3. Press Enter when ready to continue, or Ctrl+C to skip SSL setup"
+    log ""
+    log "=========================================="
+    log "  SSL Certificate Setup"
+    log "=========================================="
+    log ""
+    log "Domain: $DOMAIN"
+    log "Server IP: 4.222.211.71"
+    log ""
+    log_warning "IMPORTANT: Cloudflare Configuration Required"
+    log_warning ""
+    log_warning "Before proceeding, you must:"
+    log_warning "1. Go to Cloudflare DNS settings for $DOMAIN"
+    log_warning "2. Temporarily disable proxy (click orange cloud to make it GRAY)"
+    log_warning "3. Wait 2-3 minutes for DNS propagation"
+    log_warning "4. Verify DNS points to: 4.222.211.71"
+    log_warning ""
+    log_warning "After SSL setup completes:"
+    log_warning "5. Re-enable Cloudflare proxy (gray cloud back to ORANGE)"
+    log_warning "6. Set SSL/TLS mode to 'Full (strict)' in Cloudflare"
+    log_warning ""
     
     if [[ -t 0 ]]; then
-        read -p "Press Enter to continue with SSL setup, or Ctrl+C to skip..."
+        read -p "Press Enter when Cloudflare proxy is DISABLED and DNS has propagated..."
     else
         log_warning "Non-interactive mode: Attempting SSL setup automatically..."
         log_warning "If this fails, run with --skip-ssl and set up SSL manually"
+        sleep 5
     fi
     
-    # Try to obtain certificate using nginx plugin
-    log_info "Obtaining certificate for $DOMAIN..."
-    if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --email "$SSL_EMAIL" --redirect 2>&1 | tee -a "$LOG_FILE"; then
+    # Use standalone mode (no nginx required)
+    # This starts a temporary web server on port 80 for HTTP-01 challenge
+    log_info "Obtaining certificate for $DOMAIN using standalone mode..."
+    log_info "This will start a temporary web server on port 80..."
+    
+    if certbot certonly --standalone -d "$DOMAIN" --non-interactive --agree-tos --email "$SSL_EMAIL" --preferred-challenges http 2>&1 | tee -a "$LOG_FILE"; then
         log "SSL certificate obtained successfully ✓"
         log "Certificate location: /etc/letsencrypt/live/$DOMAIN/"
-        
-        # Update nginx config
-        update_nginx_ssl_config
+        log ""
+        log "Certificate files:"
+        log "  • Full chain: /etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+        log "  • Private key: /etc/letsencrypt/live/$DOMAIN/privkey.pem"
+        log ""
         
         # Test HTTPS
         log_info "Testing HTTPS endpoint..."
@@ -530,53 +574,6 @@ setup_letsencrypt_ssl() {
         log_warning "Continuing deployment without SSL..."
         return 0
     fi
-}
-
-update_nginx_ssl_config() {
-    log "Switching nginx to HTTPS configuration with Let's Encrypt certificates..."
-    
-    local nginx_conf="/etc/nginx/sites-available/dchat-testnet"
-    
-    # Check if Let's Encrypt certificate exists
-    if [[ ! -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]]; then
-        log_warning "Let's Encrypt certificate not found, skipping nginx SSL update"
-        return 0
-    fi
-    
-    # Check if full HTTPS config exists
-    if [[ ! -f "$REPO_ROOT/nginx-testnet.conf" ]]; then
-        log_warning "nginx-testnet.conf (HTTPS version) not found in project root"
-        return 1
-    fi
-    
-    # Backup current HTTP-only config
-    cp "$nginx_conf" "${nginx_conf}.http-only-backup-$(date +%Y%m%d-%H%M%S)" || true
-    log "Backed up HTTP-only nginx configuration"
-    
-    # Replace with full HTTPS configuration
-    log "Replacing HTTP-only config with full HTTPS configuration..."
-    cp "$REPO_ROOT/nginx-testnet.conf" "$nginx_conf" || {
-        log_error "Failed to copy HTTPS nginx config"
-        return 1
-    }
-    
-    # Test nginx configuration
-    if nginx -t 2>&1 | tee -a "$LOG_FILE"; then
-        systemctl reload nginx || {
-            log_error "Failed to reload nginx"
-            return 1
-        }
-        log "nginx switched to HTTPS successfully ✓"
-        log "HTTP traffic will now redirect to HTTPS"
-    else
-        log_error "nginx configuration test failed after switching to HTTPS"
-        log "Restoring HTTP-only configuration..."
-        cp "${nginx_conf}.http-only-backup-$(date +%Y%m%d-%H%M%S)" "$nginx_conf"
-        nginx -t && systemctl reload nginx
-        return 1
-    fi
-    
-    return 0
 }
 
 ################################################################################
@@ -1122,6 +1119,12 @@ main() {
     install_docker
     configure_docker
     configure_firewall
+    
+    # SSL certificate setup (before nginx installation)
+    # Obtain certificates first so nginx can start with HTTPS immediately
+    setup_letsencrypt_ssl
+    
+    # Install nginx with HTTPS config (certificates already exist)
     install_nginx
     
     # Optional: Install Rust (for local development)
@@ -1139,9 +1142,6 @@ main() {
     build_docker_images
     start_testnet
     wait_for_health
-    
-    # SSL certificate setup (after containers are running)
-    setup_letsencrypt_ssl
     
     # Post-deployment
     create_management_scripts
