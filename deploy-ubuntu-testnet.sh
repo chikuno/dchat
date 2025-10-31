@@ -388,14 +388,14 @@ install_nginx() {
         systemctl enable nginx || log_warning "Failed to enable nginx service"
     fi
     
-    # Check if nginx-testnet.conf exists
-    if [[ ! -f "$REPO_ROOT/nginx-testnet.conf" ]]; then
-        log_warning "nginx-testnet.conf not found in project root"
+    # Check if nginx config files exist
+    if [[ ! -f "$REPO_ROOT/nginx-testnet-http.conf" ]]; then
+        log_warning "nginx-testnet-http.conf not found in project root"
         log_warning "Skipping nginx configuration"
         return 0
     fi
     
-    log "Configuring nginx for dchat testnet..."
+    log "Configuring nginx for dchat testnet (HTTP-only initially)..."
     
     # Backup existing default config if present
     if [[ -f /etc/nginx/sites-enabled/default ]]; then
@@ -403,8 +403,8 @@ install_nginx() {
         log "Backed up default nginx config"
     fi
     
-    # Copy dchat nginx config
-    cp "$REPO_ROOT/nginx-testnet.conf" /etc/nginx/sites-available/dchat-testnet || fail "Failed to copy nginx config"
+    # Copy HTTP-only nginx config (before SSL certificates exist)
+    cp "$REPO_ROOT/nginx-testnet-http.conf" /etc/nginx/sites-available/dchat-testnet || fail "Failed to copy nginx config"
     
     # Create symlink in sites-enabled
     ln -sf /etc/nginx/sites-available/dchat-testnet /etc/nginx/sites-enabled/dchat-testnet || fail "Failed to create nginx symlink"
@@ -533,7 +533,7 @@ setup_letsencrypt_ssl() {
 }
 
 update_nginx_ssl_config() {
-    log "Updating nginx configuration for SSL..."
+    log "Switching nginx to HTTPS configuration with Let's Encrypt certificates..."
     
     local nginx_conf="/etc/nginx/sites-available/dchat-testnet"
     
@@ -543,33 +543,40 @@ update_nginx_ssl_config() {
         return 0
     fi
     
-    # Update nginx config to use Let's Encrypt certificate
-    if grep -q "ssl_certificate /etc/ssl/certs/cloudflare-origin.crt" "$nginx_conf" 2>/dev/null; then
-        log_info "Updating nginx to use Let's Encrypt certificate..."
-        
-        # Comment out Cloudflare certificate lines
-        sed -i 's|^\(\s*ssl_certificate /etc/ssl/certs/cloudflare-origin.crt;\)|    # \1  # Replaced with Let'\''s Encrypt|' "$nginx_conf"
-        sed -i 's|^\(\s*ssl_certificate_key /etc/ssl/private/cloudflare-origin.key;\)|    # \1  # Replaced with Let'\''s Encrypt|' "$nginx_conf"
-        
-        # Uncomment Let's Encrypt certificate lines if they exist
-        sed -i "s|# ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;|ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;|" "$nginx_conf"
-        sed -i "s|# ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;|ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;|" "$nginx_conf"
-        
-        # If Let's Encrypt lines don't exist, add them
-        if ! grep -q "ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem" "$nginx_conf"; then
-            # Add after the commented Cloudflare lines
-            sed -i "/# Replaced with Let/a\\    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;\n    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;" "$nginx_conf"
-        fi
-        
-        # Test and reload nginx
-        if nginx -t 2>&1 | tee -a "$LOG_FILE"; then
-            systemctl reload nginx
-            log "nginx reloaded with Let's Encrypt certificate ✓"
-        else
-            log_error "nginx configuration test failed"
-            return 1
-        fi
+    # Check if full HTTPS config exists
+    if [[ ! -f "$REPO_ROOT/nginx-testnet.conf" ]]; then
+        log_warning "nginx-testnet.conf (HTTPS version) not found in project root"
+        return 1
     fi
+    
+    # Backup current HTTP-only config
+    cp "$nginx_conf" "${nginx_conf}.http-only-backup-$(date +%Y%m%d-%H%M%S)" || true
+    log "Backed up HTTP-only nginx configuration"
+    
+    # Replace with full HTTPS configuration
+    log "Replacing HTTP-only config with full HTTPS configuration..."
+    cp "$REPO_ROOT/nginx-testnet.conf" "$nginx_conf" || {
+        log_error "Failed to copy HTTPS nginx config"
+        return 1
+    }
+    
+    # Test nginx configuration
+    if nginx -t 2>&1 | tee -a "$LOG_FILE"; then
+        systemctl reload nginx || {
+            log_error "Failed to reload nginx"
+            return 1
+        }
+        log "nginx switched to HTTPS successfully ✓"
+        log "HTTP traffic will now redirect to HTTPS"
+    else
+        log_error "nginx configuration test failed after switching to HTTPS"
+        log "Restoring HTTP-only configuration..."
+        cp "${nginx_conf}.http-only-backup-$(date +%Y%m%d-%H%M%S)" "$nginx_conf"
+        nginx -t && systemctl reload nginx
+        return 1
+    fi
+    
+    return 0
 }
 
 ################################################################################
