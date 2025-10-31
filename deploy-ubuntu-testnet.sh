@@ -25,6 +25,7 @@
 #   --skip-build       Skip building Docker images (use existing images)
 #   --monitoring-only  Only start monitoring stack
 #   --skip-nginx       Skip nginx installation and configuration
+#   --skip-ssl         Skip Let's Encrypt SSL certificate setup
 #   --help            Show this help message
 #
 # Requirements:
@@ -55,6 +56,11 @@ SKIP_DOCKER=0
 SKIP_BUILD=0
 MONITORING_ONLY=0
 SKIP_NGINX=0
+SKIP_SSL=0
+
+# Domain configuration for SSL
+DOMAIN="rpc.webnetcore.top"
+SSL_EMAIL="admin@webnetcore.top"  # Change this to your email
 
 # System requirements
 MIN_RAM_GB=4
@@ -117,6 +123,10 @@ parse_args() {
                 ;;
             --skip-nginx)
                 SKIP_NGINX=1
+                shift
+                ;;
+            --skip-ssl)
+                SKIP_SSL=1
                 shift
                 ;;
             -h|--help)
@@ -411,6 +421,155 @@ install_nginx() {
     log "  • Prometheus:    http://$(hostname -I | awk '{print $1}')/prometheus/"
     log "  • Grafana:       http://$(hostname -I | awk '{print $1}')/grafana/"
     log "  • Jaeger:        http://$(hostname -I | awk '{print $1}')/jaeger/"
+}
+
+################################################################################
+# SSL Certificate Setup with Let's Encrypt
+################################################################################
+
+setup_letsencrypt_ssl() {
+    if [[ $SKIP_SSL -eq 1 ]]; then
+        log "Skipping SSL certificate setup (--skip-ssl flag)"
+        return 0
+    fi
+    
+    if [[ $SKIP_NGINX -eq 1 ]]; then
+        log "Skipping SSL setup (nginx not installed)"
+        return 0
+    fi
+    
+    log "Setting up Let's Encrypt SSL certificate for $DOMAIN..."
+    
+    # Check if certbot is installed
+    if ! command_exists certbot; then
+        log "Installing certbot..."
+        apt-get install -y certbot python3-certbot-nginx || fail "Failed to install certbot"
+    else
+        log "certbot already installed ✓"
+    fi
+    
+    # Check if certificate already exists
+    if [[ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]]; then
+        log "SSL certificate already exists for $DOMAIN ✓"
+        
+        # Check expiration
+        local expiry_date=$(openssl x509 -enddate -noout -in "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" | cut -d= -f2)
+        log "Certificate expires: $expiry_date"
+        
+        # Update nginx config to use the certificate
+        update_nginx_ssl_config
+        return 0
+    fi
+    
+    log_info "Obtaining SSL certificate from Let's Encrypt..."
+    log_info "This will use DNS validation through Cloudflare..."
+    
+    # Since domain is behind Cloudflare, we need to use DNS validation
+    # First, try to get certificate using HTTP challenge (requires Cloudflare proxy off temporarily)
+    log_warning "IMPORTANT: For Let's Encrypt to work with Cloudflare:"
+    log_warning "1. Temporarily disable Cloudflare proxy (gray cloud) for $DOMAIN"
+    log_warning "2. Wait 2-3 minutes for DNS propagation"
+    log_warning "3. Press Enter when ready to continue, or Ctrl+C to skip SSL setup"
+    
+    if [[ -t 0 ]]; then
+        read -p "Press Enter to continue with SSL setup, or Ctrl+C to skip..."
+    else
+        log_warning "Non-interactive mode: Attempting SSL setup automatically..."
+        log_warning "If this fails, run with --skip-ssl and set up SSL manually"
+    fi
+    
+    # Try to obtain certificate using nginx plugin
+    log_info "Obtaining certificate for $DOMAIN..."
+    if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --email "$SSL_EMAIL" --redirect 2>&1 | tee -a "$LOG_FILE"; then
+        log "SSL certificate obtained successfully ✓"
+        log "Certificate location: /etc/letsencrypt/live/$DOMAIN/"
+        
+        # Update nginx config
+        update_nginx_ssl_config
+        
+        # Test HTTPS
+        log_info "Testing HTTPS endpoint..."
+        sleep 5
+        if curl -sf "https://$DOMAIN/health" >/dev/null 2>&1; then
+            log "HTTPS is working ✓"
+        else
+            log_warning "HTTPS test failed, but certificate was obtained"
+            log_warning "You may need to enable Cloudflare proxy and set SSL mode to 'Full (strict)'"
+        fi
+        
+        # Setup auto-renewal
+        log_info "Setting up automatic certificate renewal..."
+        if systemctl list-unit-files | grep -q certbot.timer; then
+            systemctl enable certbot.timer
+            systemctl start certbot.timer
+            log "Auto-renewal enabled ✓"
+        fi
+        
+        log ""
+        log "=========================================="
+        log "  SSL Certificate Setup Complete!"
+        log "=========================================="
+        log "Domain: $DOMAIN"
+        log "Certificate: /etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+        log "Private Key: /etc/letsencrypt/live/$DOMAIN/privkey.pem"
+        log "Expires: $(openssl x509 -enddate -noout -in "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" | cut -d= -f2)"
+        log ""
+        log "Next Steps:"
+        log "1. Re-enable Cloudflare proxy (orange cloud) for $DOMAIN"
+        log "2. Set Cloudflare SSL mode to 'Full (strict)'"
+        log "3. Access your site at: https://$DOMAIN"
+        log "=========================================="
+        log ""
+    else
+        log_error "Failed to obtain SSL certificate"
+        log_warning "You can:"
+        log_warning "1. Run deployment again with --skip-ssl and set up SSL manually"
+        log_warning "2. Use Cloudflare Origin Certificate (see CLOUDFLARE_SSL_SETUP.md)"
+        log_warning "3. Check that Cloudflare proxy is disabled and DNS has propagated"
+        log_warning ""
+        log_warning "Continuing deployment without SSL..."
+        return 0
+    fi
+}
+
+update_nginx_ssl_config() {
+    log "Updating nginx configuration for SSL..."
+    
+    local nginx_conf="/etc/nginx/sites-available/dchat-testnet"
+    
+    # Check if Let's Encrypt certificate exists
+    if [[ ! -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]]; then
+        log_warning "Let's Encrypt certificate not found, skipping nginx SSL update"
+        return 0
+    fi
+    
+    # Update nginx config to use Let's Encrypt certificate
+    if grep -q "ssl_certificate /etc/ssl/certs/cloudflare-origin.crt" "$nginx_conf" 2>/dev/null; then
+        log_info "Updating nginx to use Let's Encrypt certificate..."
+        
+        # Comment out Cloudflare certificate lines
+        sed -i 's|^\(\s*ssl_certificate /etc/ssl/certs/cloudflare-origin.crt;\)|    # \1  # Replaced with Let'\''s Encrypt|' "$nginx_conf"
+        sed -i 's|^\(\s*ssl_certificate_key /etc/ssl/private/cloudflare-origin.key;\)|    # \1  # Replaced with Let'\''s Encrypt|' "$nginx_conf"
+        
+        # Uncomment Let's Encrypt certificate lines if they exist
+        sed -i "s|# ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;|ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;|" "$nginx_conf"
+        sed -i "s|# ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;|ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;|" "$nginx_conf"
+        
+        # If Let's Encrypt lines don't exist, add them
+        if ! grep -q "ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem" "$nginx_conf"; then
+            # Add after the commented Cloudflare lines
+            sed -i "/# Replaced with Let/a\\    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;\n    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;" "$nginx_conf"
+        fi
+        
+        # Test and reload nginx
+        if nginx -t 2>&1 | tee -a "$LOG_FILE"; then
+            systemctl reload nginx
+            log "nginx reloaded with Let's Encrypt certificate ✓"
+        else
+            log_error "nginx configuration test failed"
+            return 1
+        fi
+    fi
 }
 
 ################################################################################
@@ -973,6 +1132,9 @@ main() {
     build_docker_images
     start_testnet
     wait_for_health
+    
+    # SSL certificate setup (after containers are running)
+    setup_letsencrypt_ssl
     
     # Post-deployment
     create_management_scripts
