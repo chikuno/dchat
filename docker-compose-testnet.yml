@@ -37,7 +37,7 @@ services:
       - DCHAT_METRICS_ADDR=0.0.0.0:9090
       - DCHAT_CONSENSUS_TIMEOUT=2000
       - DCHAT_BLOCK_TIME=2000
-    command: validator --key /validator_keys/validator1.key --chain-rpc http://chain-rpc:26657 --stake 10000 --producer
+    command: validator --key /validator_keys/validator1.key --chain-rpc http://chain-rpc:26657 --stake 10000 --producer --health-addr 0.0.0.0:7071 --metrics-addr 0.0.0.0:9090
     ports:
       - "7070:7070"
       - "7071:7071"
@@ -74,7 +74,7 @@ services:
       - DCHAT_METRICS_ADDR=0.0.0.0:9090
       - DCHAT_CONSENSUS_TIMEOUT=2000
       - DCHAT_BLOCK_TIME=2000
-    command: validator --key /validator_keys/validator2.key --chain-rpc http://chain-rpc:26657 --stake 10000 --producer
+    command: validator --key /validator_keys/validator2.key --chain-rpc http://chain-rpc:26657 --stake 10000 --producer --health-addr 0.0.0.0:7071 --metrics-addr 0.0.0.0:9090
     ports:
       - "7072:7070"
       - "7073:7071"
@@ -111,7 +111,7 @@ services:
       - DCHAT_METRICS_ADDR=0.0.0.0:9090
       - DCHAT_CONSENSUS_TIMEOUT=2000
       - DCHAT_BLOCK_TIME=2000
-    command: validator --key /validator_keys/validator3.key --chain-rpc http://chain-rpc:26657 --stake 10000 --producer
+    command: validator --key /validator_keys/validator3.key --chain-rpc http://chain-rpc:26657 --stake 10000 --producer --health-addr 0.0.0.0:7071 --metrics-addr 0.0.0.0:9090
     ports:
       - "7074:7070"
       - "7075:7071"
@@ -148,7 +148,7 @@ services:
       - DCHAT_METRICS_ADDR=0.0.0.0:9090
       - DCHAT_CONSENSUS_TIMEOUT=2000
       - DCHAT_BLOCK_TIME=2000
-    command: validator --key /validator_keys/validator4.key --chain-rpc http://chain-rpc:26657 --stake 10000 --producer
+    command: validator --key /validator_keys/validator4.key --chain-rpc http://chain-rpc:26657 --stake 10000 --producer --health-addr 0.0.0.0:7071 --metrics-addr 0.0.0.0:9090
     ports:
       - "7076:7070"
       - "7077:7071"
@@ -224,7 +224,7 @@ services:
       - DCHAT_RPC_ADDR=0.0.0.0:7081
       - DCHAT_METRICS_ADDR=0.0.0.0:9100
       - DCHAT_RELAY_STAKE=100
-    command: relay --listen 0.0.0.0:7080 --stake 1000
+    command: relay --listen 0.0.0.0:7080 --stake 1000 --health-addr 0.0.0.0:7081 --metrics-addr 0.0.0.0:9100
     ports:
       - "7082:7080"
       - "7083:7081"
@@ -254,11 +254,11 @@ services:
       - DCHAT_NODE_ID=relay3
       - DCHAT_RELAY_ID=relay3
       - DCHAT_LISTEN_ADDR=0.0.0.0:7080
-      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080
+      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080,relay2:7080
       - DCHAT_RPC_ADDR=0.0.0.0:7081
-      - DCHAT_METRICS_ADDR=0.0.0.0:9100
+      - DCHAT_METRICS_ADDR=0.0.0.0:9102
       - DCHAT_RELAY_STAKE=100
-    command: relay --listen 0.0.0.0:7080 --stake 1000
+    command: relay --listen 0.0.0.0:7080 --stake 1000 --health-addr 0.0.0.0:7081 --metrics-addr 0.0.0.0:9102
     ports:
       - "7084:7080"
       - "7085:7081"
@@ -283,11 +283,11 @@ services:
       - DCHAT_NODE_ID=relay4
       - DCHAT_RELAY_ID=relay4
       - DCHAT_LISTEN_ADDR=0.0.0.0:7080
-      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080
+      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080,relay2:7080
       - DCHAT_RPC_ADDR=0.0.0.0:7081
-      - DCHAT_METRICS_ADDR=0.0.0.0:9100
+      - DCHAT_METRICS_ADDR=0.0.0.0:9103
       - DCHAT_RELAY_STAKE=100
-    command: relay --listen 0.0.0.0:7080 --stake 1000
+    command: relay --listen 0.0.0.0:7080 --stake 1000 --health-addr 0.0.0.0:7081 --metrics-addr 0.0.0.0:9103
     ports:
       - "7086:7080"
       - "7087:7081"
@@ -312,11 +312,11 @@ services:
       - DCHAT_NODE_ID=relay5
       - DCHAT_RELAY_ID=relay5
       - DCHAT_LISTEN_ADDR=0.0.0.0:7080
-      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080
+      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080,relay2:7080
       - DCHAT_RPC_ADDR=0.0.0.0:7081
-      - DCHAT_METRICS_ADDR=0.0.0.0:9100
+      - DCHAT_METRICS_ADDR=0.0.0.0:9104
       - DCHAT_RELAY_STAKE=100
-    command: relay --listen 0.0.0.0:7080 --stake 1000
+    command: relay --listen 0.0.0.0:7080 --stake 1000 --health-addr 0.0.0.0:7081 --metrics-addr 0.0.0.0:9104
     ports:
       - "7088:7080"
       - "7089:7081"
@@ -341,11 +341,11 @@ services:
       - DCHAT_NODE_ID=relay6
       - DCHAT_RELAY_ID=relay6
       - DCHAT_LISTEN_ADDR=0.0.0.0:7080
-      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080
+      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080,relay2:7080
       - DCHAT_RPC_ADDR=0.0.0.0:7081
-      - DCHAT_METRICS_ADDR=0.0.0.0:9100
+      - DCHAT_METRICS_ADDR=0.0.0.0:9105
       - DCHAT_RELAY_STAKE=100
-    command: relay --listen 0.0.0.0:7080 --stake 1000
+    command: relay --listen 0.0.0.0:7080 --stake 1000 --health-addr 0.0.0.0:7081 --metrics-addr 0.0.0.0:9105
     ports:
       - "7090:7080"
       - "7091:7081"
@@ -370,11 +370,11 @@ services:
       - DCHAT_NODE_ID=relay7
       - DCHAT_RELAY_ID=relay7
       - DCHAT_LISTEN_ADDR=0.0.0.0:7080
-      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080
+      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080,relay2:7080
       - DCHAT_RPC_ADDR=0.0.0.0:7081
-      - DCHAT_METRICS_ADDR=0.0.0.0:9100
+      - DCHAT_METRICS_ADDR=0.0.0.0:9106
       - DCHAT_RELAY_STAKE=100
-    command: relay --listen 0.0.0.0:7080 --stake 1000
+    command: relay --listen 0.0.0.0:7080 --stake 1000 --health-addr 0.0.0.0:7081 --metrics-addr 0.0.0.0:9106
     ports:
       - "7092:7080"
       - "7093:7081"
@@ -407,7 +407,7 @@ services:
       - DCHAT_BOOTSTRAP_PEERS=relay1:7080,relay2:7080,relay3:7080
       - DCHAT_RPC_ADDR=0.0.0.0:7111
       - DCHAT_METRICS_ADDR=0.0.0.0:9110
-    command: user --username user1
+    command: user --username user1 --health-addr 0.0.0.0:7111 --metrics-addr 0.0.0.0:9110
     ports:
       - "7110:7110"
       - "7111:7111"
@@ -443,8 +443,8 @@ services:
       - DCHAT_LISTEN_ADDR=0.0.0.0:7110
       - DCHAT_BOOTSTRAP_PEERS=relay4:7080,relay5:7080,relay1:7080
       - DCHAT_RPC_ADDR=0.0.0.0:7111
-      - DCHAT_METRICS_ADDR=0.0.0.0:9110
-    command: user --username user2
+      - DCHAT_METRICS_ADDR=0.0.0.0:9111
+    command: user --username user2 --health-addr 0.0.0.0:7111 --metrics-addr 0.0.0.0:9111
     ports:
       - "7112:7110"
       - "7113:7111"
@@ -480,8 +480,8 @@ services:
       - DCHAT_LISTEN_ADDR=0.0.0.0:7110
       - DCHAT_BOOTSTRAP_PEERS=relay6:7080,relay7:7080,relay2:7080
       - DCHAT_RPC_ADDR=0.0.0.0:7111
-      - DCHAT_METRICS_ADDR=0.0.0.0:9110
-    command: user --username user3
+      - DCHAT_METRICS_ADDR=0.0.0.0:9112
+    command: user --username user3 --health-addr 0.0.0.0:7111 --metrics-addr 0.0.0.0:9112
     ports:
       - "7114:7110"
       - "7115:7111"

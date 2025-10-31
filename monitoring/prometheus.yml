@@ -2,31 +2,46 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
   external_labels:
-    cluster: 'dchat-dev'
-    environment: 'development'
+    cluster: 'dchat-testnet'
+    environment: 'testnet'
 
 scrape_configs:
-  - job_name: 'dchat-relay1'
+  # Validators (4 nodes)
+  - job_name: 'validators'
     static_configs:
-      - targets: ['relay1:9090']
+      - targets: 
+        - 'validator1:9090'
+        - 'validator2:9090'
+        - 'validator3:9090'
+        - 'validator4:9090'
         labels:
-          relay_id: 'relay1'
+          role: 'validator'
+
+  # Relays (7 nodes)
+  - job_name: 'relays'
+    static_configs:
+      - targets:
+        - 'relay1:9100'
+        - 'relay2:9100'
+        - 'relay3:9102'
+        - 'relay4:9103'
+        - 'relay5:9104'
+        - 'relay6:9105'
+        - 'relay7:9106'
+        labels:
           role: 'relay'
 
-  - job_name: 'dchat-relay2'
+  # Users (3 nodes)
+  - job_name: 'users'
     static_configs:
-      - targets: ['relay2:9091']
+      - targets:
+        - 'user1:9110'
+        - 'user2:9111'
+        - 'user3:9112'
         labels:
-          relay_id: 'relay2'
-          role: 'relay'
+          role: 'user'
 
-  - job_name: 'dchat-relay3'
-    static_configs:
-      - targets: ['relay3:9092']
-        labels:
-          relay_id: 'relay3'
-          role: 'relay'
-
+  # Prometheus self-monitoring
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']

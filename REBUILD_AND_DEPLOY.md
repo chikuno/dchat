@@ -1,9 +1,13 @@
 # Rebuild and Redeploy Instructions
 
-## Problem
-The Docker image on the server was built **before** we added `curl` to the runtime stage. The containers can't run health checks because curl is missing.
+## Problems Fixed
 
-## Solution: Rebuild Image on Server
+1. ✅ **Missing curl**: Added curl to Dockerfile runtime stage for health checks
+2. ✅ **Health server on wrong port**: Added `--health-addr 0.0.0.0:XXXX` to all commands
+3. ✅ **Incomplete Prometheus config**: Updated to scrape all 17 containers (4 validators + 7 relays + 3 users)
+4. ✅ **No external access**: Created nginx reverse proxy configuration
+
+## Solution: Rebuild and Deploy on Server
 
 SSH into your server (rpc.webnetcore.top) and run these commands:
 
@@ -11,26 +15,72 @@ SSH into your server (rpc.webnetcore.top) and run these commands:
 # 1. Navigate to project directory
 cd /opt/dchat
 
-# 2. Pull latest Dockerfile changes (with curl added)
+# 2. Pull latest changes (Dockerfile, docker-compose, monitoring configs, nginx)
 git pull origin main
 
 # 3. Stop all running containers
 docker-compose -f docker-compose-testnet.yml down
 
-# 4. Rebuild the image with curl included
+# 4. Rebuild the image with all fixes
 docker-compose -f docker-compose-testnet.yml build --no-cache
 
 # 5. Start the testnet
 docker-compose -f docker-compose-testnet.yml up -d
 
-# 6. Wait for services to initialize (30 seconds)
-sleep 30
+# 6. Wait for services to initialize (60 seconds for all containers)
+sleep 60
 
 # 7. Check container health
 docker ps --format "table {{.Names}}\t{{.Status}}"
 
 # 8. Run test suite
 sudo ./test-deployment.sh
+```
+
+## Optional: Setup Nginx Reverse Proxy
+
+For external access to Prometheus, Grafana, and Jaeger:
+
+```bash
+# 1. Install nginx if not already installed
+sudo apt-get update && sudo apt-get install -y nginx
+
+# 2. Copy nginx configuration
+sudo cp /opt/dchat/nginx-testnet.conf /etc/nginx/sites-available/dchat-testnet
+
+# 3. Enable the site
+sudo ln -s /etc/nginx/sites-available/dchat-testnet /etc/nginx/sites-enabled/
+
+# 4. Test configuration
+sudo nginx -t
+
+# 5. Restart nginx
+sudo systemctl restart nginx
+
+# 6. Test external access
+curl http://rpc.webnetcore.top/health
+curl http://rpc.webnetcore.top/prometheus/
+curl http://rpc.webnetcore.top/grafana/
+curl http://rpc.webnetcore.top/jaeger/
+```
+
+## Firewall Configuration
+
+Ensure the following ports are open:
+
+```bash
+# Allow HTTP/HTTPS
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+
+# Allow Docker swarm (if used)
+sudo ufw allow 2377/tcp
+sudo ufw allow 7946/tcp
+sudo ufw allow 7946/udp
+sudo ufw allow 4789/udp
+
+# Check firewall status
+sudo ufw status
 ```
 
 ## What Changed
