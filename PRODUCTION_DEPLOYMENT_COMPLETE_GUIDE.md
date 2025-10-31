@@ -558,6 +558,59 @@ kill -9 <PID>
 docker-compose -f docker-compose-production.yml restart validator1
 ```
 
+### Validators Crashing/Restarting (Exit Code 1)
+
+**Symptoms**: Validators show "Restarting (1)" or "Exited (1)" status
+
+```bash
+# Check validator logs to see the actual error
+docker logs dchat-validator1 --tail=100
+docker logs dchat-validator2 --tail=100
+docker logs dchat-validator3 --tail=100
+docker logs dchat-validator4 --tail=100
+
+# Common causes and fixes:
+
+# 1. Missing or invalid health check command
+# Check if dchat binary supports 'health' subcommand
+docker exec dchat-relay1 dchat --help | grep -i health
+
+# 2. Validator command not implemented yet
+# Check if 'validator' subcommand exists
+docker run --rm dchat:latest dchat --help | grep -i validator
+
+# 3. Missing chain-rpc endpoint
+# Validators reference http://localhost:26657 which may not exist
+# Temporary fix: Remove healthcheck or change validator command
+
+# 4. Fix healthcheck to use a working endpoint
+# Edit docker-compose-testnet.yml and change healthcheck to:
+#   healthcheck:
+#     test: ["CMD-SHELL", "exit 0"]  # Temporary: always pass
+#     or
+#     test: ["CMD", "dchat", "--version"]  # Just check binary exists
+
+# 5. Rebuild and restart
+docker-compose -f docker-compose-testnet.yml down
+docker-compose -f docker-compose-testnet.yml up -d
+
+# 6. Check if validators start without health checks
+docker-compose -f docker-compose-testnet.yml up validator1
+# Watch the output for actual error messages
+```
+
+**Quick Fix**: Disable health checks temporarily to see if validators can start:
+
+```yaml
+# In docker-compose-testnet.yml, comment out healthcheck sections:
+# healthcheck:
+#   test: ["CMD", "dchat", "health", "--url", "http://127.0.0.1:8080/health"]
+#   interval: 15s
+#   timeout: 5s
+#   retries: 5
+#   start_period: 45s
+```
+
 ### Health Check Failing
 
 ```bash
