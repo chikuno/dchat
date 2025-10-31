@@ -18,12 +18,13 @@
 #
 # Usage:
 #   chmod +x deploy-ubuntu-testnet.sh
-#   sudo ./deploy-ubuntu-testnet.sh [--skip-docker] [--skip-build] [--monitoring-only]
+#   sudo ./deploy-ubuntu-testnet.sh [--skip-docker] [--skip-build] [--monitoring-only] [--skip-nginx]
 #
 # Options:
 #   --skip-docker      Skip Docker installation (if already installed)
 #   --skip-build       Skip building Docker images (use existing images)
 #   --monitoring-only  Only start monitoring stack
+#   --skip-nginx       Skip nginx installation and configuration
 #   --help            Show this help message
 #
 # Requirements:
@@ -53,6 +54,7 @@ TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 SKIP_DOCKER=0
 SKIP_BUILD=0
 MONITORING_ONLY=0
+SKIP_NGINX=0
 
 # System requirements
 MIN_RAM_GB=4
@@ -111,6 +113,10 @@ parse_args() {
                 ;;
             --monitoring-only)
                 MONITORING_ONLY=1
+                shift
+                ;;
+            --skip-nginx)
+                SKIP_NGINX=1
                 shift
                 ;;
             -h|--help)
@@ -320,6 +326,10 @@ configure_firewall() {
     # SSH access (critical - don't lock yourself out!)
     ufw allow 22/tcp comment "SSH"
     
+    # HTTP/HTTPS for nginx reverse proxy
+    ufw allow 80/tcp comment "HTTP"
+    ufw allow 443/tcp comment "HTTPS"
+    
     # dchat validator nodes (P2P)
     ufw allow 7070:7077/tcp comment "dchat validators P2P"
     
@@ -329,8 +339,8 @@ configure_firewall() {
     # dchat user nodes (P2P)
     ufw allow 7110:7115/tcp comment "dchat users P2P"
     
-    # Monitoring ports
-    ufw allow 9090/tcp comment "Prometheus"
+    # Monitoring ports (localhost only via nginx proxy)
+    ufw allow 9095/tcp comment "Prometheus"
     ufw allow 3000/tcp comment "Grafana"
     ufw allow 16686/tcp comment "Jaeger UI"
     
@@ -341,6 +351,66 @@ configure_firewall() {
     ufw status numbered
     
     log "Firewall configured successfully ✓"
+}
+
+################################################################################
+# Nginx Installation and Configuration
+################################################################################
+
+install_nginx() {
+    if [[ $SKIP_NGINX -eq 1 ]]; then
+        log "Skipping nginx installation (--skip-nginx flag)"
+        return 0
+    fi
+    
+    log "Installing and configuring nginx..."
+    
+    # Check if nginx is already installed
+    if command_exists nginx; then
+        log "nginx already installed ✓"
+        nginx -v
+    else
+        log "Installing nginx..."
+        apt-get install -y nginx || fail "Failed to install nginx"
+        
+        # Start and enable nginx
+        systemctl start nginx || fail "Failed to start nginx"
+        systemctl enable nginx || log_warning "Failed to enable nginx service"
+    fi
+    
+    # Check if nginx-testnet.conf exists
+    if [[ ! -f "$REPO_ROOT/nginx-testnet.conf" ]]; then
+        log_warning "nginx-testnet.conf not found in project root"
+        log_warning "Skipping nginx configuration"
+        return 0
+    fi
+    
+    log "Configuring nginx for dchat testnet..."
+    
+    # Backup existing default config if present
+    if [[ -f /etc/nginx/sites-enabled/default ]]; then
+        mv /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/default.backup-$(date +%Y%m%d-%H%M%S) || true
+        log "Backed up default nginx config"
+    fi
+    
+    # Copy dchat nginx config
+    cp "$REPO_ROOT/nginx-testnet.conf" /etc/nginx/sites-available/dchat-testnet || fail "Failed to copy nginx config"
+    
+    # Create symlink in sites-enabled
+    ln -sf /etc/nginx/sites-available/dchat-testnet /etc/nginx/sites-enabled/dchat-testnet || fail "Failed to create nginx symlink"
+    
+    # Test nginx configuration
+    nginx -t || fail "nginx configuration test failed"
+    
+    # Reload nginx
+    systemctl reload nginx || fail "Failed to reload nginx"
+    
+    log "nginx configured successfully ✓"
+    log "External access:"
+    log "  • Health Check:  http://$(hostname -I | awk '{print $1}')/health"
+    log "  • Prometheus:    http://$(hostname -I | awk '{print $1}')/prometheus/"
+    log "  • Grafana:       http://$(hostname -I | awk '{print $1}')/grafana/"
+    log "  • Jaeger:        http://$(hostname -I | awk '{print $1}')/jaeger/"
 }
 
 ################################################################################
@@ -578,45 +648,59 @@ setup_monitoring() {
     # Ensure monitoring configuration exists
     if [[ ! -f "$REPO_ROOT/monitoring/prometheus.yml" ]]; then
         log_warning "monitoring/prometheus.yml not found"
-        log_warning "Creating basic Prometheus configuration..."
+        log_warning "Creating complete Prometheus configuration..."
         
         mkdir -p "$REPO_ROOT/monitoring"
         cat > "$REPO_ROOT/monitoring/prometheus.yml" <<'EOF'
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+  external_labels:
+    cluster: 'dchat-testnet'
+    environment: 'testnet'
 
 scrape_configs:
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
+        labels:
+          role: 'monitoring'
 
-  - job_name: 'dchat-validators'
+  - job_name: 'validators'
     static_configs:
       - targets:
         - 'validator1:9090'
         - 'validator2:9090'
         - 'validator3:9090'
         - 'validator4:9090'
+        labels:
+          role: 'validator'
 
-  - job_name: 'dchat-relays'
+  - job_name: 'relays'
     static_configs:
       - targets:
         - 'relay1:9100'
         - 'relay2:9100'
-        - 'relay3:9100'
-        - 'relay4:9100'
-        - 'relay5:9100'
-        - 'relay6:9100'
-        - 'relay7:9100'
+        - 'relay3:9102'
+        - 'relay4:9103'
+        - 'relay5:9104'
+        - 'relay6:9105'
+        - 'relay7:9106'
+        labels:
+          role: 'relay'
 
-  - job_name: 'dchat-users'
+  - job_name: 'users'
     static_configs:
       - targets:
         - 'user1:9110'
-        - 'user2:9110'
-        - 'user3:9110'
+        - 'user2:9111'
+        - 'user3:9112'
+        labels:
+          role: 'user'
 EOF
+        log "Created complete Prometheus configuration with 14 targets"
+    else
+        log "Prometheus configuration already exists"
     fi
     
     # Create Grafana datasource configuration
@@ -631,6 +715,8 @@ datasources:
     url: http://prometheus:9090
     isDefault: true
     editable: true
+    jsonData:
+      timeInterval: "15s"
 EOF
     
     log "Monitoring configuration created ✓"
@@ -661,11 +747,23 @@ show_deployment_status() {
     # Get server IP
     local server_ip=$(hostname -I | awk '{print $1}')
     
-    log "Access Points:"
+    log "Direct Access (Localhost):"
     log "  • Grafana:    http://${server_ip}:3000 (admin/admin)"
     log "  • Prometheus: http://${server_ip}:9095"
     log "  • Jaeger UI:  http://${server_ip}:16686"
     log ""
+    
+    # Check if nginx is configured
+    if [[ -f /etc/nginx/sites-enabled/dchat-testnet ]] && command_exists nginx; then
+        log "External Access (via nginx):"
+        log "  • Health Check:  http://${server_ip}/health"
+        log "  • Prometheus:    http://${server_ip}/prometheus/"
+        log "  • Grafana:       http://${server_ip}/grafana/"
+        log "  • Jaeger:        http://${server_ip}/jaeger/"
+        log "  • API Validators: http://${server_ip}/api/validators/"
+        log "  • API Relays:    http://${server_ip}/api/relays/"
+        log ""
+    fi
     
     log "Validator RPC Endpoints:"
     log "  • Validator 1: http://${server_ip}:7071"
@@ -692,6 +790,8 @@ test_endpoints() {
         "http://localhost:7073/health:Validator2"
         "http://localhost:7075/health:Validator3"
         "http://localhost:7077/health:Validator4"
+        "http://localhost:7081/health:Relay1"
+        "http://localhost:7111/health:User1"
         "http://localhost:9095/-/healthy:Prometheus"
         "http://localhost:3000/api/health:Grafana"
     )
@@ -709,6 +809,20 @@ test_endpoints() {
             failed=$((failed + 1))
         fi
     done
+    
+    # Check Prometheus targets
+    log "Checking Prometheus targets..."
+    if command_exists curl && command_exists jq; then
+        local targets=$(curl -sf http://localhost:9095/api/v1/targets 2>/dev/null | jq -r '.data.activeTargets | length' 2>/dev/null || echo "0")
+        if [[ "$targets" -ge 14 ]]; then
+            log "✓ Prometheus has $targets active targets (expected: 14)"
+        else
+            log_warning "✗ Prometheus has only $targets active targets (expected: 14)"
+            failed=$((failed + 1))
+        fi
+    else
+        log_info "Skipping Prometheus target check (jq not installed)"
+    fi
     
     if [[ $failed -gt 0 ]]; then
         log_warning "$failed endpoint(s) are not responding. They may still be starting up."
@@ -766,6 +880,11 @@ EOF
 save_deployment_info() {
     log "Saving deployment information..."
     
+    local nginx_status="Not installed"
+    if [[ -f /etc/nginx/sites-enabled/dchat-testnet ]] && command_exists nginx; then
+        nginx_status="Installed and configured"
+    fi
+    
     cat > "$REPO_ROOT/DEPLOYMENT_INFO.txt" <<EOF
 dchat Testnet Deployment Information
 =====================================
@@ -775,12 +894,25 @@ IP Address: $(hostname -I | awk '{print $1}')
 OS: $(lsb_release -ds 2>/dev/null || echo "Unknown")
 Docker Version: $(docker --version)
 Compose Version: $(docker compose version 2>/dev/null || docker-compose --version 2>/dev/null || echo "Unknown")
+Nginx: $nginx_status
 
 Container Counts:
   - Validators: 4
   - Relays: 7
   - Users: 3
   - Monitoring: 3 (Prometheus, Grafana, Jaeger)
+
+Health Check Configuration:
+  - All validators: Health on port 7071, Metrics on port 9090
+  - All relays: Health on port 7081, Metrics on ports 9100-9106
+  - All users: Health on port 7111, Metrics on ports 9110-9112
+  - Healthcheck command: curl -f http://localhost:PORT/health
+
+Prometheus Targets:
+  - 4 validators (validator1-4:9090)
+  - 7 relays (relay1:9100, relay2:9100, relay3:9102, relay4:9103, relay5:9104, relay6:9105, relay7:9106)
+  - 3 users (user1:9110, user2:9111, user3:9112)
+  - Total: 14 active targets
 
 Log File: $LOG_FILE
 
@@ -824,6 +956,7 @@ main() {
     install_docker
     configure_docker
     configure_firewall
+    install_nginx
     
     # Optional: Install Rust (for local development)
     # install_rust
