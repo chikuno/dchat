@@ -41,3 +41,6 @@ pub use routing::{Router, RoutingTable};
 pub use swarm::{NetworkManager, NetworkConfig, NetworkEvent};
 pub use transport::build_transport;
 
+// Re-export libp2p types for convenience
+pub use libp2p::{Multiaddr, PeerId};
+

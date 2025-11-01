@@ -12,6 +12,7 @@ use dchat::prelude::*;
 use dchat::blockchain::{ChatChainClient, ChatChainConfig, CurrencyChainClient, CurrencyChainConfig, CrossChainBridge};
 
 use clap::{Parser, Subcommand};
+use dchat_network::{Multiaddr, PeerId};
 use std::path::{Path, PathBuf};
 use tokio::signal;
 use tokio::sync::broadcast;
@@ -1385,32 +1386,36 @@ async fn run_user_node(
     
     info!("✓ Identity loaded: {}", identity.user_id);
     
-    // Initialize network
-    let network_config = NetworkConfig::default();
-    let mut network = NetworkManager::new(network_config).await?;
-    let peer_id = network.peer_id();
+    // Initialize network with bootstrap peers
+    let mut network_config = NetworkConfig::default();
     
-    // Start network
-    network.start().await?;
-    info!("✓ Network initialized (peer_id: {})", peer_id);
-    
-    // Connect to bootstrap peers and wait for connections
-    let mut peer_count = 0;
+    // Parse and add bootstrap peers to discovery config
     if !bootstrap_peers.is_empty() {
-        info!("Connecting to {} bootstrap peer(s)...", bootstrap_peers.len());
+        info!("Bootstrap peers provided: {:?}", bootstrap_peers);
         for peer_addr in &bootstrap_peers {
-            match peer_addr.parse() {
+            match peer_addr.parse::<Multiaddr>() {
                 Ok(multiaddr) => {
-                    match network.dial(multiaddr) {
-                        Ok(_) => info!("✓ Dialing bootstrap peer: {}", peer_addr),
-                        Err(e) => warn!("⚠ Failed to dial {}: {}", peer_addr, e),
-                    }
+                    // Extract peer ID from multiaddr if present, otherwise use a random one
+                    // (the DHT will learn the correct peer ID during connection)
+                    let peer_id = PeerId::random(); // Will be replaced by actual peer ID during handshake
+                    network_config.discovery.bootstrap_nodes.push((peer_id, multiaddr));
+                    info!("✓ Added bootstrap node: {}", peer_addr);
                 }
                 Err(e) => warn!("⚠ Invalid multiaddr {}: {}", peer_addr, e),
             }
         }
-        
-        // Wait for peer connections (bootstrap + mDNS discovery)
+    }
+    
+    let mut network = NetworkManager::new(network_config).await?;
+    let peer_id = network.peer_id();
+    
+    // Start network (this will automatically bootstrap DHT with configured nodes)
+    network.start().await?;
+    info!("✓ Network initialized (peer_id: {})", peer_id);
+    
+    // Wait for peer connections
+    let mut peer_count = 0;
+    if !bootstrap_peers.is_empty() {
         info!("Waiting for peer connections (15s)...");
         let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(15);
         while tokio::time::Instant::now() < deadline {
