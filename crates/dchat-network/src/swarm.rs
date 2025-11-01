@@ -184,6 +184,25 @@ impl NetworkManager {
         Ok(())
     }
     
+    /// Get gossipsub mesh peer count for debugging
+    pub fn get_mesh_peer_count(&mut self, channel_id: &str) -> usize {
+        let topic_hash = gossipsub::IdentTopic::new(channel_id).hash();
+        self.swarm.behaviour_mut()
+            .gossipsub
+            .mesh_peers(&topic_hash)
+            .count()
+    }
+    
+    /// Get all mesh peers for a channel
+    pub fn get_mesh_peers(&mut self, channel_id: &str) -> Vec<PeerId> {
+        let topic_hash = gossipsub::IdentTopic::new(channel_id).hash();
+        self.swarm.behaviour_mut()
+            .gossipsub
+            .mesh_peers(&topic_hash)
+            .copied()
+            .collect()
+    }
+    
     /// Process network events
     pub async fn next_event(&mut self) -> Option<NetworkEvent> {
         loop {
@@ -245,6 +264,18 @@ impl NetworkManager {
                 } else {
                     None
                 }
+            }
+            DchatBehaviorEvent::Gossipsub(gossipsub::Event::Subscribed { peer_id, topic }) => {
+                tracing::info!("🔔 Peer {} subscribed to topic: {}", peer_id, topic);
+                None
+            }
+            DchatBehaviorEvent::Gossipsub(gossipsub::Event::Unsubscribed { peer_id, topic }) => {
+                tracing::info!("🔕 Peer {} unsubscribed from topic: {}", peer_id, topic);
+                None
+            }
+            DchatBehaviorEvent::Gossipsub(gossipsub::Event::GossipsubNotSupported { peer_id }) => {
+                tracing::warn!("⚠️  Peer {} does not support gossipsub", peer_id);
+                None
             }
             DchatBehaviorEvent::Identify(identify::Event::Received { peer_id, info, connection_id: _ }) => {
                 tracing::info!("Identified peer: {} with {} addresses", peer_id, info.listen_addrs.len());

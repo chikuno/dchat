@@ -44,7 +44,7 @@ struct Cli {
     metrics_addr: String,
 
     /// Health check server listen address
-    #[arg(long, default_value = "127.0.0.1:8080")]
+    #[arg(long, default_value = "0.0.0.0:8080")]
     health_addr: String,
 
     #[command(subcommand)]
@@ -1436,8 +1436,9 @@ async fn run_user_node(
     info!("✓ Subscribed to #global channel");
     
     // Process network events during subscription exchange (gossipsub needs active event loop)
-    info!("Waiting 15s for gossipsub subscription exchange...");
-    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(15);
+    info!("Waiting 30s for gossipsub subscription exchange and mesh formation...");
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(30);
+    let mut last_log = tokio::time::Instant::now();
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(
             tokio::time::Duration::from_secs(1),
@@ -1448,8 +1449,16 @@ async fn run_user_node(
             }
             _ => {}
         }
+        
+        // Log mesh status every 5 seconds
+        if last_log.elapsed() >= tokio::time::Duration::from_secs(5) {
+            let mesh_count = network.get_mesh_peer_count("global");
+            info!("📊 Gossipsub mesh status: {} peers in #global", mesh_count);
+            last_log = tokio::time::Instant::now();
+        }
     }
-    info!("✓ Subscription exchange complete");
+    let final_mesh_count = network.get_mesh_peer_count("global");
+    info!("✓ Subscription exchange complete - {} mesh peers for #global", final_mesh_count);
     
     // Initialize storage
     let db_config = DatabaseConfig::default();
@@ -1460,7 +1469,20 @@ async fn run_user_node(
         // Non-interactive mode for testing
         info!("Running in non-interactive test mode");
         
-        // Send test messages
+        // Wait additional time for mesh to stabilize
+        let mesh_count = network.get_mesh_peer_count("global");
+        info!("📊 Current mesh status: {} peers before publishing", mesh_count);
+        
+        if mesh_count == 0 {
+            warn!("⚠️  No mesh peers yet, waiting 10s for mesh to stabilize...");
+            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+            let new_mesh_count = network.get_mesh_peer_count("global");
+            info!("📊 Mesh status after wait: {} peers", new_mesh_count);
+        } else {
+            info!("✓ Mesh already has {} peers, proceeding immediately", mesh_count);
+        }
+        
+        // Send test messages with retry logic
         for i in 1..=5 {
             let message = DchatMessage::ChannelMessage {
                 sender: identity.user_id.clone(),
@@ -1468,8 +1490,26 @@ async fn run_user_node(
                 encrypted_payload: format!("Test message {} from {}", i, display_name).into_bytes(),
             };
             
-            network.publish_to_channel("global", &message)?;
-            info!("📤 Sent test message #{}", i);
+            // Retry up to 3 times if publish fails
+            let mut attempts = 0;
+            loop {
+                match network.publish_to_channel("global", &message) {
+                    Ok(_) => {
+                        info!("📤 Sent test message #{}", i);
+                        break;
+                    }
+                    Err(e) if attempts < 3 => {
+                        attempts += 1;
+                        warn!("⚠️  Publish attempt {} failed: {}, retrying in 2s...", attempts, e);
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                    }
+                    Err(e) => {
+                        error!("❌ Failed to publish message after {} attempts: {}", attempts + 1, e);
+                        return Err(e.into());
+                    }
+                }
+            }
+            
             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         }
         
