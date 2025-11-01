@@ -254,9 +254,9 @@ services:
       - DCHAT_NODE_ID=relay3
       - DCHAT_RELAY_ID=relay3
       - DCHAT_LISTEN_ADDR=0.0.0.0:7080
-      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080,relay2:7080
+      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080
       - DCHAT_RPC_ADDR=0.0.0.0:7081
-      - DCHAT_METRICS_ADDR=0.0.0.0:9102
+      - DCHAT_METRICS_ADDR=0.0.0.0:9100
       - DCHAT_RELAY_STAKE=100
     command: relay --listen 0.0.0.0:7080 --stake 1000
     ports:
@@ -270,11 +270,6 @@ services:
     depends_on:
       - relay1
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7081/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   relay4:
     build:
@@ -288,9 +283,9 @@ services:
       - DCHAT_NODE_ID=relay4
       - DCHAT_RELAY_ID=relay4
       - DCHAT_LISTEN_ADDR=0.0.0.0:7080
-      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080,relay2:7080
+      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080
       - DCHAT_RPC_ADDR=0.0.0.0:7081
-      - DCHAT_METRICS_ADDR=0.0.0.0:9103
+      - DCHAT_METRICS_ADDR=0.0.0.0:9100
       - DCHAT_RELAY_STAKE=100
     command: relay --listen 0.0.0.0:7080 --stake 1000
     ports:
@@ -304,11 +299,6 @@ services:
     depends_on:
       - relay1
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7081/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   relay5:
     build:
@@ -322,9 +312,9 @@ services:
       - DCHAT_NODE_ID=relay5
       - DCHAT_RELAY_ID=relay5
       - DCHAT_LISTEN_ADDR=0.0.0.0:7080
-      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080,relay2:7080
+      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080
       - DCHAT_RPC_ADDR=0.0.0.0:7081
-      - DCHAT_METRICS_ADDR=0.0.0.0:9104
+      - DCHAT_METRICS_ADDR=0.0.0.0:9100
       - DCHAT_RELAY_STAKE=100
     command: relay --listen 0.0.0.0:7080 --stake 1000
     ports:
@@ -338,11 +328,6 @@ services:
     depends_on:
       - relay1
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7081/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   relay6:
     build:
@@ -356,9 +341,9 @@ services:
       - DCHAT_NODE_ID=relay6
       - DCHAT_RELAY_ID=relay6
       - DCHAT_LISTEN_ADDR=0.0.0.0:7080
-      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080,relay2:7080
+      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080
       - DCHAT_RPC_ADDR=0.0.0.0:7081
-      - DCHAT_METRICS_ADDR=0.0.0.0:9105
+      - DCHAT_METRICS_ADDR=0.0.0.0:9100
       - DCHAT_RELAY_STAKE=100
     command: relay --listen 0.0.0.0:7080 --stake 1000
     ports:
@@ -372,11 +357,6 @@ services:
     depends_on:
       - relay1
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7081/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   relay7:
     build:
@@ -390,9 +370,9 @@ services:
       - DCHAT_NODE_ID=relay7
       - DCHAT_RELAY_ID=relay7
       - DCHAT_LISTEN_ADDR=0.0.0.0:7080
-      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080,relay2:7080
+      - DCHAT_BOOTSTRAP_PEERS=validator1:7070,relay1:7080
       - DCHAT_RPC_ADDR=0.0.0.0:7081
-      - DCHAT_METRICS_ADDR=0.0.0.0:9106
+      - DCHAT_METRICS_ADDR=0.0.0.0:9100
       - DCHAT_RELAY_STAKE=100
     command: relay --listen 0.0.0.0:7080 --stake 1000
     ports:
@@ -406,11 +386,6 @@ services:
     depends_on:
       - relay1
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7081/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   # ============================================================================
   # USER NODES (3 nodes for end-user communication)
@@ -468,7 +443,7 @@ services:
       - DCHAT_LISTEN_ADDR=0.0.0.0:7110
       - DCHAT_BOOTSTRAP_PEERS=relay4:7080,relay5:7080,relay1:7080
       - DCHAT_RPC_ADDR=0.0.0.0:7111
-      - DCHAT_METRICS_ADDR=0.0.0.0:9111
+      - DCHAT_METRICS_ADDR=0.0.0.0:9110
     command: user --username user2
     ports:
       - "7112:7110"
@@ -505,7 +480,7 @@ services:
       - DCHAT_LISTEN_ADDR=0.0.0.0:7110
       - DCHAT_BOOTSTRAP_PEERS=relay6:7080,relay7:7080,relay2:7080
       - DCHAT_RPC_ADDR=0.0.0.0:7111
-      - DCHAT_METRICS_ADDR=0.0.0.0:9112
+      - DCHAT_METRICS_ADDR=0.0.0.0:9110
     command: user --username user3
     ports:
       - "7114:7110"
@@ -537,7 +512,7 @@ services:
       - '--storage.tsdb.path=/prometheus'
       - '--web.enable-lifecycle'
     ports:
-      - "9095:9090"
+      - "9090:9090"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus

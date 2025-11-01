@@ -59,8 +59,8 @@ SKIP_NGINX=0
 SKIP_SSL=0
 
 # Domain configuration for SSL
-DOMAIN="rpc.webnetcore.top"
-SSL_EMAIL="admin@webnetcore.top"  # Change this to your email
+DOMAIN="schikuno.top"
+SSL_EMAIL="admin@schikuno.top"  # Change this to your email
 
 # System requirements
 MIN_RAM_GB=4
