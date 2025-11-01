@@ -1394,14 +1394,51 @@ async fn run_user_node(
     network.start().await?;
     info!("✓ Network initialized (peer_id: {})", peer_id);
     
-    // TODO: Connect to bootstrap peers
+    // Connect to bootstrap peers and wait for connections
+    let mut peer_count = 0;
     if !bootstrap_peers.is_empty() {
-        info!("Bootstrap peers provided: {:?}", bootstrap_peers);
+        info!("Connecting to {} bootstrap peer(s)...", bootstrap_peers.len());
+        for peer_addr in &bootstrap_peers {
+            match peer_addr.parse() {
+                Ok(multiaddr) => {
+                    match network.dial(multiaddr) {
+                        Ok(_) => info!("✓ Dialing bootstrap peer: {}", peer_addr),
+                        Err(e) => warn!("⚠ Failed to dial {}: {}", peer_addr, e),
+                    }
+                }
+                Err(e) => warn!("⚠ Invalid multiaddr {}: {}", peer_addr, e),
+            }
+        }
+        
+        // Wait for peer connections (bootstrap + mDNS discovery)
+        info!("Waiting for peer connections (15s)...");
+        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(15);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(
+                tokio::time::Duration::from_secs(1),
+                network.next_event()
+            ).await {
+                Ok(Some(NetworkEvent::PeerConnected(peer_id))) => {
+                    peer_count += 1;
+                    info!("✓ Peer connected: {} (total: {})", peer_id, peer_count);
+                }
+                Ok(Some(_event)) => {
+                    // Other network events (peer discovered, etc.)
+                }
+                _ => {}
+            }
+        }
+        info!("✓ Bootstrap complete, {} peer(s) connected", peer_count);
     }
     
     // Subscribe to channels
     network.subscribe_to_channel("global").ok();
     info!("✓ Subscribed to #global channel");
+    
+    // Wait for gossipsub mesh to form after subscription
+    info!("Waiting 5s for gossipsub mesh formation...");
+    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    info!("✓ Mesh formation complete");
     
     // Initialize storage
     let db_config = DatabaseConfig::default();
