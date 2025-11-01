@@ -74,15 +74,17 @@ impl DchatBehavior {
         let mdns_config = mdns::Config::default();
         let mdns = mdns::tokio::Behaviour::new(mdns_config, local_peer_id)?;
         
-        // Gossipsub configuration - relaxed mesh for small networks (2 users)
+        // Gossipsub configuration - flood publishing for 2-user networks
         let gossipsub_config = gossipsub::ConfigBuilder::default()
             .heartbeat_interval(Duration::from_secs(1))
-            .validation_mode(gossipsub::ValidationMode::Strict)
+            .validation_mode(gossipsub::ValidationMode::Permissive) // Less strict for testing
             .message_id_fn(message_id_fn)
-            .mesh_outbound_min(1) // Min outbound connections
-            .mesh_n_low(1)        // Allow mesh with just 1 peer
-            .mesh_n(2)            // Target 2 peers in mesh
-            .mesh_n_high(3)       // Cap at 3 peers
+            .mesh_outbound_min(0) // No minimum for flood mode
+            .mesh_n_low(0)        // No mesh required
+            .mesh_n(1)            // Target 1 peer
+            .mesh_n_high(2)       // Cap at 2 peers
+            .flood_publish(true)  // Send to ALL connected peers (not just mesh)
+            .do_px()              // Enable peer exchange
             .build()
             .map_err(|e| format!("Gossipsub config error: {}", e))?;
         

@@ -1435,10 +1435,21 @@ async fn run_user_node(
     network.subscribe_to_channel("global").ok();
     info!("✓ Subscribed to #global channel");
     
-    // Wait for gossipsub mesh to form after subscription
-    info!("Waiting 5s for gossipsub mesh formation...");
-    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-    info!("✓ Mesh formation complete");
+    // Process network events during subscription exchange (gossipsub needs active event loop)
+    info!("Waiting 15s for gossipsub subscription exchange...");
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(15);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(
+            tokio::time::Duration::from_secs(1),
+            network.next_event()
+        ).await {
+            Ok(Some(_event)) => {
+                // Process all network events including gossipsub subscriptions
+            }
+            _ => {}
+        }
+    }
+    info!("✓ Subscription exchange complete");
     
     // Initialize storage
     let db_config = DatabaseConfig::default();
