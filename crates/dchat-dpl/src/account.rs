@@ -113,25 +113,14 @@ impl<'info, T> Account<'info, T> {
     }
 }
 
-impl<'info, T> core::ops::Deref for Account<'info, T>
+impl<'info, T> Account<'info, T>
 where
     T: AccountDeserialize,
 {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        // In production, this would deserialize from info.data
-        unimplemented!("Account deref requires runtime")
-    }
-}
-
-impl<'info, T> core::ops::DerefMut for Account<'info, T>
-where
-    T: AccountDeserialize + AccountSerialize,
-{
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        // In production, this would deserialize from info.data
-        unimplemented!("Account deref_mut requires runtime")
+    /// Try to deserialize the account data
+    pub fn try_load(&self) -> Result<T, DplError> {
+        let mut data = self.info.data;
+        T::try_deserialize(&mut data)
     }
 }
 

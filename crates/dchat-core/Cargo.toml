@@ -17,6 +17,11 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 bytes = { workspace = true }
 toml = "0.8"
+prometheus = { version = "0.13", optional = true }
+
+[features]
+default = []
+metrics = ["prometheus"]
 
 [dev-dependencies]
 tokio-test = "0.4"
