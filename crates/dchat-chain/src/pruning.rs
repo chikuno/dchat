@@ -587,6 +587,11 @@ impl PruningManager {
         self.current_state_size > self.config.max_state_size
     }
 
+    /// Get count of messages pending pruning
+    pub fn pending_pruning_count(&self) -> usize {
+        self.pending_pruning.len()
+    }
+
     /// Update state size
     pub fn update_state_size(&mut self, size: u64) {
         self.current_state_size = size;

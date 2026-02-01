@@ -20,6 +20,7 @@
 //! - Deterministic computation for consensus agreement
 
 use crate::hardened_consensus::threshold_normalization::EPOCH_LENGTH_BLOCKS;
+use crate::hardened_consensus::vrf_committees::GeographicRegion;
 use dchat_core::types::UserId;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -70,6 +71,15 @@ pub struct RegisteredRelay {
     pub registered_at_block: u64,
     /// Whether relay is currently suspended/jailed/slashed
     pub is_suspended: bool,
+    /// Ed25519 public key for VRF committee selection (if registered on-chain)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_key: Option<[u8; 32]>,
+    /// Geographic region for diversity requirements
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<GeographicRegion>,
+    /// Autonomous System Number for eclipse attack prevention
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asn: Option<u32>,
 }
 
 /// A verifiable work event from a relay

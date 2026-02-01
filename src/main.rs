@@ -94,6 +94,18 @@ use dchat_chain::chain::slashing::detector::SlashingDetector;
 use dchat_chain::insurance_fund::{FundConfiguration, InsuranceFund};
 use dchat_chain::pruning::{NodeType as PruningNodeType, PruningConfig, PruningManager};
 
+// Security infrastructure - GeoIP and vote persistence (dchat-blockchain crate)
+use dchat_blockchain::geoip::GeoIPManager;
+use dchat_blockchain::vote_persistence::{PoRWVoteRecord, VotePersistence};
+
+// Block hierarchy infrastructure - data availability and fraud proofs
+use dchat_blockchain::block_hierarchy::{
+    DataAvailabilityCommitment, FraudDetector, FraudProofBuilder, FraudType, DA_CHUNK_SIZE,
+};
+
+// Testnet faucet infrastructure
+use dchat_blockchain::faucet::{Faucet, FaucetConfig};
+
 use parking_lot::RwLock as ParkingRwLock;
 
 use clap::{Parser, Subcommand};
@@ -7252,9 +7264,16 @@ async fn run_validator_node(
     // Create shutdown channel
     let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
 
-    // Start health check server
-    let health_handle = start_health_server(&health_addr, shutdown_tx.subscribe())?;
-    info!("✓ Health server listening on {}", health_addr);
+    // Initialize readiness state for health checks (validators need at least 2 peers for consensus)
+    let readiness_state = Arc::new(ReadinessState::new(2));
+
+    // Start health check server with readiness tracking
+    let health_handle = start_health_server_with_readiness(
+        &health_addr,
+        shutdown_tx.subscribe(),
+        Some(readiness_state.clone()),
+    )?;
+    info!("✓ Health server listening on {} (with readiness tracking)", health_addr);
 
     // Start metrics server
     let peer_metrics = Arc::new(PeerMetrics::new());
@@ -7837,10 +7856,35 @@ async fn run_validator_node(
         }
     }
 
-    // Log bridge infrastructure status (use the variables to avoid warnings)
-    let _ = (&dchat_bridge_manager, &cross_chain_sync, &solana_bridge);
+    // Spawn the CrossChainSyncManager background processing loop
+    let _sync_loop_handle = if let Some(ref sync_mgr) = cross_chain_sync {
+        let sync_mgr_clone = Arc::clone(sync_mgr);
+        let shutdown_signal = shutdown_tx.subscribe();
+        Some(tokio::spawn(async move {
+            tokio::select! {
+                result = sync_mgr_clone.run() => {
+                    if let Err(e) = result {
+                        error!("Cross-chain sync manager error: {}", e);
+                    }
+                }
+                _ = async {
+                    let mut rx = shutdown_signal;
+                    let _ = rx.recv().await;
+                } => {
+                    info!("Cross-chain sync manager shutting down");
+                }
+            }
+        }))
+    } else {
+        None
+    };
+    if cross_chain_sync.is_some() {
+        info!("   ✓ Cross-chain sync processing loop spawned");
+    }
+
     if config.bridge.enabled {
-        info!("✓ Cross-chain bridge infrastructure initialized");
+        readiness_state.set_bridge_ready(true);
+        info!("✓ Cross-chain bridge infrastructure initialized and active");
     }
 
     // ========================================
@@ -7891,9 +7935,203 @@ async fn run_validator_node(
     let pruning_manager = Arc::new(std::sync::RwLock::new(PruningManager::new(pruning_config)));
     info!("   ✓ Pruning manager ready");
 
-    // Log security infrastructure status (use the variables to avoid warnings)
-    let _ = (&staking_enforcer, &slashing_detector, &balance_tracker, &insurance_fund, &pruning_manager);
+    // Spawn background pruning loop (runs hourly)
+    let _pruning_handle = {
+        let pruning_mgr_clone = Arc::clone(&pruning_manager);
+        let shutdown_pruning = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3600)); // Hourly
+            let mut shutdown_rx = shutdown_pruning;
+            info!("🗑️ Pruning background task started (hourly cleanup)");
+
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        // Check if emergency pruning is needed (non-async check)
+                        let needs_emergency = {
+                            if let Ok(mgr) = pruning_mgr_clone.read() {
+                                mgr.needs_emergency_pruning()
+                            } else {
+                                false
+                            }
+                        };
+
+                        if needs_emergency {
+                            info!("🚨 Emergency pruning triggered (state size limit reached)");
+                        }
+
+                        // Execute pruning - note: PruningManager::execute_pruning is async but the
+                        // actual implementation may not require holding the lock during I/O.
+                        // Check if there's pending work first
+                        let pending_count = {
+                            if let Ok(mgr) = pruning_mgr_clone.read() {
+                                mgr.pending_pruning_count()
+                            } else {
+                                0
+                            }
+                        };
+
+                        if pending_count > 0 || needs_emergency {
+                            debug!("🗑️ Executing pruning cycle ({} pending, emergency={})",
+                                pending_count, needs_emergency);
+
+                            // Execute pruning (requires write lock)
+                            // Use block_in_place since std::sync::RwLock can't span await points
+                            let mgr_clone = Arc::clone(&pruning_mgr_clone);
+                            let result = tokio::task::block_in_place(|| {
+                                let rt = tokio::runtime::Handle::current();
+                                rt.block_on(async {
+                                    if let Ok(mut mgr) = mgr_clone.write() {
+                                        Some(mgr.execute_pruning().await)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            });
+
+                            match result {
+                                Some(Ok(stats)) => {
+                                    info!("🗑️ Pruned {} messages, freed {} bytes in {}ms",
+                                        stats.messages_pruned, stats.bytes_freed, stats.duration_ms);
+                                }
+                                Some(Err(e)) => {
+                                    warn!("Pruning failed: {}", e);
+                                }
+                                None => {
+                                    debug!("Could not acquire pruning manager lock");
+                                }
+                            }
+                        } else {
+                            debug!("🗑️ Pruning cycle check (no pending work)");
+                        }
+                    }
+                    _ = shutdown_rx.recv() => {
+                        info!("Pruning background task shutting down");
+                        break;
+                    }
+                }
+            }
+        })
+    };
+
+    // ========================================
+    // Advanced Security Infrastructure
+    // ========================================
+
+    // Initialize GeoIPManager for eclipse attack prevention
+    let geoip_manager: Option<Arc<GeoIPManager>> = if config.geoip.enabled {
+        info!("🌍 Initializing GeoIP manager for eclipse attack prevention...");
+        let result = if let Some(ref city_path) = config.geoip.city_db_path {
+            if let Some(ref asn_path) = config.geoip.asn_db_path {
+                GeoIPManager::with_asn_database(city_path, asn_path)
+            } else {
+                GeoIPManager::new(city_path)
+            }
+        } else {
+            GeoIPManager::with_default_path()
+        };
+
+        match result {
+            Ok(manager) => {
+                info!("   ✓ GeoIP manager ready (ASN diversity: min {})", config.geoip.min_asn_diversity);
+                Some(Arc::new(manager))
+            }
+            Err(e) => {
+                warn!("   ⚠ GeoIP initialization failed: {} - eclipse attack prevention disabled", e);
+                None
+            }
+        }
+    } else {
+        debug!("GeoIP manager disabled (config.geoip.enabled = false)");
+        None
+    };
+
+    // Initialize VotePersistence for consensus audit trail
+    let vote_persistence: Option<Arc<VotePersistence>> = if config.vote_persistence.enabled {
+        if let Some(ref db_url) = config.vote_persistence.database_url {
+            info!("📊 Initializing vote persistence for consensus audit trail...");
+            match VotePersistence::new(db_url).await {
+                Ok(persistence) => {
+                    // Initialize database schema
+                    if let Err(e) = persistence.initialize_schema().await {
+                        warn!("   ⚠ Vote persistence schema init failed: {}", e);
+                        None
+                    } else {
+                        info!("   ✓ Vote persistence ready (retention: {} days)", config.vote_persistence.retention_days);
+                        Some(Arc::new(persistence))
+                    }
+                }
+                Err(e) => {
+                    warn!("   ⚠ Vote persistence connection failed: {} - audit trail disabled", e);
+                    None
+                }
+            }
+        } else {
+            warn!("Vote persistence enabled but no database_url configured");
+            None
+        }
+    } else {
+        debug!("Vote persistence disabled (config.vote_persistence.enabled = false)");
+        None
+    };
+
+    // Initialize Faucet for testnet token distribution (testnet only)
+    let faucet: Option<Arc<std::sync::RwLock<Faucet>>> =
+        if config.faucet.enabled && config.faucet.testnet_only {
+            // Additional mainnet protection - check if we're on mainnet
+            let is_mainnet = config.network.bootstrap_peers.iter()
+                .any(|p| p.contains("mainnet") || p.contains("dchat.network"));
+            
+            if is_mainnet {
+                warn!("🚫 Faucet disabled: detected mainnet configuration with testnet_only=true");
+                None
+            } else if let Some(ref rpc_url) = chain_rpc {
+                info!("💧 Initializing testnet faucet...");
+                let faucet_config = FaucetConfig {
+                    drip_amount: config.faucet.drip_amount,
+                    cooldown_hours: config.faucet.cooldown_hours,
+                    daily_limit: config.faucet.daily_limit,
+                    require_captcha: config.faucet.require_captcha,
+                    testnet_only: config.faucet.testnet_only,
+                    hcaptcha_secret: config.faucet.hcaptcha_secret.clone(),
+                    max_requests_per_ip: config.faucet.max_requests_per_ip,
+                    cleanup_interval_hours: 24,
+                };
+                
+                // Create CurrencyChainClient for faucet operations
+                let faucet_currency_config = CurrencyChainConfig {
+                    rpc_url: rpc_url.clone(),
+                    ..Default::default()
+                };
+                
+                match CurrencyChainClient::new(faucet_currency_config) {
+                    Ok(currency_chain) => {
+                        let faucet_instance = Faucet::new(faucet_config, Arc::new(currency_chain), None);
+                        info!("   ✓ Testnet faucet ready (drip: {} motes, cooldown: {}h)", 
+                            config.faucet.drip_amount, config.faucet.cooldown_hours);
+                        Some(Arc::new(std::sync::RwLock::new(faucet_instance)))
+                    }
+                    Err(e) => {
+                        warn!("   ⚠ Faucet currency chain connection failed: {} - faucet disabled", e);
+                        None
+                    }
+                }
+            } else {
+                warn!("   ⚠ Faucet requires chain RPC - skipped (no chain_rpc configured)");
+                None
+            }
+        } else {
+            debug!("Faucet disabled (enabled={}, testnet_only={})",
+                config.faucet.enabled, config.faucet.testnet_only);
+            None
+        };
+
     info!("✓ Security infrastructure initialized");
+    info!("   Components ready: staking_enforcer={}, slashing_detector=yes, balance_tracker=yes",
+        if staking_enforcer.is_some() { "yes" } else { "no" });
+    info!("   Infrastructure: insurance_fund=yes, pruning_manager=yes, geoip={}, vote_persistence={}",
+        if geoip_manager.is_some() { "yes" } else { "no" },
+        if vote_persistence.is_some() { "yes" } else { "no" });
 
     // Wait for initial peer connections (critical for consensus)
     // Need at least 2f+1 validators connected for consensus
@@ -7905,6 +8143,11 @@ async fn run_validator_node(
 
     // Minimum peers needed (don't count self, need required_signatures - 1 peers)
     let min_peers_needed = required_signatures.saturating_sub(1);
+
+    // ASN diversity tracking for eclipse attack prevention
+    let asn_peer_counts: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    let asn_peer_counts = std::sync::RwLock::new(asn_peer_counts);
+    const MAX_PEERS_PER_ASN: usize = 5; // Warn if too many peers from same datacenter/network
 
     while tokio::time::Instant::now() < connection_deadline {
         // Get the next event, releasing the lock after the event is received
@@ -7926,6 +8169,45 @@ async fn run_validator_node(
                     connected_validators + 1,
                     required_signatures
                 );
+
+                // SECURITY: GeoIP verification for eclipse attack prevention
+                if let Some(ref geoip) = geoip_manager {
+                    let endpoint_str = format!("{:?}", endpoint);
+                    if let Some(ip_str) = extract_ip_from_multiaddr(&endpoint_str) {
+                        if let Ok(ip_addr) = ip_str.parse::<std::net::IpAddr>() {
+                            match geoip.lookup(ip_addr) {
+                                Ok(location) => {
+                                    // Log geographic distribution
+                                    info!("   GeoIP: Validator from {} (ASN: {})",
+                                        location.country, location.asn.unwrap_or(0));
+
+                                    // Track ASN diversity for eclipse attack prevention
+                                    if let Some(asn) = location.asn {
+                                        let mut asn_counts = asn_peer_counts.write().unwrap();
+                                        let count = asn_counts.entry(asn).or_insert(0);
+                                        *count += 1;
+
+                                        if *count > MAX_PEERS_PER_ASN {
+                                            warn!("⚠️  Eclipse attack risk: {} peers from ASN {} (max: {})",
+                                                *count, asn, MAX_PEERS_PER_ASN);
+                                        }
+
+                                        // Log diversity stats periodically
+                                        let unique_asns = asn_counts.len();
+                                        let total_peers: usize = asn_counts.values().sum();
+                                        if total_peers % 5 == 0 {
+                                            info!("   ASN diversity: {} unique ASNs across {} peers",
+                                                unique_asns, total_peers);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    debug!("GeoIP lookup failed for {}: {}", ip_str, e);
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // Update peer registry
                 peer_registry_arc
@@ -8046,6 +8328,27 @@ async fn run_validator_node(
     let public_key_bytes = validator_key.public_key_bytes();
     let ed25519_pubkey = Ed25519VerifyingKey::from_bytes(&public_key_bytes)
         .map_err(|e| Error::crypto(format!("Invalid public key: {}", e)))?;
+
+    // MAINNET SECURITY: Verify on-chain stake via staking enforcer (now that we have verifying key)
+    if let Some(ref enforcer) = staking_enforcer {
+        info!("🔐 Verifying on-chain validator stake via RPC...");
+        match enforcer.verify_validator_stake(&ed25519_pubkey).await {
+            Ok(true) => {
+                info!("   ✓ On-chain stake verified - validator authorized");
+            }
+            Ok(false) => {
+                return Err(Error::validation(
+                    "Insufficient on-chain stake - cannot start validator. \
+                     Please stake the required amount via the Currency Chain."
+                ));
+            }
+            Err(e) => {
+                // Log but continue - don't halt for RPC errors (may be temporarily unavailable)
+                debug!("Stake verification RPC error (continuing): {}", e);
+                warn!("   ⚠ On-chain stake verification failed: {} - continuing with local validation", e);
+            }
+        }
+    }
 
     // Create validator user ID - derive deterministic UUID from public key
     let validator_user_id = {
@@ -8435,6 +8738,14 @@ async fn run_validator_node(
         let _enable_two_stage_finality = config.features.enable_two_stage_finality;
         // Clone validator public key for slot leader selection
         let our_validator_pubkey = validator_public_key_bytes;
+        // Clone bridge manager for cross-chain finality proofs
+        let bridge_manager_consensus = dchat_bridge_manager.clone();
+        let bridge_config_consensus = config.bridge.clone();
+        // Clone security infrastructure for consensus integration
+        let slashing_detector_consensus = Arc::clone(&slashing_detector);
+        let balance_tracker_consensus = Arc::clone(&balance_tracker);
+        let vote_persistence_consensus = vote_persistence.clone();
+        let staking_enforcer_consensus = staking_enforcer.clone();
 
         tokio::spawn(async move {
             info!("Starting consensus engine with BFT verification and FULL state validation...");
@@ -8660,6 +8971,25 @@ async fn run_validator_node(
                         let is_leader = slot_leader_selector.is_leader(current_slot, &vrf_public_key) || is_vrf_leader;
 
                         if is_producer && is_leader {
+                            // SECURITY: Verify on-chain stake before block production
+                            if let Some(ref enforcer) = staking_enforcer_consensus {
+                                if let Ok(verifying_key) = ed25519_dalek::VerifyingKey::from_bytes(&our_validator_pubkey) {
+                                    match enforcer.can_propose_block(&verifying_key).await {
+                                        Ok(true) => {
+                                            debug!("✓ On-chain stake verified for block production");
+                                        }
+                                        Ok(false) => {
+                                            warn!("⚠️ Insufficient on-chain stake for block production - skipping slot {}", current_slot);
+                                            continue;
+                                        }
+                                        Err(e) => {
+                                            // Log but continue - don't halt block production for RPC errors
+                                            debug!("Stake verification RPC error (continuing): {}", e);
+                                        }
+                                    }
+                                }
+                            }
+
                             let block_height = shared_block_height.fetch_add(1, Ordering::SeqCst) + 1;
                             info!("📦 Producing block #{} (slot {}) - WE ARE THE LEADER", block_height, current_slot);
 
@@ -8859,6 +9189,30 @@ async fn run_validator_node(
                             state_root_bytes.copy_from_slice(&state_root[..32.min(state_root.len())]);
                             block.state_root = BlockHash::from(state_root_bytes);
 
+                            // Generate Data Availability commitment for light client verification
+                            // This enables light clients to verify block data without downloading entire block
+                            let block_bytes = block.consensus_hash().as_bytes().to_vec();
+                            let da_commitment = match DataAvailabilityCommitment::from_data(
+                                block_height,
+                                &block_bytes,
+                                DA_CHUNK_SIZE,
+                            ) {
+                                Ok(commitment) => {
+                                    debug!("  • DA commitment generated: chunks={}, erasure={}+{}", 
+                                        commitment.chunk_count, 
+                                        commitment.erasure_data_shards,
+                                        commitment.erasure_parity_shards);
+                                    Some(commitment)
+                                }
+                                Err(e) => {
+                                    warn!("  ⚠ DA commitment generation failed: {:?} - light client verification unavailable", e);
+                                    None
+                                }
+                            };
+                            
+                            // Store DA commitment hash for block header extension (future use)
+                            let _da_hash = da_commitment.as_ref().map(|c| c.hash());
+
                             // 1. Notify Consensus Integration
                             let block_hash = block.calculate_hash();
                             match hardened_consensus.process_block(block_height, block_hash) {
@@ -8897,20 +9251,29 @@ async fn run_validator_node(
                                                 let relay_id_hash = blake3::hash(relay.relay_id.as_bytes());
                                                 let relay_id = VrfRelayId(*relay_id_hash.as_bytes());
 
-                                                // Create a deterministic public key from relay_id for VRF
-                                                // In production, this would come from actual relay registration
-                                                let key_bytes: [u8; 32] = *relay_id_hash.as_bytes();
-                                                let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&key_bytes).ok()?;
-
-                                                // Assign geographic region based on hash for diversity
-                                                let region = match idx % 6 {
-                                                    0 => VrfRegion::NorthAmerica,
-                                                    1 => VrfRegion::Europe,
-                                                    2 => VrfRegion::Asia,
-                                                    3 => VrfRegion::SouthAmerica,
-                                                    4 => VrfRegion::Africa,
-                                                    _ => VrfRegion::Oceania,
+                                                // Use actual relay public key if registered, otherwise derive from relay_id
+                                                let verifying_key = if let Some(pk) = relay.public_key {
+                                                    ed25519_dalek::VerifyingKey::from_bytes(&pk).ok()?
+                                                } else {
+                                                    // Fallback to derived key for legacy/unregistered relays
+                                                    let key_bytes: [u8; 32] = *relay_id_hash.as_bytes();
+                                                    ed25519_dalek::VerifyingKey::from_bytes(&key_bytes).ok()?
                                                 };
+
+                                                // Use actual region from registration or derive from index
+                                                let region = relay.region.unwrap_or_else(|| {
+                                                    match idx % 6 {
+                                                        0 => VrfRegion::NorthAmerica,
+                                                        1 => VrfRegion::Europe,
+                                                        2 => VrfRegion::Asia,
+                                                        3 => VrfRegion::SouthAmerica,
+                                                        4 => VrfRegion::Africa,
+                                                        _ => VrfRegion::Oceania,
+                                                    }
+                                                });
+
+                                                // Use actual ASN from registration for eclipse attack prevention
+                                                let asn = relay.asn.unwrap_or((idx as u32) % 1000 + 1);
 
                                                 Some(VrfRelayEligibility {
                                                     relay_id,
@@ -8918,7 +9281,7 @@ async fn run_validator_node(
                                                     stake: relay.stake,
                                                     uptime_score: 0.95, // Default high uptime for active relays
                                                     region,
-                                                    asn: (idx as u32) % 1000 + 1, // Simulated ASN diversity
+                                                    asn,
                                                     ip_prefix: [(idx as u8) % 255, 0, 0],
                                                     operator_id: VrfHash::from(*blake3::hash(
                                                         relay.operator.0.as_bytes()
@@ -9098,6 +9461,26 @@ async fn run_validator_node(
                                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                             }
 
+                            // If BFT threshold reached and bridge is enabled, initiate cross-chain finality proof
+                            if received_acks >= required_signatures && bridge_config_consensus.enabled {
+                                if let Some(ref bridge_mgr) = bridge_manager_consensus {
+                                    if let Ok(mut mgr) = bridge_mgr.write() {
+                                        // Initiate BLS finality proof aggregation for this block
+                                        let block_hash_hex = hex::encode(&block_hash);
+                                        if let Err(e) = mgr.initiate_bls_finality(
+                                            block_hash_hex.clone(),
+                                            block_height,
+                                            hex::encode(&block_hash),
+                                            received_acks as u32,
+                                        ) {
+                                            debug!("BLS finality initiation skipped for block {}: {}", block_height, e);
+                                        } else {
+                                            debug!("🔗 Initiated BLS finality proof for block #{}", block_height);
+                                        }
+                                    }
+                                }
+                            }
+
                             if received_acks < required_signatures {
                                 warn!("⚠️  Block #{} did not reach BFT threshold ({}/{} acks)",
                                     block_height, received_acks, required_signatures);
@@ -9144,6 +9527,17 @@ async fn run_validator_node(
                                     fault_list.len());
                             }
                         }
+
+                        // Report slashing detector statistics and prune old records
+                        {
+                            let slashing_stats = slashing_detector_consensus.get_stats();
+                            if slashing_stats.tracked_signatures > 0 {
+                                info!("   Slashing stats: {} signatures tracked, {} pending slashes",
+                                    slashing_stats.tracked_signatures, slashing_stats.pending_slashes);
+                            }
+                            // Prune old signature records (older than 24 hours)
+                            slashing_detector_consensus.prune_old_records();
+                        }
                     }
                 }
             }
@@ -9163,6 +9557,10 @@ async fn run_validator_node(
         let chain_block_time_secs = config.chain.block_time_secs;
         let shared_block_height_clone = Arc::clone(&shared_block_height_global);
         let authorized_validators_clone = Arc::clone(&authorized_validators);
+        // Clone slashing detector for double-sign detection in network handler
+        let slashing_detector_net = Arc::clone(&slashing_detector);
+        // Clone vote persistence for consensus audit trail
+        let vote_persistence_net = vote_persistence.clone();
         let mut shutdown = shutdown_tx.subscribe();
 
         tokio::spawn(async move {
@@ -9471,6 +9869,37 @@ async fn run_validator_node(
                                         continue;
                                     }
 
+                                    // SECURITY: Record signature with slashing detector for double-sign detection
+                                    {
+                                        // Create message hash for slashing record
+                                        let message_hash: [u8; 32] = blake3::hash(&block_hash).into();
+
+                                        // Record this signature - detector will flag if same validator
+                                        // already signed a different block at this height
+                                        if let Err(e) = slashing_detector_net.record_signature(
+                                            verifying_key.clone(),
+                                            block_height,
+                                            sig.clone(),
+                                            message_hash,
+                                        ) {
+                                            // This indicates a potential double-sign (slashable offense)
+                                            warn!("🚨 SLASHING: Double-sign detected for validator {} at height {}: {}",
+                                                hex::encode(&validator_id[..8]), block_height, e);
+                                            // Flag for slashing
+                                            let _ = slashing_detector_net.flag_for_slashing(
+                                                verifying_key.clone(),
+                                                dchat_chain::chain::slashing::detector::SlashableOffense::DoubleSigning {
+                                                    block_height,
+                                                    signature1: sig_bytes.to_vec(),
+                                                    signature2: vec![], // Previous signature stored in detector
+                                                    message1_hash: message_hash.to_vec(),
+                                                    message2_hash: vec![],
+                                                },
+                                            );
+                                            continue; // Reject this acknowledgment
+                                        }
+                                    }
+
                                     // Store valid acknowledgment
                                     let mut acks = block_acks_clone.lock().await;
                                     acks.entry(block_height)
@@ -9480,6 +9909,37 @@ async fn run_validator_node(
                                     let ack_count = acks.get(&block_height).map(|m| m.len()).unwrap_or(0);
                                     info!("✓ Acknowledgment verified for block #{} ({} total acks)",
                                         block_height, ack_count);
+
+                                    // AUDIT: Persist vote to database for transparency and slashing evidence
+                                    if let Some(ref persistence) = vote_persistence_net {
+                                        // Create PoRW vote record for database persistence
+                                        let vote_record = PoRWVoteRecord {
+                                            id: uuid::Uuid::new_v4(),
+                                            block_hash: format!("{}", block_height),
+                                            validator_pubkey: validator_id.to_vec(),
+                                            vote_weight: 1.0,
+                                            stake_amount: 0, // Would need stake lookup from enforcer
+                                            delivery_count: ack_count as i64,
+                                            uptime_hours: 0.0,
+                                            reputation_score: 1.0,
+                                            seniority_days: 0,
+                                            region: "unknown".to_string(),
+                                            signature: signature.to_vec(),
+                                            timestamp: chrono::Utc::now(),
+                                            is_finalized: false,
+                                        };
+
+                                        // Store asynchronously to avoid blocking consensus
+                                        let persistence_clone = Arc::clone(persistence);
+                                        tokio::spawn(async move {
+                                            if let Err(e) = persistence_clone.store_porw_vote(&vote_record).await {
+                                                debug!("Vote persistence failed: {}", e);
+                                            } else {
+                                                debug!("📝 Vote persisted: block={}, validator={}",
+                                                    vote_record.block_hash, hex::encode(&vote_record.validator_pubkey[..8]));
+                                            }
+                                        });
+                                    }
 
                                     // Cleanup old acknowledgments (keep last 100 blocks)
                                     if block_height > 100 {
@@ -16650,4 +17110,81 @@ async fn run_qge_revocation_command(action: QgeRevocationAction) -> Result<()> {
             Ok(())
         }
     }
+}
+
+// ============================================================================
+// Fraud Detection Infrastructure
+// ============================================================================
+
+/// Performs fraud detection on a miniblock using the FraudDetector.
+/// Returns a list of detected fraud types. Empty list means no fraud detected.
+///
+/// # Arguments
+/// * `header` - The miniblock header to check
+/// * `body` - The miniblock body to check
+///
+/// # Returns
+/// * `Vec<FraudType>` - List of detected fraud types (empty = valid)
+#[allow(dead_code)]
+fn detect_miniblock_fraud(
+    header: &dchat_blockchain::block_hierarchy::MiniblockHeader,
+    body: &dchat_blockchain::block_hierarchy::MiniblockBody,
+) -> Vec<FraudType> {
+    FraudDetector::check_miniblock(header, body)
+}
+
+/// Generates a fraud proof for a detected fraud in a miniblock.
+/// This proof can be submitted to the network for slashing the malicious validator.
+///
+/// # Arguments
+/// * `block_height` - Height of the block containing the fraud
+/// * `subblock_index` - Index of the subblock within the block
+/// * `miniblock_index` - Index of the miniblock within the subblock
+/// * `header` - The fraudulent miniblock header
+/// * `body` - The fraudulent miniblock body
+/// * `fraud_type` - The type of fraud detected
+///
+/// # Returns
+/// * `Option<MiniblockFraudProof>` - The fraud proof if generation succeeds
+#[allow(dead_code)]
+fn generate_fraud_proof(
+    block_height: u64,
+    subblock_index: u16,
+    miniblock_index: u16,
+    header: &dchat_blockchain::block_hierarchy::MiniblockHeader,
+    body: &dchat_blockchain::block_hierarchy::MiniblockBody,
+    fraud_type: FraudType,
+) -> Option<dchat_blockchain::block_hierarchy::MiniblockFraudProof> {
+    let builder = FraudProofBuilder::new(block_height, subblock_index, miniblock_index);
+    builder.build_commitment_mismatch(header, body, fraud_type).ok()
+}
+
+/// Validates all miniblocks in a block for fraud.
+/// Returns true if no fraud is detected, false otherwise.
+///
+/// # Arguments
+/// * `block` - The block to validate
+///
+/// # Returns
+/// * `(bool, Vec<(usize, usize, Vec<FraudType>)>)` - (is_valid, list of (subblock_idx, miniblock_idx, fraud_types))
+#[allow(dead_code)]
+fn validate_block_for_fraud(
+    block: &dchat_blockchain::block_hierarchy::Block,
+) -> (bool, Vec<(usize, usize, Vec<FraudType>)>) {
+    let mut all_valid = true;
+    let mut fraud_detections = Vec::new();
+
+    for (subblock_idx, subblock) in block.subblocks.iter().enumerate() {
+        for (miniblock_idx, miniblock) in subblock.miniblocks.iter().enumerate() {
+            if let Some(ref body) = miniblock.body {
+                let fraud_types = FraudDetector::check_miniblock(&miniblock.header, body);
+                if !fraud_types.is_empty() {
+                    all_valid = false;
+                    fraud_detections.push((subblock_idx, miniblock_idx, fraud_types));
+                }
+            }
+        }
+    }
+
+    (all_valid, fraud_detections)
 }

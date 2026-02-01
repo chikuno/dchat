@@ -436,6 +436,9 @@ impl RelayRegistryStore {
             stake,
             registered_at_block,
             is_suspended: false,
+            public_key: None,
+            region: None,
+            asn: None,
         };
 
         let mut relays = self.relays.write().unwrap();
@@ -525,6 +528,9 @@ impl RelayRegistryStore {
                     stake,
                     registered_at_block,
                     is_suspended,
+                    public_key: None,
+                    region: None,
+                    asn: None,
                 });
 
             // Update mutable fields

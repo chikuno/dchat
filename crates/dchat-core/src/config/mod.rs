@@ -46,6 +46,18 @@ pub struct Config {
     /// Cross-chain bridge infrastructure configuration
     #[serde(default)]
     pub bridge: BridgeConfig,
+
+    /// GeoIP configuration for eclipse attack prevention
+    #[serde(default)]
+    pub geoip: GeoIPConfig,
+
+    /// Vote persistence configuration for consensus audit trail
+    #[serde(default)]
+    pub vote_persistence: VotePersistenceConfig,
+
+    /// Testnet faucet configuration
+    #[serde(default)]
+    pub faucet: FaucetNodeConfig,
 }
 
 /// Chain timing configuration for epoch calculations
@@ -542,6 +554,106 @@ impl Default for SolanaBridgeNodeConfig {
     }
 }
 
+/// GeoIP configuration for eclipse attack prevention
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GeoIPConfig {
+    /// Enable GeoIP-based eclipse attack prevention
+    pub enabled: bool,
+
+    /// Path to MaxMind GeoLite2-City database
+    pub city_db_path: Option<String>,
+
+    /// Path to MaxMind GeoLite2-ASN database (optional, for ASN diversity)
+    pub asn_db_path: Option<String>,
+
+    /// Minimum number of unique ASNs required for relay connections
+    pub min_asn_diversity: usize,
+
+    /// Minimum geographic distance (km) between relays
+    pub min_geographic_distance_km: f64,
+}
+
+impl Default for GeoIPConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            city_db_path: None,
+            asn_db_path: None,
+            min_asn_diversity: 3,
+            min_geographic_distance_km: 100.0,
+        }
+    }
+}
+
+/// Vote persistence configuration for consensus audit trail
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VotePersistenceConfig {
+    /// Enable vote persistence to PostgreSQL
+    pub enabled: bool,
+
+    /// PostgreSQL connection string
+    pub database_url: Option<String>,
+
+    /// Days to retain votes before cleanup
+    pub retention_days: i64,
+}
+
+impl Default for VotePersistenceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            database_url: None,
+            retention_days: 90,
+        }
+    }
+}
+
+/// Testnet faucet configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FaucetNodeConfig {
+    /// Enable testnet faucet (should be false on mainnet)
+    pub enabled: bool,
+
+    /// Testnet-only enforcement (prevents enabling on mainnet)
+    pub testnet_only: bool,
+
+    /// Amount of tokens to drip per request (in motes)
+    pub drip_amount: u64,
+
+    /// Cooldown period in hours between requests from same address
+    pub cooldown_hours: u32,
+
+    /// Maximum requests per day globally
+    pub daily_limit: u32,
+
+    /// Require hCaptcha verification
+    pub require_captcha: bool,
+
+    /// hCaptcha secret key (load from env var for security)
+    pub hcaptcha_secret: Option<String>,
+
+    /// Maximum requests per IP per day
+    pub max_requests_per_ip: u32,
+}
+
+impl Default for FaucetNodeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            testnet_only: true,
+            drip_amount: 100_0000_0000, // 100 DCHAT
+            cooldown_hours: 24,
+            daily_limit: 10_000,
+            require_captcha: true,
+            hcaptcha_secret: None,
+            max_requests_per_ip: 5,
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -599,6 +711,9 @@ impl Default for Config {
             onion_routing: OnionRoutingConfig::default(),
             storage_provider: StorageProviderConfig::default(),
             bridge: BridgeConfig::default(),
+            geoip: GeoIPConfig::default(),
+            vote_persistence: VotePersistenceConfig::default(),
+            faucet: FaucetNodeConfig::default(),
         }
     }
 }
