@@ -42,6 +42,10 @@ pub struct Config {
     /// Storage provider configuration
     #[serde(default)]
     pub storage_provider: StorageProviderConfig,
+
+    /// Cross-chain bridge infrastructure configuration
+    #[serde(default)]
+    pub bridge: BridgeConfig,
 }
 
 /// Chain timing configuration for epoch calculations
@@ -442,6 +446,102 @@ impl Default for StorageProviderConfig {
     }
 }
 
+/// Cross-chain bridge infrastructure configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BridgeConfig {
+    /// Enable cross-chain bridge functionality
+    pub enabled: bool,
+
+    /// Multi-sig threshold (M-of-N, this is M)
+    pub multisig_threshold: u8,
+
+    /// Required confirmations for finality on chat chain
+    pub chat_chain_confirmations: u32,
+
+    /// Required confirmations for finality on currency chain
+    pub currency_chain_confirmations: u32,
+
+    /// BLS finality consensus required signatures (M-of-N, this is M)
+    pub finality_required_signatures: usize,
+
+    /// Total validators for BLS finality consensus (M-of-N, this is N)
+    pub finality_total_validators: usize,
+
+    /// Bridge validator configurations
+    #[serde(default)]
+    pub validators: Vec<BridgeValidatorConfig>,
+
+    /// Solana bridge configuration (optional)
+    #[serde(default)]
+    pub solana: Option<SolanaBridgeNodeConfig>,
+}
+
+impl Default for BridgeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            multisig_threshold: 2,
+            chat_chain_confirmations: 12,
+            currency_chain_confirmations: 20,
+            finality_required_signatures: 5,
+            finality_total_validators: 7,
+            validators: Vec::new(),
+            solana: None,
+        }
+    }
+}
+
+/// Bridge validator configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeValidatorConfig {
+    /// Validator identifier (UserId string)
+    pub validator_id: String,
+
+    /// BLS public key (hex-encoded)
+    pub bls_pubkey_hex: String,
+}
+
+/// Solana bridge node configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SolanaBridgeNodeConfig {
+    /// Solana cluster: "mainnet", "devnet", "testnet", "localnet", or custom URL
+    pub cluster: String,
+
+    /// Bridge program ID on Solana
+    pub bridge_program_id: String,
+
+    /// wDCHAT token mint address on Solana
+    pub wdchat_mint: String,
+
+    /// Bridge authority PDA address
+    pub bridge_authority: String,
+
+    /// Required validator signatures for bridge operations
+    pub required_signatures: u8,
+
+    /// Minimum slot confirmations for Solana finality
+    pub min_confirmations: u32,
+
+    /// Bridge fee in lamports (1 SOL = 1_000_000_000 lamports)
+    pub bridge_fee_lamports: u64,
+}
+
+impl Default for SolanaBridgeNodeConfig {
+    fn default() -> Self {
+        Self {
+            cluster: "devnet".to_string(),
+            bridge_program_id: String::new(),
+            wdchat_mint: String::new(),
+            bridge_authority: String::new(),
+            required_signatures: 3,
+            min_confirmations: 32,
+            bridge_fee_lamports: 5000,
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -498,6 +598,7 @@ impl Default for Config {
             oracle: OracleConfig::default(),
             onion_routing: OnionRoutingConfig::default(),
             storage_provider: StorageProviderConfig::default(),
+            bridge: BridgeConfig::default(),
         }
     }
 }
