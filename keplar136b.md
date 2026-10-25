@@ -1012,3 +1012,128 @@ The `crates/dchat-blockchain/src/solana/` subdirectory contains 7 modules:
 
 **Total Critical Gaps: 10 modules**  
 **Verification Date:** February 1, 2026
+
+---
+
+## Strategic Architecture Proposals (October 2026 Audit)
+
+### Proposal 1: Missing Critical Infrastructure & Architectural Upgrades
+
+#### 1.1 Privacy-Preserving Asynchronous Push Notification Architecture (Blind / Sealed Push)
+* **Gap**: Mobile operating systems (iOS and Android) kill background P2P sockets within seconds. Standard push services (Apple APNs, Google FCM) leak social graph metadata, timestamps, and device identifiers.
+* **Proposed Implementation**:
+  - Deploy a **Zero-Knowledge Blind Push Gateway** utilizing `dchat-privacy::blind_tokens`.
+  - Recipient registers an encrypted, blinded push token hash `(BlindTokenHash -> APNs/FCM DeviceToken)` with a push proxy.
+  - Relays forwarding offline messages emit an opaque, encrypted wake-up trigger across onion routes to the push gateway with zero sender or conversation metadata.
+  - The OS wakes the mobile client for a 15-second background window to pull encrypted message envelopes directly from its assigned relay node.
+
+#### 1.2 Modern Group Cryptography: Messaging Layer Security (MLS - RFC 9420)
+* **Gap**: `dchat-crypto` currently utilizes flat sender keys (`group_key.rs`) for group messaging, imposing $O(N)$ key distribution overhead and lacking continuous Post-Compromise Security (PCS).
+* **Proposed Implementation**:
+  - Implement IETF MLS (RFC 9420) with TreeKEM.
+  - Group state represented as a ratcheted binary tree dropping member add/remove communication overhead from $O(N)$ to $O(\log N)$.
+  - Enable secure, scalable group channels of up to 50,000 participants with forward secrecy and PCS.
+  - Integrate MLS group epoch transitions with `dchat-network::relay::epoch_token` quorums.
+
+#### 1.3 Decentralized Private Contact Discovery (ZK-PIR / ZK-PSI)
+* **Gap**: No privacy-preserving mechanism to discover contacts without exposing entire address books to relays or querying public directories.
+* **Proposed Implementation**:
+  - Integrate Private Information Retrieval (PIR) or Zero-Knowledge Private Set Intersection (ZK-PSI).
+  - Users check blinded cryptographic hashes of address book entries against the identity directory on-chain/DHT in sublinear time without revealing their contacts to nodes.
+
+#### 1.4 End-to-End Encrypted Real-Time Media (WebRTC Audio/Video with Decentralized SFUs)
+* **Gap**: Absence of real-time voice and video communication primitives.
+* **Proposed Implementation**:
+  - Layer WebSockets/Noise signaling over libp2p for WebRTC SDP negotiations.
+  - 1:1 calls utilize direct P2P hole-punched DCUtR connections.
+  - Group calls route encrypted media streams through high-bandwidth relay nodes acting as decentralized SFUs (Selective Forwarding Units), compensated via Proof-of-Transit (`ProofOfTransit`) with SFrame/Insertable Streams E2EE encryption.
+
+---
+
+### Proposal 2: Completion Plans for Partially Implemented Subsystems
+
+#### 2.1 Hardware Enclave & Keyless Onboarding (`dchat-identity` & `src/onboarding`)
+* **Current State**: `biometric.rs` and `enclave.rs` rely on mock environment variables (`DCHAT_BIOMETRIC_AVAILABLE=true`) and software fallbacks; release builds panic or disable hardware security.
+* **Implementation Plan**:
+  - **Windows**: Implement `HardwareKeyStore` via Windows CNG (`ncrypt.dll`) targeting physical TPM 2.0 chips.
+  - **macOS / iOS**: Bind Apple `Security.framework` and `CryptoKit` for hardware-enforced Secure Enclave P-256 keys (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`).
+  - **Android**: Implement JNI bridge to Android `KeyStore` / `StrongBoxKeymaster`.
+  - **Web / Desktop**: Bind WebAuthn / FIDO2 Passkeys as hardware credentials.
+  - Bind the resulting hardware key as one share in a 2-of-3 threshold setup (`dchat-identity::mpc_frost`): Hardware Device Key + Cloud Backup Share + Guardian Social Recovery.
+
+#### 2.2 End-to-End Block Hierarchy to WASM VM Execution Driver
+* **Current State**: Block hierarchy (`dchat-blockchain::block_hierarchy`) and smart contracts (`dchat-programs`) are largely disconnected in production paths, containing simulation comments (`// In production, this would actually execute the transaction`).
+* **Implementation Plan**:
+  - Build a deterministic `BlockExecutionPipeline`:
+    `Miniblock Payload -> Bytecode Validator -> ParallelScheduler (Account Locks) -> DeterministicVm -> State Delta -> SMT Commit`.
+  - Route miniblock payloads directly into `dchat-programs::ParallelScheduler` to enforce read/write account locks.
+  - Commit state deltas to a Sparse Merkle Tree (SMT) or Jellyfish Merkle Tree (JMT) in RocksDB/TiKV, generating verifiable cryptographic `state_root` commitments in block headers.
+
+#### 2.3 On-Chain Mini-App Registry & Cross-Chain Settlement
+* **Current State**: Mini-apps run from local files, but `--app-id` lookups and cross-chain execution are stubbed with placeholder zero-byte developer IDs (`[0u8; 32]`).
+* **Implementation Plan**:
+  - Deploy `MiniAppRegistry` as an on-chain DPL smart contract on the currency chain.
+  - Enforce developer signature verification over app bundles and manifests stored on IPFS/MinIO.
+  - Connect the client message bridge (`dchat-miniapps::bridge`) to `dchat-bridge`, settling cross-chain user intents on the currency chain via CPI and returning cryptographic receipts.
+
+---
+
+## Extended Workspace Audit: What Kepler Missed Out
+
+### 1. Scope Limitation of the Original Audit
+The original `keplar136b.md` report restricted its scope to only 3 crates (`dchat-blockchain`, `dchat-chain`, `dchat-bridge`). In doing so, it missed:
+1. **Cosmetic / Phantom Wiring in Category A**: Several modules were subsequently introduced into `src/main.rs` but left as dead instances, suppressed with underscores (`_`), or bypassed entirely.
+2. **Whole Unwired Crates in Category B**: 10 additional workspace crates in `/crates` are completely disconnected from the live node daemon and blockchain consensus.
+
+---
+
+### 2. Category A: The "Cosmetic / Phantom Wiring" Gaps
+
+The original report marked several components as strictly "NOT IMPORTED". Subsequent updates added imports, but they remain functionally unwired in production:
+
+| Component | Location | Code Reality in `src/main.rs` | Functional Deficit |
+| :--- | :--- | :--- | :--- |
+| **`BridgeManager`** | `crates/dchat-bridge` | Instantiated at lines 5065, 5666, 7767; explicitly suppressed at line 5096 (`let _ = &dchat_bridge_manager;`) and line 5663 (`let _dchat_bridge_manager = ...`). At line 5695, user node passes legacy `bridge` instead. At line 9470, it initiates BLS finality logging, but never settles or validates transactions. | Suppressed instance; no cross-chain transaction validation or settlement. |
+| **`BalanceTracker`** | `crates/dchat-chain` | Instantiated at line 7913; cloned at line 8746 (`balance_tracker_consensus`). Zero subsequent method calls. | Dead instance; account balance state is never updated during block production. |
+| **`VotePersistence`** | `crates/dchat-blockchain` | Instantiated at line 8053; cloned at line 8747 (`vote_persistence_consensus`). Zero subsequent method calls. | Dead instance; consensus votes are never persisted to disk, preventing auditability after restarts. |
+| **`SlashingDetector`** | `crates/dchat-chain` | Instantiated at line 7908. Inside the consensus loop (lines 9533–9539), only calls `get_stats()` and `prune_old_records()`. | Zero evidence ingestion; double-signing and invalid block proofs are never fed into the detector. |
+| **`DataAvailabilityCommitment`** | `crates/dchat-blockchain` | Computed at line 9195, but line 9214 suppresses it with `let _da_hash = da_commitment.as_ref().map(\|c\| c.hash());`. | Discarded; commitment is not included in the block header broadcast to peers or available for light client sampling. |
+| **`FraudDetector`** | `crates/dchat-blockchain` | Present at line 17119, but wrapped inside helper functions annotated with `#[allow(dead_code)]`. | Dead code; never called in the block validation or consensus acceptance pipeline. |
+
+---
+
+### 3. Category B: Completely Unwired Workspace Crates Missed by Kepler
+
+Beyond the core blockchain crates, the following crates in `/crates` are compiled but completely disconnected from the live node execution loop:
+
+1. **`dchat-programs` (Smart Contract VM Disconnected from Block Execution)**:
+   - Full Solana-style WASM runtime (`DeterministicVm`), parallel account-locking scheduler (`ParallelScheduler`), compute unit metering, and native token/system programs.
+   - **Gap**: Only invoked in `src/` for offline CLI bytecode inspection (`dchat program validate`).
+   - **Crucial finding**: In `src/main.rs:9002`, block production hardcodes:
+     ```rust
+     let pending_txs: Vec<dchat_chain::Transaction> = Vec::new();
+     ```
+     Transactions in mempool are never gathered, executed against `dchat-programs`, or committed to state roots.
+2. **`dchat-messaging` (Not Imported in `src/main.rs`)**:
+   - Implements `MessageService`, `DeliveryTracker`, `DeltaSync`, `ChannelAccessManager`, and `MessageCreditsChannel`.
+   - **Gap**: Completely omitted from `src/main.rs`. The node daemon does not run the message service, delivery verification, or delta sync protocols.
+3. **`dchat-privacy` (Zero Usage in `src/main.rs`)**:
+   - Implements Groth16 ZK provers/verifiers, Poseidon Merkle membership proofs, blind tokens, and stealth addresses.
+   - **Gap**: Zero imports or invocations in `src/main.rs`. Anonymity and privacy primitives remain dormant.
+4. **`dchat-governance` (Zero Usage in `src/main.rs`)**:
+   - Implements `ProtocolDaoManager`, commit-reveal secret voting, and decentralized moderation juries.
+   - **Gap**: Zero invocations in `src/main.rs`. On-chain governance proposals and moderation actions cannot execute.
+5. **`dchat-bots`**:
+   - Implements BotFather-style registration, webhook dispatching, and command routers.
+   - **Gap**: Instantiated at line 5775 into `let _bot_father = ...` and suppressed; no webhooks or messages route to bots.
+6. **`dchat-marketplace`**:
+   - Implements `MarketplaceManager`, escrow contracts, and NFT trading.
+   - **Gap**: Instantiated at line 8711, but disconnected from transaction processing and block execution.
+7. **`dchat-distribution`**:
+   - Implements P2P package verification and auto-update gossip.
+   - **Gap**: Only used in a one-off CLI command (line 13900); not running as a background node daemon service.
+8. **`dchat-validator` (Health & Thresholds Unwired)**:
+   - Implements `EnhancedHealthChecker`, `BlockHeightCheck`, `SignatureFreshnessCheck`, and dynamic BFT thresholds.
+   - **Gap**: Only `BftConfig` is imported at line 7643; the active health checking engine is never started in `src/main.rs`.
+
+
