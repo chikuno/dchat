@@ -187,4 +187,40 @@ impl RpcClient {
         u64::from_str_radix(hex_str, 16)
             .map_err(|e| Error::network(format!("Invalid block number: {}", e)))
     }
+
+    /// Query DA sample proof for light client verification
+    pub async fn get_da_sample_proof(
+        &self,
+        block_height: u64,
+        chunk_idx: u32,
+    ) -> Result<Option<serde_json::Value>> {
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "dchat_getDASampleProof",
+            "params": [block_height, chunk_idx],
+            "id": 1
+        });
+
+        let response = self
+            .client
+            .post(&self.config.url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| Error::network(format!("RPC request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(Error::network(format!(
+                "RPC returned status {}",
+                response.status()
+            )));
+        }
+
+        let json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| Error::network(format!("Failed to parse RPC response: {}", e)))?;
+
+        Ok(json.get("result").cloned())
+    }
 }

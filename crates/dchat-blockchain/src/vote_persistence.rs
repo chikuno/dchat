@@ -221,6 +221,23 @@ impl VotePersistence {
         Ok(())
     }
 
+    /// Record PoRW vote (alias for store_porw_vote)
+    pub async fn record_porw_vote(&self, vote: &PoRWVoteRecord) -> Result<()> {
+        self.store_porw_vote(vote).await
+    }
+
+    /// Query latest votes for a validator to prevent double-signing across process restarts
+    pub async fn get_latest_votes_for_validator(&self, validator_pubkey: &[u8]) -> Result<Vec<PoRWVoteRecord>> {
+        let votes = sqlx::query_as::<_, PoRWVoteRecord>(
+            "SELECT * FROM porw_votes WHERE validator_pubkey = $1 ORDER BY timestamp DESC LIMIT 100",
+        )
+        .bind(validator_pubkey)
+        .fetch_all(&*self.pool)
+        .await?;
+
+        Ok(votes)
+    }
+
     /// Get all PoRW votes for a block
     pub async fn get_porw_votes(&self, block_hash: &str) -> Result<Vec<PoRWVoteRecord>> {
         let votes = sqlx::query_as::<_, PoRWVoteRecord>(

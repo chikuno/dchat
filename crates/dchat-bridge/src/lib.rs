@@ -300,6 +300,7 @@ impl BridgeManager {
 
         let tx_id = transaction.id;
         self.transactions.insert(tx_id, transaction);
+        let _ = self.multisig.init_transaction(tx_id);
         Ok(tx_id)
     }
 
@@ -371,7 +372,16 @@ impl BridgeManager {
     ) -> Result<bool> {
         let is_finalized = self
             .finality_tracker
-            .submit_signature(tx_hash, validator_id, signature)
+            .submit_signature(tx_hash, validator_id.clone(), signature.clone())
+            .map_err(|e| {
+                let _ = self.slashing.record_slash_event(
+                    validator_id,
+                    SlashReason::InvalidSignature,
+                    10_000,
+                    signature,
+                );
+                e
+            })
             .map_err(|e| Error::validation(format!("Failed to submit signature: {}", e)))?;
 
         Ok(is_finalized)

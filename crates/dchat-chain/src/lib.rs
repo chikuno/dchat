@@ -14,6 +14,7 @@
 //! - VRF-based committee selection for epoch token quorums (QGE)
 
 pub mod balance_tracker;
+pub mod mempool;
 pub mod chain; // Currency chain, slashing, and guardian modules
 pub mod committee_selection;
 pub mod currency_chain_client;
@@ -36,6 +37,7 @@ pub use chain::guardians;
 pub use chain::slashing;
 
 pub use balance_tracker::BalanceTracker;
+pub use mempool::Mempool;
 pub use currency_chain_client::HttpCurrencyChainClient;
 pub use currency_transaction_parser::{
     CurrencyTransactionParser, ParsedTransaction, TransactionData,

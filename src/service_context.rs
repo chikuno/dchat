@@ -304,6 +304,9 @@ pub struct ServiceContext {
 
     /// Cross-chain bridge (lazy-initialized, depends on both chain clients)
     bridge: OnceCell<Arc<CrossChainBridge>>,
+
+    /// dchat-bridge BridgeManager (optional, for cross-chain operations)
+    dchat_bridge: OnceCell<Option<Arc<std::sync::RwLock<dchat_bridge::BridgeManager>>>>,
 }
 
 impl ServiceContext {
@@ -314,6 +317,7 @@ impl ServiceContext {
             currency_chain: OnceCell::new(),
             chat_chain: OnceCell::new(),
             bridge: OnceCell::new(),
+            dchat_bridge: OnceCell::new(),
         }
     }
 
@@ -471,6 +475,16 @@ impl ServiceContext {
     /// Check if chat chain client is initialized
     pub fn is_chat_chain_initialized(&self) -> bool {
         self.chat_chain.initialized()
+    }
+
+    /// Set the initialized dchat-bridge manager
+    pub fn set_dchat_bridge(&self, bridge: Arc<std::sync::RwLock<dchat_bridge::BridgeManager>>) {
+        let _ = self.dchat_bridge.set(Some(bridge));
+    }
+
+    /// Get dchat-bridge manager if initialized
+    pub fn dchat_bridge(&self) -> Option<Arc<std::sync::RwLock<dchat_bridge::BridgeManager>>> {
+        self.dchat_bridge.get().and_then(|b| b.clone())
     }
 
     /// Check if bridge is initialized

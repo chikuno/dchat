@@ -107,6 +107,17 @@ impl SlashingManager {
         self.slashed_validators.read().map_err(|_| SlashingError::LockPoisoned)
     }
 
+    /// Record a slashing event directly
+    pub fn record_slash_event(
+        &self,
+        validator_id: UserId,
+        reason: SlashReason,
+        slash_amount: u64,
+        evidence: Vec<u8>,
+    ) -> Result<(), SlashingError> {
+        self.slash_validator(validator_id, reason, slash_amount, None, evidence, None)
+    }
+
     /// Slash a validator
     pub fn slash_validator(
         &self,

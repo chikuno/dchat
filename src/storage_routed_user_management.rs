@@ -58,9 +58,16 @@ pub struct StorageRoutedUserManager {
     /// Currency chain client
     currency_chain: Arc<CurrencyChainClient>,
     /// Cross-chain bridge
+    pub dchat_bridge_manager: std::sync::RwLock<Option<Arc<std::sync::RwLock<dchat_bridge::BridgeManager>>>>,
     bridge: Arc<CrossChainBridge>,
+
+
+
+
     /// Keys directory
     keys_dir: PathBuf,
+
+
 }
 
 impl StorageRoutedUserManager {
@@ -71,7 +78,13 @@ impl StorageRoutedUserManager {
         chat_chain: Arc<ChatChainClient>,
         currency_chain: Arc<CurrencyChainClient>,
         bridge: Arc<CrossChainBridge>,
+
+
+
+
         keys_dir: PathBuf,
+
+
     ) -> Result<Self> {
         let router = StorageRouter::new(router_config)
             .await
@@ -84,6 +97,7 @@ impl StorageRoutedUserManager {
             currency_chain,
             bridge,
             keys_dir,
+            dchat_bridge_manager: std::sync::RwLock::new(None),
         })
     }
 
@@ -94,7 +108,13 @@ impl StorageRoutedUserManager {
         chat_chain: Arc<ChatChainClient>,
         currency_chain: Arc<CurrencyChainClient>,
         bridge: Arc<CrossChainBridge>,
+
+
+
+
         keys_dir: PathBuf,
+
+
     ) -> Result<Self> {
         let router = StorageRouter::offline(sqlite_path)
             .await
@@ -107,7 +127,20 @@ impl StorageRoutedUserManager {
             currency_chain,
             bridge,
             keys_dir,
+            dchat_bridge_manager: std::sync::RwLock::new(None),
         })
+    }
+
+    /// Set the production dchat-bridge manager
+    pub fn set_dchat_bridge(&self, bridge: Arc<std::sync::RwLock<dchat_bridge::BridgeManager>>) {
+        if let Ok(mut lock) = self.dchat_bridge_manager.write() {
+            *lock = Some(bridge);
+        }
+    }
+
+    /// Get production dchat-bridge manager if configured
+    pub fn dchat_bridge(&self) -> Option<Arc<std::sync::RwLock<dchat_bridge::BridgeManager>>> {
+        self.dchat_bridge_manager.read().ok().and_then(|guard| guard.clone())
     }
 
     /// Get the underlying storage router
@@ -270,6 +303,8 @@ impl StorageRoutedUserManager {
 
         // Convert UUIDs to byte arrays for storage router
         let sender_bytes = uuid_to_bytes(&sender_uuid.0);
+        let final_content = content.to_vec();
+        let effective_key_id = encryption_key_id;
         let recipient_bytes = uuid_to_bytes(&recipient_uuid.0);
 
         // Submit on-chain transaction for message ordering
@@ -283,6 +318,21 @@ impl StorageRoutedUserManager {
                 Error::internal(format!("Chat chain recording failed: {}", e))
             })?;
 
+        // Check if recipient uses stealth addressing
+        let (effective_key_id, final_content) = if recipient_id.starts_with("stealth:") {
+            let mut rng = rand::thread_rng();
+            let stealth_addr = dchat_privacy::stealth::StealthAddress::generate(&mut rng);
+            let generator = dchat_privacy::stealth::StealthGenerator::new(&mut rng);
+            if let Ok(payload) = generator.create_payload(&stealth_addr, content, &mut rng) {
+                debug!("Embedded stealth ephemeral key for recipient {}", recipient_id);
+                (Some(payload.ephemeral_key), payload.ciphertext)
+            } else {
+                (encryption_key_id, content.to_vec())
+            }
+        } else {
+            (encryption_key_id, content.to_vec())
+        };
+
         // Store through StorageRouter (handles tiering automatically)
         let metadata = self
             .router
@@ -290,9 +340,9 @@ impl StorageRoutedUserManager {
                 sender_bytes,
                 recipient_bytes,
                 MessageType::Direct,
-                content.to_vec(),
+                final_content,
                 encrypted,
-                encryption_key_id,
+                effective_key_id,
                 None, // reply_to
             )
             .await
@@ -426,7 +476,7 @@ impl StorageRoutedUserManager {
                 recipient_id,
                 &content_bytes,
                 encrypted,
-                encryption_key_id,
+                effective_key_id,
             )
             .await?;
 
@@ -536,6 +586,8 @@ impl StorageRoutedUserManager {
         let message_id = MessageId(Uuid::new_v4());
 
         let sender_bytes = uuid_to_bytes(&sender_uuid.0);
+        let final_content = content.to_vec();
+        let effective_key_id = encryption_key_id;
         let channel_bytes = uuid_to_bytes(&channel_uuid.0);
 
         // Submit on-chain transaction
@@ -555,9 +607,9 @@ impl StorageRoutedUserManager {
                 sender_bytes,
                 channel_bytes,
                 MessageType::Channel,
-                content.to_vec(),
+                final_content,
                 encrypted,
-                encryption_key_id,
+                effective_key_id,
                 None,
             )
             .await

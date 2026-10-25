@@ -5093,7 +5093,9 @@ async fn run_light_client(
 
         // Mark bridge as ready (or not needed if disabled)
         // Bridge readiness is independent - nodes work without it
-        let _ = &dchat_bridge_manager; // Use the variable to avoid warning
+        if let Some(ref _bm) = dchat_bridge_manager {
+            info!("🌉 Bridge manager active for light client cross-chain verification");
+        }
 
         // Initialize fee infrastructure
         let fee_distribution =
@@ -5163,6 +5165,10 @@ async fn run_light_client(
             )
             .await?,
         );
+
+        if let Some(ref bm) = dchat_bridge_manager {
+            storage_manager.set_dchat_bridge(Arc::clone(bm));
+        }
 
         // Create FeeGateway
         let gateway = Arc::new(
@@ -5660,7 +5666,7 @@ async fn run_user_node(
         ));
 
         // Initialize dchat-bridge BridgeManager for user node cross-chain operations
-        let _dchat_bridge_manager: Option<Arc<std::sync::RwLock<BridgeManager>>> =
+        let dchat_bridge_manager: Option<Arc<std::sync::RwLock<BridgeManager>>> =
             if config.bridge.enabled {
                 info!("Initializing dchat-bridge manager for user node...");
                 match BridgeManager::try_new() {
@@ -5698,7 +5704,11 @@ async fn run_user_node(
         .await?;
 
         info!("   ✓ Storage provider routing enabled (offline mode)");
-        Some(Arc::new(manager))
+        let manager_arc = Arc::new(manager);
+        if let Some(ref bm) = dchat_bridge_manager {
+            manager_arc.set_dchat_bridge(Arc::clone(bm));
+        }
+        Some(manager_arc)
     } else {
         debug!("Storage provider routing disabled (using basic SQLite)");
         None

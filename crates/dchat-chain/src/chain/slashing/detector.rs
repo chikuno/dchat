@@ -239,6 +239,26 @@ impl SlashingDetector {
         self.flag_for_slashing(validator, offense)
     }
 
+    /// Report double signing evidence directly
+    pub fn report_double_sign(
+        &self,
+        validator: VerifyingKey,
+        block_height: u64,
+        signature1: Vec<u8>,
+        signature2: Vec<u8>,
+        message1_hash: Vec<u8>,
+        message2_hash: Vec<u8>,
+    ) -> Result<(), SlashingError> {
+        let offense = SlashableOffense::DoubleSigning {
+            block_height,
+            signature1,
+            signature2,
+            message1_hash,
+            message2_hash,
+        };
+        self.flag_for_slashing(validator, offense)
+    }
+
     /// Report low uptime
     pub fn report_low_uptime(
         &self,

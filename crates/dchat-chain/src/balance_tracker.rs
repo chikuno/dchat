@@ -451,6 +451,56 @@ impl BalanceTracker {
     }
 }
 
+impl BalanceTracker {
+    /// Apply atomic balance transitions for a parsed transaction
+    pub async fn apply_transaction(&self, transaction: &ParsedTransaction) -> Result<()> {
+        self.process_transaction(transaction).await
+    }
+
+    /// Apply atomic balance transitions for a chain transaction
+    pub async fn apply_chain_transaction(&self, tx: &crate::transactions::Transaction) -> Result<()> {
+        if tx.fee_paid > 0 {
+            if let Ok(dm) = serde_json::from_slice::<crate::transactions::SendDirectMessageTx>(&tx.payload) {
+                let mut balances = self.balances.write().await;
+                let sender_bal = balances.entry(dm.sender_id).or_insert(Balance::default());
+                if sender_bal.available < tx.fee_paid as u128 {
+                    return Err(Error::validation("Insufficient balance for transaction fee"));
+                }
+                sender_bal.available -= tx.fee_paid as u128;
+                sender_bal.total = sender_bal.calculate_total();
+            }
+        }
+        Ok(())
+    }
+
+    /// Verify balance tracker internal consistency and invariants before committing state root
+    pub async fn verify_integrity(&self) -> Result<()> {
+        let balances = self.balances.read().await;
+        let total_staked = *self.total_staked.read().await;
+        let mut computed_staked: u128 = 0;
+
+        for (user, balance) in balances.iter() {
+            if balance.total != balance.calculate_total() {
+                return Err(Error::validation(format!(
+                    "Balance total invariant violated for user {}: recorded {}, calculated {}",
+                    user.0, balance.total, balance.calculate_total()
+                )));
+            }
+            computed_staked = computed_staked.saturating_add(balance.staked);
+        }
+
+        if total_staked != computed_staked {
+            return Err(Error::validation(format!(
+                "Total staked invariant violated: tracker total {}, sum of accounts {}",
+                total_staked, computed_staked
+            )));
+        }
+
+        debug!("✓ Balance tracker state integrity verified: {} accounts checked", balances.len());
+        Ok(())
+    }
+}
+
 impl Default for BalanceTracker {
     fn default() -> Self {
         Self::new()

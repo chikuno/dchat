@@ -658,6 +658,12 @@ pub struct Block {
     pub finality_proof: FinalityProof,
     /// Data availability commitment
     pub da_commitment: Option<super::DataAvailabilityCommitment>,
+    /// DA Merkle root hash
+    #[serde(default)]
+    pub da_root: Option<[u8; 32]>,
+    /// Number of DA data chunks
+    #[serde(default)]
+    pub da_chunk_count: u32,
     /// Merkle root of governance state (finalized proposals, vote tallies)
     /// Commits governance decisions to the blockchain for verification.
     #[serde(default)]
@@ -681,6 +687,8 @@ impl Block {
             relay_votes: Vec::new(),
             finality_proof: FinalityProof::default(),
             da_commitment: None,
+            da_root: None,
+            da_chunk_count: 0,
             governance_merkle_root: None,
         }
     }
@@ -767,6 +775,8 @@ impl Block {
             subblock_count: self.subblocks.len() as u8,
             transaction_count: self.transaction_count() as u32,
             da_commitment: self.da_commitment.clone(),
+            da_root: self.da_root.or_else(|| self.da_commitment.as_ref().map(|da| *da.chunk_root.as_bytes())),
+            da_chunk_count: if self.da_chunk_count > 0 { self.da_chunk_count } else { self.da_commitment.as_ref().map(|da| da.chunk_count).unwrap_or(0) },
             governance_merkle_root: self.governance_merkle_root,
         }
     }
@@ -782,6 +792,12 @@ pub struct BlockHeader {
     pub subblock_count: u8,
     pub transaction_count: u32,
     pub da_commitment: Option<super::DataAvailabilityCommitment>,
+    /// DA Merkle root hash
+    #[serde(default)]
+    pub da_root: Option<[u8; 32]>,
+    /// Number of DA data chunks
+    #[serde(default)]
+    pub da_chunk_count: u32,
     /// Merkle root of governance state (finalized proposals, vote tallies)
     /// This commits the governance state to the block, enabling verification
     /// of governance-based revocations and on-chain governance proofs.

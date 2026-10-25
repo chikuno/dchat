@@ -28,6 +28,12 @@ pub enum TransactionType {
     UpdateProfile,
     /// Submit delivery proof for relay reward
     SubmitDeliveryProof,
+    /// Execute a smart contract instruction via WASM runtime
+    SmartContractExecution,
+    /// Submit a governance vote
+    GovernanceVote,
+    /// Create a governance proposal
+    GovernanceProposal,
 }
 
 /// On-chain user registration transaction

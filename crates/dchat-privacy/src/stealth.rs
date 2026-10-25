@@ -48,6 +48,15 @@ pub struct StealthScanner {
 
 impl StealthAddress {
     /// Create a stealth address from public keys
+    /// Generate a fresh random stealth address
+    pub fn generate<R: Rng + CryptoRng>(rng: &mut R) -> Self {
+        let mut view_key = [0u8; 32];
+        let mut spend_key = [0u8; 32];
+        rng.fill(&mut view_key);
+        rng.fill(&mut spend_key);
+        Self::new(view_key, spend_key)
+    }
+
     pub fn new(view_key: [u8; 32], spend_key: [u8; 32]) -> Self {
         Self {
             view_key,
