@@ -28,6 +28,7 @@ pub mod sharding;
 pub mod signed_envelope;
 pub mod storage_backend;
 pub mod transaction_storage;
+pub mod transaction_ingress;
 pub mod transactions;
 pub mod validator_registry;
 
@@ -79,6 +80,7 @@ pub use storage_backend::{
 pub use transaction_storage::{
     ServiceStatistics, TransactionStorageConfig, TransactionStorageService,
 };
+pub use transaction_ingress::TransactionIngress;
 pub use transactions::{
     ChannelVisibility, CreateChannelTx, JoinChannelTx, PostToChannelTx, RegisterUserTx,
     SendDirectMessageTx, SubmitDeliveryProofTx, Transaction, TransactionReceipt, TransactionStatus,

@@ -1141,6 +1141,10 @@ fn default_health_addr() -> String {
     "127.0.0.1:8080".to_string()
 }
 
+fn default_rpc_addr() -> String {
+    "127.0.0.1:8545".to_string()
+}
+
 /// Enforce that production builds do not run with development default binds
 #[cfg(not(debug_assertions))]
 fn enforce_production_endpoints(cli: &Cli) -> Result<()> {
@@ -1186,6 +1190,14 @@ struct Cli {
     /// Health check server listen address
     #[arg(long, default_value_t = default_health_addr())]
     health_addr: String,
+
+    /// Chat-chain JSON-RPC server listen address
+    #[arg(long, default_value_t = default_rpc_addr())]
+    rpc_addr: String,
+
+    /// Chat-chain ID used to validate signed transaction envelopes
+    #[arg(long, default_value = "1337")]
+    rpc_chain_id: u32,
 
     #[command(subcommand)]
     command: Commands,
@@ -3520,6 +3532,8 @@ async fn main() -> Result<()> {
                 producer,
                 cli.metrics_addr.clone(),
                 cli.health_addr.clone(),
+                cli.rpc_addr.clone(),
+                cli.rpc_chain_id,
                 genesis_bootstrap,
                 genesis_dir,
             )
@@ -7242,6 +7256,8 @@ async fn run_validator_node(
     is_producer: bool,
     metrics_addr: String,
     health_addr: String,
+    rpc_addr: String,
+    rpc_chain_id: u32,
     genesis_bootstrap: bool,
     genesis_dir: Option<PathBuf>,
 ) -> Result<()> {
@@ -7291,6 +7307,17 @@ async fn run_validator_node(
     let metrics_handle =
         start_metrics_server(&metrics_addr, peer_metrics.clone(), shutdown_tx.subscribe())?;
     info!("✓ Metrics server listening on {}", metrics_addr);
+
+    let transaction_ingress = Arc::new(dchat_chain::TransactionIngress::new(
+        rpc_chain_id,
+        dchat_chain::Mempool::default(),
+    ));
+    let _rpc_handle =
+        start_chain_rpc_server(&rpc_addr, transaction_ingress, shutdown_tx.subscribe())?;
+    info!(
+        "✓ Chat-chain JSON-RPC server listening on {} (chain ID {})",
+        rpc_addr, rpc_chain_id
+    );
 
     // Load validator key
     let validator_key = if use_hsm {
@@ -10582,6 +10609,132 @@ fn start_metrics_server(
     });
 
     Ok(handle)
+}
+
+fn chain_rpc_response(
+    body: &[u8],
+    ingress: &dchat_chain::TransactionIngress,
+) -> Option<serde_json::Value> {
+    fn error(id: serde_json::Value, code: i64, message: impl Into<String>) -> serde_json::Value {
+        let message = message.into();
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": { "code": code, "message": message },
+            "id": id,
+        })
+    }
+
+    let request: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(parse_error) => {
+            return Some(error(
+                serde_json::Value::Null,
+                -32700,
+                format!("Parse error: {}", parse_error),
+            ));
+        }
+    };
+    let Some(request_object) = request.as_object() else {
+        return Some(error(serde_json::Value::Null, -32600, "Invalid Request"));
+    };
+    let has_id = request_object.contains_key("id");
+    let id = request_object
+        .get("id")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let method = request.get("method").and_then(serde_json::Value::as_str);
+
+    if request.get("jsonrpc").and_then(serde_json::Value::as_str) != Some("2.0")
+        || method.is_none()
+        || has_id && !id.is_number() && !id.is_string()
+    {
+        return Some(error(serde_json::Value::Null, -32600, "Invalid Request"));
+    }
+
+    let response = if method != Some("chain_submitTransaction") {
+        error(id.clone(), -32601, "Method not found")
+    } else {
+        let params = match request.get("params").and_then(serde_json::Value::as_array) {
+            Some(params) if params.len() == 1 => params,
+            _ => {
+                if !has_id {
+                    return None;
+                }
+                return Some(error(
+                    id,
+                    -32602,
+                    "Expected params: [hex-encoded signed envelope]",
+                ));
+            }
+        };
+        let encoded = match params[0].as_str() {
+            Some(encoded) => encoded.strip_prefix("0x").unwrap_or(encoded),
+            None => {
+                if !has_id {
+                    return None;
+                }
+                return Some(error(
+                    id,
+                    -32602,
+                    "Transaction parameter must be a hex string",
+                ));
+            }
+        };
+        match hex::decode(encoded) {
+            Ok(envelope_bytes) => match ingress.submit_envelope(&envelope_bytes) {
+                Ok(tx_hash) => serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "result": tx_hash,
+                    "id": id,
+                }),
+                Err(submit_error) => error(id, -32000, submit_error.to_string()),
+            },
+            Err(decode_error) => error(
+                id,
+                -32602,
+                format!("Invalid transaction hex: {}", decode_error),
+            ),
+        }
+    };
+
+    if has_id {
+        Some(response)
+    } else {
+        None
+    }
+}
+
+fn start_chain_rpc_server(
+    addr: &str,
+    ingress: Arc<dchat_chain::TransactionIngress>,
+    mut shutdown: broadcast::Receiver<()>,
+) -> Result<tokio::task::JoinHandle<()>> {
+    use warp::{Filter, Reply};
+
+    let addr: std::net::SocketAddr = addr
+        .parse()
+        .map_err(|error| Error::Config(format!("Invalid RPC address: {}", error)))?;
+    let ingress_filter = warp::any().map(move || Arc::clone(&ingress));
+    let submit_route = warp::post()
+        .and(warp::path::end())
+        .and(warp::body::content_length_limit(2 * 1024 * 1024))
+        .and(warp::body::bytes())
+        .and(ingress_filter)
+        .map(
+            |body: bytes::Bytes, ingress: Arc<dchat_chain::TransactionIngress>| {
+                match chain_rpc_response(&body, &ingress) {
+                    Some(response) => warp::reply::json(&response).into_response(),
+                    None => warp::reply::with_status("", warp::http::StatusCode::NO_CONTENT)
+                        .into_response(),
+                }
+            },
+        );
+
+    let (_, server) = warp::serve(submit_route).bind_with_graceful_shutdown(addr, async move {
+        let _ = shutdown.recv().await;
+    });
+
+    Ok(tokio::spawn(server))
 }
 
 // ============================================================================
