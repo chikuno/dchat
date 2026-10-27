@@ -10646,7 +10646,7 @@ fn chain_rpc_response(
 
     if request.get("jsonrpc").and_then(serde_json::Value::as_str) != Some("2.0")
         || method.is_none()
-        || has_id && !id.is_number() && !id.is_string()
+        || (has_id && !(id.is_number() || id.is_string() || id.is_null()))
     {
         return Some(error(serde_json::Value::Null, -32600, "Invalid Request"));
     }
