@@ -299,8 +299,10 @@ impl BridgeManager {
         };
 
         let tx_id = transaction.id;
+        self.multisig
+            .init_transaction(tx_id)
+            .map_err(|e| Error::validation(format!("Failed to initialize bridge multisig: {}", e)))?;
         self.transactions.insert(tx_id, transaction);
-        let _ = self.multisig.init_transaction(tx_id);
         Ok(tx_id)
     }
 
@@ -370,19 +372,36 @@ impl BridgeManager {
         validator_id: UserId,
         signature: Vec<u8>,
     ) -> Result<bool> {
-        let is_finalized = self
+        let is_finalized = match self
             .finality_tracker
             .submit_signature(tx_hash, validator_id.clone(), signature.clone())
-            .map_err(|e| {
-                let _ = self.slashing.record_slash_event(
-                    validator_id,
-                    SlashReason::InvalidSignature,
-                    10_000,
-                    signature,
-                );
-                e
-            })
-            .map_err(|e| Error::validation(format!("Failed to submit signature: {}", e)))?;
+        {
+            Ok(is_finalized) => is_finalized,
+            Err(error) => {
+                if matches!(&error, finality::FinalityError::InvalidSignature) {
+                    let mut evidence = validator_id.0.as_bytes().to_vec();
+                    evidence.extend_from_slice(tx_hash.as_bytes());
+                    evidence.extend_from_slice(&signature);
+                    self.slashing
+                        .record_slash_event(
+                            validator_id,
+                            SlashReason::InvalidSignature,
+                            10_000,
+                            evidence,
+                        )
+                        .map_err(|slash_error| {
+                            Error::internal(format!(
+                                "Invalid finality signature; failed to record slash evidence: {}",
+                                slash_error
+                            ))
+                        })?;
+                }
+                return Err(Error::validation(format!(
+                    "Failed to submit signature: {}",
+                    error
+                )));
+            }
+        };
 
         Ok(is_finalized)
     }

@@ -457,19 +457,53 @@ impl BalanceTracker {
         self.process_transaction(transaction).await
     }
 
-    /// Apply atomic balance transitions for a chain transaction
-    pub async fn apply_chain_transaction(&self, tx: &crate::transactions::Transaction) -> Result<()> {
-        if tx.fee_paid > 0 {
-            if let Ok(dm) = serde_json::from_slice::<crate::transactions::SendDirectMessageTx>(&tx.payload) {
-                let mut balances = self.balances.write().await;
-                let sender_bal = balances.entry(dm.sender_id).or_insert(Balance::default());
-                if sender_bal.available < tx.fee_paid as u128 {
-                    return Err(Error::validation("Insufficient balance for transaction fee"));
-                }
-                sender_bal.available -= tx.fee_paid as u128;
-                sender_bal.total = sender_bal.calculate_total();
+    /// Apply the balance transition supported by a chat-chain transaction.
+    ///
+    /// Currency transfers, staking, rewards, and slashing use `ParsedTransaction`
+    /// and `apply_transaction`; they must not be treated as successful no-ops here.
+    pub async fn apply_chain_transaction(
+        &self,
+        tx: &crate::transactions::Transaction,
+    ) -> Result<()> {
+        use crate::transactions::TransactionType;
+
+        let sender_id = match tx.tx_type {
+            TransactionType::SendDirectMessage => {
+                let message = serde_json::from_slice::<crate::transactions::SendDirectMessageTx>(
+                    &tx.payload,
+                )
+                .map_err(|e| {
+                    Error::validation(format!("Invalid direct-message transaction payload: {}", e))
+                })?;
+                message.sender_id
             }
+            unsupported => {
+                return Err(Error::validation(format!(
+                    "Balance application is not supported for transaction type {:?}",
+                    unsupported
+                )));
+            }
+        };
+
+        let fee = u128::from(tx.fee_paid);
+        if fee == 0 {
+            return Ok(());
         }
+
+        let mut balances = self.balances.write().await;
+        let available = balances
+            .get(&sender_id)
+            .map(|balance| balance.available)
+            .unwrap_or_default();
+        if available < fee {
+            return Err(Error::validation(
+                "Insufficient balance for transaction fee",
+            ));
+        }
+
+        let sender_balance = balances.entry(sender_id).or_default();
+        sender_balance.available -= fee;
+        sender_balance.total = sender_balance.calculate_total();
         Ok(())
     }
 
@@ -591,5 +625,84 @@ mod tests {
         assert_eq!(balance.available, 500);
         assert_eq!(balance.staked, 500);
         assert_eq!(tracker.get_total_staked().await, 500);
+    }
+
+    #[tokio::test]
+    async fn chain_transaction_rejects_malformed_and_unsupported_payloads() {
+        let tracker = BalanceTracker::new();
+        let malformed = crate::transactions::Transaction::new(
+            crate::transactions::TransactionType::SendDirectMessage,
+            b"not-json".to_vec(),
+        );
+        assert!(tracker.apply_chain_transaction(&malformed).await.is_err());
+
+        let unsupported = crate::transactions::Transaction::new(
+            crate::transactions::TransactionType::CreateChannel,
+            b"{}".to_vec(),
+        );
+        assert!(tracker
+            .apply_chain_transaction(&unsupported)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn chain_message_fee_is_deducted_atomically() {
+        let tracker = BalanceTracker::new();
+        let sender = UserId(Uuid::new_v4());
+        let message = crate::transactions::SendDirectMessageTx {
+            message_id: MessageId(Uuid::new_v4()),
+            sender_id: sender,
+            recipient_id: UserId(Uuid::new_v4()),
+            content_hash: "hash".to_string(),
+            timestamp: chrono::Utc::now(),
+            payload_size: 1,
+            relay_node_id: None,
+        };
+        let payload = serde_json::to_vec(&message).unwrap();
+        let mut tx = crate::transactions::Transaction::new(
+            crate::transactions::TransactionType::SendDirectMessage,
+            payload,
+        );
+        tx.fee_paid = 25;
+
+        tracker.balances.write().await.insert(
+            sender,
+            Balance {
+                available: 100,
+                total: 100,
+                ..Balance::default()
+            },
+        );
+        tracker.apply_chain_transaction(&tx).await.unwrap();
+
+        let balance = tracker.get_balance(sender).await;
+        assert_eq!(balance.available, 75);
+        assert_eq!(balance.total, 75);
+    }
+
+    #[tokio::test]
+    async fn chain_message_fee_failure_does_not_create_or_change_balance() {
+        let tracker = BalanceTracker::new();
+        let sender = UserId(Uuid::new_v4());
+        let message = crate::transactions::SendDirectMessageTx {
+            message_id: MessageId(Uuid::new_v4()),
+            sender_id: sender,
+            recipient_id: UserId(Uuid::new_v4()),
+            content_hash: "hash".to_string(),
+            timestamp: chrono::Utc::now(),
+            payload_size: 1,
+            relay_node_id: None,
+        };
+        let mut tx = crate::transactions::Transaction::new(
+            crate::transactions::TransactionType::SendDirectMessage,
+            serde_json::to_vec(&message).unwrap(),
+        );
+        tx.fee_paid = 25;
+
+        assert!(tracker.apply_chain_transaction(&tx).await.is_err());
+        let balance = tracker.get_balance(sender).await;
+        assert_eq!(balance.available, 0);
+        assert_eq!(balance.total, 0);
     }
 }

@@ -131,6 +131,8 @@ pub enum DchatMessage {
         // NEW FIELDS for full block hash verification (Option A)
         prev_hash: Vec<u8>,
         state_root: Vec<u8>,
+        da_root: Option<Vec<u8>>,
+        da_chunk_count: u32,
         subblock_metadata: Vec<(u16, u64, u16)>, // (subblock_id, timestamp, miniblock_count)
         vrf_proof: Option<(Vec<u8>, Vec<u8>, u64)>, // (output, proof, weight)
         slot_epoch: u64,

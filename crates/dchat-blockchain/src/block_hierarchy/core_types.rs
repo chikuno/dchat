@@ -813,20 +813,134 @@ impl BlockHeader {
 
     /// Compute a consensus hash that can be verified by receivers
     /// Uses only fields that are transmitted in ValidatorBlock messages:
-    /// height, prev_hash, state_root, subblock_count, transaction_count
+    /// height, prev_hash, state_root, subblock_count, transaction_count, DA root/count
     ///
     /// This hash is deterministic and can be reconstructed by any node
     /// receiving the ValidatorBlock message.
     pub fn consensus_hash(&self) -> Hash {
+        let da_root = self.da_root.or_else(|| {
+            self.da_commitment
+                .as_ref()
+                .map(|da| *da.chunk_root.as_bytes())
+        });
+        let da_chunk_count = if self.da_chunk_count > 0 {
+            self.da_chunk_count
+        } else {
+            self.da_commitment
+                .as_ref()
+                .map(|da| da.chunk_count)
+                .unwrap_or(0)
+        };
+        Self::consensus_hash_from_fields(
+            self.height,
+            self.previous_hash.as_bytes(),
+            self.state_root.as_bytes(),
+            self.subblock_count,
+            self.transaction_count,
+            da_root.as_ref().map(|root| root.as_slice()),
+            da_chunk_count,
+        )
+    }
+
+    /// Compute the consensus hash from fields transmitted to block validators.
+    pub fn consensus_hash_from_fields(
+        height: u64,
+        previous_hash: &[u8],
+        state_root: &[u8],
+        subblock_count: u8,
+        transaction_count: u32,
+        da_root: Option<&[u8]>,
+        da_chunk_count: u32,
+    ) -> Hash {
         use blake3::Hasher;
         let mut hasher = Hasher::new();
-        hasher.update(b"dchat/block/consensus/v1");
-        hasher.update(&self.height.to_le_bytes());
-        hasher.update(self.previous_hash.as_bytes());
-        hasher.update(self.state_root.as_bytes());
-        hasher.update(&[self.subblock_count]);
-        hasher.update(&self.transaction_count.to_le_bytes());
+        hasher.update(if da_root.is_some() {
+            b"dchat/block/consensus/v2"
+        } else {
+            b"dchat/block/consensus/v1"
+        });
+        hasher.update(&height.to_le_bytes());
+        hasher.update(previous_hash);
+        hasher.update(state_root);
+        hasher.update(&[subblock_count]);
+        hasher.update(&transaction_count.to_le_bytes());
+        if let Some(root) = da_root {
+            hasher.update(root);
+            hasher.update(&da_chunk_count.to_le_bytes());
+        }
         Hash::from(*hasher.finalize().as_bytes())
+    }
+}
+
+#[cfg(test)]
+mod consensus_hash_tests {
+    use super::*;
+
+    #[test]
+    fn consensus_hash_commits_to_da_root_and_chunk_count() {
+        let common = (7, &[1u8; 32][..], &[2u8; 32][..], 1, 3);
+        let root_a = [3u8; 32];
+        let root_b = [4u8; 32];
+
+        let hash_a = BlockHeader::consensus_hash_from_fields(
+            common.0,
+            common.1,
+            common.2,
+            common.3,
+            common.4,
+            Some(&root_a),
+            2,
+        );
+        let hash_b = BlockHeader::consensus_hash_from_fields(
+            common.0,
+            common.1,
+            common.2,
+            common.3,
+            common.4,
+            Some(&root_b),
+            2,
+        );
+        let hash_different_count = BlockHeader::consensus_hash_from_fields(
+            common.0,
+            common.1,
+            common.2,
+            common.3,
+            common.4,
+            Some(&root_a),
+            3,
+        );
+
+        assert_ne!(hash_a, hash_b);
+        assert_ne!(hash_a, hash_different_count);
+    }
+
+    #[test]
+    fn consensus_hash_matches_transmitted_header_fields() {
+        let header = BlockHeader {
+            height: 7,
+            timestamp: SystemTime::UNIX_EPOCH,
+            previous_hash: Hash::from([1u8; 32]),
+            state_root: Hash::from([2u8; 32]),
+            subblock_count: 1,
+            transaction_count: 3,
+            da_commitment: None,
+            da_root: Some([3u8; 32]),
+            da_chunk_count: 2,
+            governance_merkle_root: None,
+        };
+
+        assert_eq!(
+            header.consensus_hash(),
+            BlockHeader::consensus_hash_from_fields(
+                7,
+                &[1u8; 32],
+                &[2u8; 32],
+                1,
+                3,
+                Some(&[3u8; 32]),
+                2,
+            )
+        );
     }
 }
 

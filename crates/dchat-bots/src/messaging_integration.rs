@@ -2882,6 +2882,8 @@ impl MessageRouter {
             // Default values for system messages
             prev_hash: vec![0u8; 32],
             state_root: vec![0u8; 32],
+            da_root: None,
+            da_chunk_count: 0,
             subblock_metadata: vec![],
             vrf_proof: None,
             slot_epoch: 0,

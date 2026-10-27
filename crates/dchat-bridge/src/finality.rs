@@ -11,6 +11,8 @@ use dchat_core::types::UserId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+const FINALITY_DST: &[u8] = b"DCHAT_BRIDGE_FINALITY_V1";
+
 /// BLS signature from a single validator
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidatorSignature {
@@ -110,6 +112,10 @@ impl AggregatedFinalityProof {
 
     /// Verify aggregated signature against message
     pub fn verify(&self, message: &[u8]) -> Result<bool, FinalityError> {
+        if message != self.block_hash.as_bytes() {
+            return Ok(false);
+        }
+
         let agg_sig_bytes = self
             .aggregated_signature
             .as_ref()
@@ -136,9 +142,7 @@ impl AggregatedFinalityProof {
 
         // Verify aggregated signature with domain separation tag
         // For same message signed by multiple validators, use fast_aggregate_verify
-        let dst = b"DCHAT_BRIDGE_FINALITY_V1";
-
-        let result = agg_sig.fast_aggregate_verify(true, message, dst, pk_refs.as_slice());
+        let result = agg_sig.fast_aggregate_verify(true, message, FINALITY_DST, pk_refs.as_slice());
 
         Ok(result == blst::BLST_ERROR::BLST_SUCCESS)
     }
@@ -257,19 +261,47 @@ impl FinalityTracker {
         }
 
         // Get pending proof
+        let validator_pubkey = self
+            .validator_pubkeys
+            .get(&validator_id)
+            .ok_or(FinalityError::UnknownValidator)?;
+        let public_key =
+            PublicKey::from_bytes(validator_pubkey).map_err(|_| FinalityError::InvalidPublicKey)?;
+        let signature_value =
+            Signature::from_bytes(&signature).map_err(|_| FinalityError::InvalidSignature)?;
+
         let proof = self
             .pending_proofs
             .get_mut(tx_hash)
             .ok_or(FinalityError::ProofNotFound)?;
 
-        // Add signature
+        if signature_value.verify(
+            true,
+            proof.block_hash.as_bytes(),
+            FINALITY_DST,
+            &[],
+            &public_key,
+            true,
+        ) != blst::BLST_ERROR::BLST_SUCCESS
+        {
+            return Err(FinalityError::InvalidSignature);
+        }
+
+        proof
+            .validator_pubkeys_map
+            .insert(validator_id.clone(), validator_pubkey.clone());
+
         let validator_sig = ValidatorSignature {
-            validator_id,
+            validator_id: validator_id.clone(),
             signature,
             signed_at: Utc::now(),
         };
 
-        proof.add_signature(validator_sig)?;
+        let signature_count = proof.signatures.len();
+        if let Err(error) = proof.add_signature(validator_sig) {
+            proof.signatures.truncate(signature_count);
+            return Err(error);
+        }
 
         // Check if finalized
         let is_finalized = proof.is_finalized();
@@ -424,7 +456,7 @@ mod tests {
         // Test single signature verification
         let (sk, pk) = generate_bls_keypair();
         let message = b"test message";
-        let dst = b"DCHAT_BRIDGE_FINALITY_V1";
+        let dst = FINALITY_DST;
 
         let sig = sk.sign(message, dst, &[]);
         let result = sig.verify(true, message, dst, &[], &pk, true);
@@ -497,8 +529,8 @@ mod tests {
             .unwrap();
 
         // Sign message with validators using matching DST
-        let message = b"finalize tx_finality_test at block 200";
-        let dst = b"DCHAT_BRIDGE_FINALITY_V1";
+        let message = b"block_finality";
+        let dst = FINALITY_DST;
         let sig1 = sk1.sign(message, dst, &[]);
         let sig2 = sk2.sign(message, dst, &[]);
 
@@ -539,8 +571,8 @@ mod tests {
             .initiate_proof(tx_hash.to_string(), 50, "block_dup".to_string(), 10, 10)
             .unwrap();
 
-        let message = b"test message";
-        let dst = b"DCHAT_BRIDGE_FINALITY_V1";
+        let message = b"block_dup";
+        let dst = FINALITY_DST;
         let sig = sk.sign(message, dst, &[]);
 
         tracker
@@ -550,6 +582,41 @@ mod tests {
         // Try to submit again
         let result = tracker.submit_signature(tx_hash, validator, sig.to_bytes().to_vec());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_signature_is_rejected_before_it_is_recorded() {
+        let mut tracker = FinalityTracker::new(1, 1).unwrap();
+        let (sk, pk) = generate_bls_keypair();
+        let validator = UserId::new();
+        tracker
+            .register_validator(validator.clone(), pk.to_bytes().to_vec())
+            .unwrap();
+        tracker
+            .initiate_proof(
+                "tx_invalid_signature".to_string(),
+                1,
+                "expected_block_hash".to_string(),
+                1,
+                1,
+            )
+            .unwrap();
+
+        let invalid_signature =
+            sk.sign(b"a different block", FINALITY_DST, &[]).to_bytes().to_vec();
+        assert!(matches!(
+            tracker.submit_signature(
+                "tx_invalid_signature",
+                validator,
+                invalid_signature,
+            ),
+            Err(FinalityError::InvalidSignature)
+        ));
+        assert!(tracker
+            .get_pending_proof("tx_invalid_signature")
+            .unwrap()
+            .signatures
+            .is_empty());
     }
 
     #[test]

@@ -100,7 +100,8 @@ use dchat_blockchain::vote_persistence::{PoRWVoteRecord, VotePersistence};
 
 // Block hierarchy infrastructure - data availability and fraud proofs
 use dchat_blockchain::block_hierarchy::{
-    DataAvailabilityCommitment, FraudDetector, FraudProofBuilder, FraudType, DA_CHUNK_SIZE,
+    BlockHeader, DataAvailabilityCommitment, FraudDetector, FraudProofBuilder, FraudType,
+    DA_CHUNK_SIZE,
 };
 
 // Testnet faucet infrastructure
@@ -9199,9 +9200,62 @@ async fn run_validator_node(
                             state_root_bytes.copy_from_slice(&state_root[..32.min(state_root.len())]);
                             block.state_root = BlockHash::from(state_root_bytes);
 
+                            if let Err(error) = block.add_subblock(subblock) {
+                                warn!("Failed to add produced subblock to block #{}: {:?}", block_height, error);
+                                continue;
+                            }
+
+                            let mut tx_bytes = Vec::new();
+                            for miniblock in block.subblocks.iter().flat_map(|subblock| &subblock.miniblocks) {
+                                let Some(body) = miniblock.body.as_ref() else {
+                                    warn!("Cannot commit DA for block #{}: miniblock body is missing", block_height);
+                                    continue;
+                                };
+                                for tx in &body.transactions {
+                                    match bincode::serialize(tx) {
+                                        Ok(bytes) => tx_bytes.push(bytes),
+                                        Err(error) => {
+                                            warn!("Cannot serialize transaction for block #{} DA: {}", block_height, error);
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+                            if tx_bytes.len() != block.transaction_count() {
+                                warn!(
+                                    "Block #{} transaction bodies do not match header count ({} bodies, {} declared)",
+                                    block_height,
+                                    tx_bytes.len(),
+                                    block.transaction_count()
+                                );
+                                continue;
+                            }
+
+                            let subblock_metadata: Vec<(u16, u64, u16)> = block.subblocks.iter()
+                                .map(|sb| {
+                                    let timestamp = sb.timestamp
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+                                        .as_secs();
+                                    (sb.index, timestamp, sb.miniblocks.len() as u16)
+                                })
+                                .collect();
+                            let block_bytes = match bincode::serialize(&(
+                                block_height,
+                                block.previous_hash.as_bytes().to_vec(),
+                                state_root.clone(),
+                                tx_bytes.clone(),
+                                subblock_metadata.clone(),
+                            )) {
+                                Ok(bytes) => bytes,
+                                Err(error) => {
+                                    warn!("Failed to serialize block #{} for DA commitment: {}", block_height, error);
+                                    continue;
+                                }
+                            };
+
                             // Generate Data Availability commitment for light client verification
-                            // This enables light clients to verify block data without downloading entire block
-                            let block_bytes = block.consensus_hash().as_bytes().to_vec();
+                            // Commit to the exact transaction bodies and metadata sent to validators.
                             let da_commitment = match DataAvailabilityCommitment::from_data(
                                 block_height,
                                 &block_bytes,
@@ -9220,8 +9274,11 @@ async fn run_validator_node(
                                 }
                             };
                             
-                            // Store DA commitment hash for block header extension (future use)
-                            let _da_hash = da_commitment.as_ref().map(|c| c.hash());
+                            if let Some(ref commitment) = da_commitment {
+                                block.da_root = Some(*commitment.chunk_root.as_bytes());
+                                block.da_chunk_count = commitment.chunk_count;
+                                block.da_commitment = Some(commitment.clone());
+                            }
 
                             // 1. Notify Consensus Integration
                             let block_hash = block.calculate_hash();
@@ -9326,16 +9383,12 @@ async fn run_validator_node(
                                 Err(e) => error!("Consensus integration failed: {:?}", e),
                             }
 
-                            let _ = block.add_subblock(subblock);
-
                             info!("  • State root: {}", hex::encode(&state_root[..8]));
                             info!("  • Block has {} subblocks, {} transactions total",
                                 block.subblocks.len(), block.transaction_count());
 
-                            // Calculate consensus hash for signing and network transmission
-                            // Uses consensus_hash() which only includes fields transmitted in ValidatorBlock:
-                            // height, prev_hash, state_root, subblock_count, transaction_count
-                            // This allows receivers to verify the hash without full block reconstruction
+                            // Calculate consensus hash for signing and network transmission.
+                            // The DA root and chunk count are included in the signed header.
                             let block_hash_obj = block.consensus_hash();
                             let block_hash = block_hash_obj.as_bytes().to_vec();
 
@@ -9384,23 +9437,6 @@ async fn run_validator_node(
                                 .unwrap_or_else(|_| std::time::Duration::from_secs(0))
                                 .as_secs();
 
-                            // Serialize transactions for network message
-                            let tx_bytes: Vec<Vec<u8>> = pending_txs.iter()
-                                .filter_map(|tx| bincode::serialize(tx).ok())
-                                .collect();
-
-                            // Prepare subblock metadata for network transmission
-                            // Convert SystemTime timestamps to u64 for serialization
-                            let subblock_metadata: Vec<(u16, u64, u16)> = block.subblocks.iter()
-                                .map(|sb| {
-                                    let timestamp_u64 = sb.timestamp
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_else(|_| std::time::Duration::from_secs(0))
-                                        .as_secs();
-                                    (sb.index, timestamp_u64, sb.miniblocks.len() as u16)
-                                })
-                                .collect();
-
                             // Prepare VRF proof for transmission (if this validator was leader)
                             let vrf_proof_option = if let Some(ref proof) = last_vrf_proof {
                                 Some((
@@ -9427,6 +9463,8 @@ async fn run_validator_node(
                                 transactions: tx_bytes,
                                 prev_hash: block.previous_hash.as_bytes().to_vec(),
                                 state_root: state_root.to_vec(),
+                                da_root: block.da_root.map(|root| root.to_vec()),
+                                da_chunk_count: block.da_chunk_count,
                                 subblock_metadata,
                                 vrf_proof: vrf_proof_option,
                                 slot_epoch: current_epoch,
@@ -9599,6 +9637,8 @@ async fn run_validator_node(
                                     transactions,
                                     prev_hash,
                                     state_root,
+                                    da_root,
+                                    da_chunk_count,
                                     subblock_metadata,
                                     vrf_proof,
                                     slot_epoch,
@@ -9660,20 +9700,60 @@ async fn run_validator_node(
                                         continue;
                                     }
 
-                                    // Verify block hash matches the consensus hash of transmitted fields
-                                    // The consensus hash includes: height, prev_hash, state_root, subblock_count, tx_count
+                                    if da_root.as_ref().is_some_and(|root| root.len() != 32)
+                                        || (da_root.is_none() && da_chunk_count != 0)
                                     {
-                                        use blake3::Hasher;
-                                        let mut hasher = Hasher::new();
-                                        hasher.update(b"dchat/block/consensus/v1");
-                                        hasher.update(&height.to_le_bytes());
-                                        hasher.update(&prev_hash);
-                                        hasher.update(&state_root);
-                                        hasher.update(&[subblock_metadata.len() as u8]);
-                                        hasher.update(&(transactions.len() as u32).to_le_bytes());
-                                        let computed_hash = hasher.finalize();
+                                        warn!("⚠️  Block #{} has invalid DA root metadata", height);
+                                        continue;
+                                    }
 
-                                        if computed_hash.as_bytes() != block_hash.as_slice() {
+                                    // Recompute the DA root from the exact block fields delivered to validators.
+                                    if let Some(received_root) = da_root.as_ref() {
+                                        let da_data = match bincode::serialize(&(
+                                            height,
+                                            prev_hash.clone(),
+                                            state_root.clone(),
+                                            transactions.clone(),
+                                            subblock_metadata.clone(),
+                                        )) {
+                                            Ok(data) => data,
+                                            Err(error) => {
+                                                warn!("⚠️  Failed to serialize DA data for block #{}: {}", height, error);
+                                                continue;
+                                            }
+                                        };
+                                        let commitment = match DataAvailabilityCommitment::from_data(
+                                            height,
+                                            &da_data,
+                                            DA_CHUNK_SIZE,
+                                        ) {
+                                            Ok(commitment) => commitment,
+                                            Err(error) => {
+                                                warn!("⚠️  Failed to validate DA commitment for block #{}: {}", height, error);
+                                                continue;
+                                            }
+                                        };
+                                        if received_root.as_slice() != commitment.chunk_root.as_bytes()
+                                            || da_chunk_count != commitment.chunk_count
+                                        {
+                                            warn!("⚠️  Block #{} DA commitment does not match the block fields", height);
+                                            continue;
+                                        }
+                                    }
+
+                                    // Verify the consensus hash over the transmitted block fields.
+                                    {
+                                        let computed_hash = BlockHeader::consensus_hash_from_fields(
+                                            height,
+                                            &prev_hash,
+                                            &state_root,
+                                            subblock_metadata.len() as u8,
+                                            transactions.len() as u32,
+                                            da_root.as_deref(),
+                                            da_chunk_count,
+                                        );
+
+                                        if computed_hash.as_bytes().as_slice() != block_hash.as_slice() {
                                             warn!("⚠️  Block #{} hash verification FAILED", height);
                                             warn!("   Expected: {}", hex::encode(&block_hash[..8]));
                                             warn!("   Computed: {}", hex::encode(&computed_hash.as_bytes()[..8]));

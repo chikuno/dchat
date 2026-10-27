@@ -31,36 +31,53 @@ impl Mempool {
     /// Add a verified transaction to the mempool
     pub fn add_transaction(&self, tx: Transaction) -> Result<()> {
         let mut queue = self.pending.write().map_err(|_| Error::internal("Mempool lock poisoned"))?;
-        if queue.len() >= self.max_capacity {
-            return Err(Error::validation("Mempool capacity exceeded"));
-        }
         // Avoid duplicate transaction IDs
         if queue.iter().any(|t| t.tx_id == tx.tx_id) {
             return Ok(());
+        }
+        if queue.len() >= self.max_capacity {
+            return Err(Error::validation("Mempool capacity exceeded"));
         }
         debug!("Adding transaction {} to mempool (queue len: {})", tx.tx_id, queue.len() + 1);
         queue.push_back(tx);
         Ok(())
     }
 
-    /// Drain valid transactions up to max_gas or max_count for block production
-    pub fn drain_valid_transactions(&self, max_gas: u64, max_count: usize) -> Vec<Transaction> {
-        let mut queue = match self.pending.write() {
-            Ok(q) => q,
-            Err(_) => return Vec::new(),
-        };
+    /// Drain transactions up to the supplied gas and transaction limits.
+    ///
+    /// The caller must provide the runtime's gas estimate; fees are not a gas
+    /// measurement. A transaction that exceeds the remaining budget stays queued.
+    pub fn drain_valid_transactions<F>(
+        &self,
+        max_gas: u64,
+        max_count: usize,
+        mut estimate_gas: F,
+    ) -> Result<Vec<Transaction>>
+    where
+        F: FnMut(&Transaction) -> Option<u64>,
+    {
+        if max_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut queue = self
+            .pending
+            .write()
+            .map_err(|_| Error::internal("Mempool lock poisoned"))?;
 
         let mut drained = Vec::new();
         let mut accumulated_gas: u64 = 0;
 
-        while let Some(tx) = queue.pop_front() {
-            let tx_gas = tx.fee_paid.max(1);
-            if accumulated_gas.saturating_add(tx_gas) > max_gas && !drained.is_empty() {
-                // Return transaction back to front of queue
-                queue.push_front(tx);
+        while let Some(tx) = queue.front() {
+            let tx_gas = estimate_gas(tx)
+                .ok_or_else(|| Error::validation("Unable to estimate transaction gas"))?;
+            if tx_gas > max_gas.saturating_sub(accumulated_gas) {
                 break;
             }
 
+            let tx = queue
+                .pop_front()
+                .ok_or_else(|| Error::internal("Mempool queue changed while locked"))?;
             accumulated_gas = accumulated_gas.saturating_add(tx_gas);
             drained.push(tx);
 
@@ -73,16 +90,75 @@ impl Mempool {
             info!("Drained {} transactions from mempool (total gas: {})", drained.len(), accumulated_gas);
         }
 
-        drained
+        Ok(drained)
     }
 
     /// Current number of transactions in mempool
-    pub fn len(&self) -> usize {
-        self.pending.read().map(|q| q.len()).unwrap_or(0)
+    pub fn len(&self) -> Result<usize> {
+        self.pending
+            .read()
+            .map(|queue| queue.len())
+            .map_err(|_| Error::internal("Mempool lock poisoned"))
     }
 
     /// Whether the mempool is empty
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
+    pub fn is_empty(&self) -> Result<bool> {
+        self.len().map(|len| len == 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn transaction(payload: &[u8], fee_paid: u64) -> Transaction {
+        let mut tx = Transaction::new(
+            crate::transactions::TransactionType::SendDirectMessage,
+            payload.to_vec(),
+        );
+        tx.fee_paid = fee_paid;
+        tx
+    }
+
+    #[test]
+    fn zero_transaction_limit_does_not_drain() {
+        let mempool = Mempool::default();
+        mempool.add_transaction(transaction(b"tx", 1)).unwrap();
+
+        let drained = mempool
+            .drain_valid_transactions(10, 0, |_| Some(1))
+            .unwrap();
+
+        assert!(drained.is_empty());
+        assert_eq!(mempool.len().unwrap(), 1);
+    }
+
+    #[test]
+    fn over_budget_transaction_stays_queued_and_fee_is_not_used_as_gas() {
+        let mempool = Mempool::default();
+        mempool.add_transaction(transaction(b"tx", 100_000)).unwrap();
+
+        let drained = mempool
+            .drain_valid_transactions(4, 10, |_| Some(5))
+            .unwrap();
+        assert!(drained.is_empty());
+        assert_eq!(mempool.len().unwrap(), 1);
+
+        let drained = mempool
+            .drain_valid_transactions(5, 10, |_| Some(5))
+            .unwrap();
+        assert_eq!(drained.len(), 1);
+        assert!(mempool.is_empty().unwrap());
+    }
+
+    #[test]
+    fn missing_gas_estimate_preserves_transaction_and_returns_error() {
+        let mempool = Mempool::default();
+        mempool.add_transaction(transaction(b"tx", 1)).unwrap();
+
+        assert!(mempool
+            .drain_valid_transactions(10, 10, |_| None)
+            .is_err());
+        assert_eq!(mempool.len().unwrap(), 1);
     }
 }

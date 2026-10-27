@@ -347,13 +347,6 @@ impl MessageService {
         })
     }
 
-    /// Ingest and process an incoming message from the network
-    pub async fn process_incoming_message(&self, message: &Message) -> Result<()> {
-        self.validate_message(message)?;
-        tracing::debug!("📨 Processed incoming message: {}", message.id);
-        Ok(())
-    }
-
     /// Validate a message before sending
     fn validate_message(&self, message: &Message) -> Result<()> {
         // Check expiration

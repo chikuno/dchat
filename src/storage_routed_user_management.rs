@@ -279,6 +279,12 @@ impl StorageRoutedUserManager {
         encrypted: bool,
         encryption_key_id: Option<[u8; 32]>,
     ) -> Result<DirectMessageResponse> {
+        if recipient_id.starts_with("stealth:") {
+            return Err(Error::validation(
+                "Stealth recipients are not supported by the UUID-based user and storage model",
+            ));
+        }
+
         info!(
             "Sending DM from {} to {} ({} bytes)",
             sender_id,
@@ -303,8 +309,6 @@ impl StorageRoutedUserManager {
 
         // Convert UUIDs to byte arrays for storage router
         let sender_bytes = uuid_to_bytes(&sender_uuid.0);
-        let final_content = content.to_vec();
-        let effective_key_id = encryption_key_id;
         let recipient_bytes = uuid_to_bytes(&recipient_uuid.0);
 
         // Submit on-chain transaction for message ordering
@@ -318,21 +322,6 @@ impl StorageRoutedUserManager {
                 Error::internal(format!("Chat chain recording failed: {}", e))
             })?;
 
-        // Check if recipient uses stealth addressing
-        let (effective_key_id, final_content) = if recipient_id.starts_with("stealth:") {
-            let mut rng = rand::thread_rng();
-            let stealth_addr = dchat_privacy::stealth::StealthAddress::generate(&mut rng);
-            let generator = dchat_privacy::stealth::StealthGenerator::new(&mut rng);
-            if let Ok(payload) = generator.create_payload(&stealth_addr, content, &mut rng) {
-                debug!("Embedded stealth ephemeral key for recipient {}", recipient_id);
-                (Some(payload.ephemeral_key), payload.ciphertext)
-            } else {
-                (encryption_key_id, content.to_vec())
-            }
-        } else {
-            (encryption_key_id, content.to_vec())
-        };
-
         // Store through StorageRouter (handles tiering automatically)
         let metadata = self
             .router
@@ -340,9 +329,9 @@ impl StorageRoutedUserManager {
                 sender_bytes,
                 recipient_bytes,
                 MessageType::Direct,
-                final_content,
+                content.to_vec(),
                 encrypted,
-                effective_key_id,
+                encryption_key_id,
                 None, // reply_to
             )
             .await
