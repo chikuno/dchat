@@ -221,6 +221,16 @@ impl RpcClient {
             .await
             .map_err(|e| Error::network(format!("Failed to parse RPC response: {}", e)))?;
 
-        Ok(json.get("result").cloned())
+        if let Some(error) = json.get("error") {
+            return Err(Error::network(format!("RPC error: {}", error)));
+        }
+
+        match json.get("result") {
+            Some(serde_json::Value::Null) => Ok(None),
+            Some(result) => Ok(Some(result.clone())),
+            None => Err(Error::network(
+                "Missing result in DA sample proof response".to_string(),
+            )),
+        }
     }
 }

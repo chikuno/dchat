@@ -137,6 +137,9 @@ pub fn lane_for_transaction(tx: &Transaction) -> Result<LaneId, BlockError> {
                 .map_err(|e| BlockError::InvalidTransaction(e.to_string()))?;
             t.recipient_id.to_string().into_bytes()
         }
+        TransactionType::SmartContractExecution
+        | TransactionType::GovernanceVote
+        | TransactionType::GovernanceProposal => tx.tx_hash.as_bytes().to_vec(),
     };
 
     let h = blake3::hash(&key_bytes);
@@ -188,6 +191,9 @@ fn tx_type_id(tx_type: TransactionType) -> u8 {
         TransactionType::JoinChannel => 5,
         TransactionType::UpdateProfile => 6,
         TransactionType::SubmitDeliveryProof => 7,
+        TransactionType::SmartContractExecution => 8,
+        TransactionType::GovernanceVote => 9,
+        TransactionType::GovernanceProposal => 10,
     }
 }
 
@@ -201,6 +207,9 @@ fn sigchecks_for_tx(tx: &Transaction) -> u16 {
         TransactionType::PostToChannel => 1,
         TransactionType::JoinChannel => 1,
         TransactionType::UpdateProfile => 1,
+        TransactionType::SmartContractExecution => 1,
+        TransactionType::GovernanceVote => 1,
+        TransactionType::GovernanceProposal => 1,
     }
 }
 
@@ -335,6 +344,11 @@ fn estimate_tx_gas(tx: &Transaction) -> u64 {
         TransactionType::JoinChannel => BASE_GAS + 5000,
         TransactionType::UpdateProfile => BASE_GAS + 3000,
         TransactionType::SubmitDeliveryProof => BASE_GAS + 8000,
+        TransactionType::SmartContractExecution
+        | TransactionType::GovernanceVote
+        | TransactionType::GovernanceProposal => {
+            BASE_GAS + (tx.payload.len() as u64) / 100
+        }
     }
 }
 

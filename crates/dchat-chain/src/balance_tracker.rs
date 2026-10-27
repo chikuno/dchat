@@ -514,13 +514,27 @@ impl BalanceTracker {
         let mut computed_staked: u128 = 0;
 
         for (user, balance) in balances.iter() {
-            if balance.total != balance.calculate_total() {
+            let calculated_total = balance
+                .available
+                .checked_add(balance.staked)
+                .and_then(|total| total.checked_add(balance.delegated))
+                .and_then(|total| total.checked_add(balance.unstaking))
+                .and_then(|total| total.checked_add(balance.unclaimed_rewards))
+                .ok_or_else(|| {
+                    Error::validation(format!(
+                        "Balance total overflow for user {}",
+                        user.0
+                    ))
+                })?;
+            if balance.total != calculated_total {
                 return Err(Error::validation(format!(
                     "Balance total invariant violated for user {}: recorded {}, calculated {}",
-                    user.0, balance.total, balance.calculate_total()
+                    user.0, balance.total, calculated_total
                 )));
             }
-            computed_staked = computed_staked.saturating_add(balance.staked);
+            computed_staked = computed_staked.checked_add(balance.staked).ok_or_else(|| {
+                Error::validation("Total staked balance overflow")
+            })?;
         }
 
         if total_staked != computed_staked {

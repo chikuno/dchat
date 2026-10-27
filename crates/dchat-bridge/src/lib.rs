@@ -372,36 +372,12 @@ impl BridgeManager {
         validator_id: UserId,
         signature: Vec<u8>,
     ) -> Result<bool> {
-        let is_finalized = match self
+        let is_finalized = self
             .finality_tracker
-            .submit_signature(tx_hash, validator_id.clone(), signature.clone())
-        {
-            Ok(is_finalized) => is_finalized,
-            Err(error) => {
-                if matches!(&error, finality::FinalityError::InvalidSignature) {
-                    let mut evidence = validator_id.0.as_bytes().to_vec();
-                    evidence.extend_from_slice(tx_hash.as_bytes());
-                    evidence.extend_from_slice(&signature);
-                    self.slashing
-                        .record_slash_event(
-                            validator_id,
-                            SlashReason::InvalidSignature,
-                            10_000,
-                            evidence,
-                        )
-                        .map_err(|slash_error| {
-                            Error::internal(format!(
-                                "Invalid finality signature; failed to record slash evidence: {}",
-                                slash_error
-                            ))
-                        })?;
-                }
-                return Err(Error::validation(format!(
-                    "Failed to submit signature: {}",
-                    error
-                )));
-            }
-        };
+            .submit_signature(tx_hash, validator_id, signature)
+            .map_err(|error| {
+                Error::validation(format!("Failed to submit signature: {}", error))
+            })?;
 
         Ok(is_finalized)
     }

@@ -1,9 +1,9 @@
 //! In-memory transaction mempool for block production and gossip ingress
 
-use std::collections::VecDeque;
-use std::sync::{Arc, RwLock};
 use crate::transactions::Transaction;
 use dchat_core::error::{Error, Result};
+use std::collections::VecDeque;
+use std::sync::{Arc, RwLock};
 use tracing::{debug, info};
 
 /// In-memory queue of pending transactions awaiting block inclusion
@@ -30,7 +30,10 @@ impl Mempool {
 
     /// Add a verified transaction to the mempool
     pub fn add_transaction(&self, tx: Transaction) -> Result<()> {
-        let mut queue = self.pending.write().map_err(|_| Error::internal("Mempool lock poisoned"))?;
+        let mut queue = self
+            .pending
+            .write()
+            .map_err(|_| Error::internal("Mempool lock poisoned"))?;
         // Avoid duplicate transaction IDs
         if queue.iter().any(|t| t.tx_id == tx.tx_id) {
             return Ok(());
@@ -38,7 +41,11 @@ impl Mempool {
         if queue.len() >= self.max_capacity {
             return Err(Error::validation("Mempool capacity exceeded"));
         }
-        debug!("Adding transaction {} to mempool (queue len: {})", tx.tx_id, queue.len() + 1);
+        debug!(
+            "Adding transaction {} to mempool (queue len: {})",
+            tx.tx_id,
+            queue.len() + 1
+        );
         queue.push_back(tx);
         Ok(())
     }
@@ -87,7 +94,11 @@ impl Mempool {
         }
 
         if !drained.is_empty() {
-            info!("Drained {} transactions from mempool (total gas: {})", drained.len(), accumulated_gas);
+            info!(
+                "Drained {} transactions from mempool (total gas: {})",
+                drained.len(),
+                accumulated_gas
+            );
         }
 
         Ok(drained)
@@ -136,7 +147,9 @@ mod tests {
     #[test]
     fn over_budget_transaction_stays_queued_and_fee_is_not_used_as_gas() {
         let mempool = Mempool::default();
-        mempool.add_transaction(transaction(b"tx", 100_000)).unwrap();
+        mempool
+            .add_transaction(transaction(b"tx", 100_000))
+            .unwrap();
 
         let drained = mempool
             .drain_valid_transactions(4, 10, |_| Some(5))
@@ -156,9 +169,7 @@ mod tests {
         let mempool = Mempool::default();
         mempool.add_transaction(transaction(b"tx", 1)).unwrap();
 
-        assert!(mempool
-            .drain_valid_transactions(10, 10, |_| None)
-            .is_err());
+        assert!(mempool.drain_valid_transactions(10, 10, |_| None).is_err());
         assert_eq!(mempool.len().unwrap(), 1);
     }
 }

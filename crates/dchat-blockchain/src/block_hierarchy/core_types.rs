@@ -723,7 +723,7 @@ impl Block {
     /// in ValidatorBlock messages, allowing receivers to verify
     /// the block hash without reconstructing the full Block structure.
     ///
-    /// Fields included: height, previous_hash, state_root, subblock_count, tx_count
+    /// Fields included: height, previous_hash, state_root, subblock_count, tx_count, DA root/count
     pub fn consensus_hash(&self) -> Hash {
         self.header_only().consensus_hash()
     }
@@ -755,6 +755,19 @@ impl Block {
         // 4. Verify DA commitment if present
         if let Some(ref da) = self.da_commitment {
             da.validate()?;
+            if self
+                .da_root
+                .is_some_and(|root| root != *da.chunk_root.as_bytes())
+                || (self.da_chunk_count != 0 && self.da_chunk_count != da.chunk_count)
+            {
+                return Err(BlockError::DataAvailability(
+                    "DA header fields do not match the block commitment".to_string(),
+                ));
+            }
+        } else if self.da_root.is_some() || self.da_chunk_count != 0 {
+            return Err(BlockError::DataAvailability(
+                "DA header fields are present without a block commitment".to_string(),
+            ));
         }
 
         Ok(())
@@ -940,6 +953,30 @@ mod consensus_hash_tests {
                 Some(&[3u8; 32]),
                 2,
             )
+        );
+    }
+
+    #[test]
+    fn consensus_hash_without_da_preserves_legacy_hash() {
+        let mut legacy_hasher = blake3::Hasher::new();
+        legacy_hasher.update(b"dchat/block/consensus/v1");
+        legacy_hasher.update(&7u64.to_le_bytes());
+        legacy_hasher.update(&[1u8; 32]);
+        legacy_hasher.update(&[2u8; 32]);
+        legacy_hasher.update(&[1]);
+        legacy_hasher.update(&3u32.to_le_bytes());
+
+        assert_eq!(
+            BlockHeader::consensus_hash_from_fields(
+                7,
+                &[1u8; 32],
+                &[2u8; 32],
+                1,
+                3,
+                None,
+                0,
+            ),
+            Hash::from(*legacy_hasher.finalize().as_bytes())
         );
     }
 }

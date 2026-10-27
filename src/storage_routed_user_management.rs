@@ -132,10 +132,16 @@ impl StorageRoutedUserManager {
     }
 
     /// Set the production dchat-bridge manager
-    pub fn set_dchat_bridge(&self, bridge: Arc<std::sync::RwLock<dchat_bridge::BridgeManager>>) {
-        if let Ok(mut lock) = self.dchat_bridge_manager.write() {
-            *lock = Some(bridge);
-        }
+    pub fn set_dchat_bridge(
+        &self,
+        bridge: Arc<std::sync::RwLock<dchat_bridge::BridgeManager>>,
+    ) -> Result<()> {
+        let mut lock = self
+            .dchat_bridge_manager
+            .write()
+            .map_err(|_| Error::internal("dchat bridge manager lock poisoned"))?;
+        *lock = Some(bridge);
+        Ok(())
     }
 
     /// Get production dchat-bridge manager if configured

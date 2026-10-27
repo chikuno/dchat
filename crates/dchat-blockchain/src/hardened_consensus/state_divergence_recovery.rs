@@ -1027,6 +1027,8 @@ mod tests {
                 relay_votes: vec![],
                 finality_proof: crate::block_hierarchy::FinalityProof::default(),
                 da_commitment: None,
+                da_root: None,
+                da_chunk_count: 0,
                 governance_merkle_root: None,
             })
             .collect();

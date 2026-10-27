@@ -5168,7 +5168,7 @@ async fn run_light_client(
         );
 
         if let Some(ref bm) = dchat_bridge_manager {
-            storage_manager.set_dchat_bridge(Arc::clone(bm));
+            storage_manager.set_dchat_bridge(Arc::clone(bm))?;
         }
 
         // Create FeeGateway
@@ -5707,7 +5707,7 @@ async fn run_user_node(
         info!("   ✓ Storage provider routing enabled (offline mode)");
         let manager_arc = Arc::new(manager);
         if let Some(ref bm) = dchat_bridge_manager {
-            manager_arc.set_dchat_bridge(Arc::clone(bm));
+            manager_arc.set_dchat_bridge(Arc::clone(bm))?;
         }
         Some(manager_arc)
     } else {
@@ -9733,7 +9733,8 @@ async fn run_validator_node(
                                                 continue;
                                             }
                                         };
-                                        if received_root.as_slice() != commitment.chunk_root.as_bytes()
+                                        if received_root.as_slice()
+                                            != commitment.chunk_root.as_bytes().as_slice()
                                             || da_chunk_count != commitment.chunk_count
                                         {
                                             warn!("⚠️  Block #{} DA commitment does not match the block fields", height);

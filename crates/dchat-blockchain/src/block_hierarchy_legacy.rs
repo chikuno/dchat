@@ -618,6 +618,9 @@ fn tx_type_id(tx_type: TransactionType) -> u8 {
         TransactionType::JoinChannel => 5,
         TransactionType::UpdateProfile => 6,
         TransactionType::SubmitDeliveryProof => 7,
+        TransactionType::SmartContractExecution => 8,
+        TransactionType::GovernanceVote => 9,
+        TransactionType::GovernanceProposal => 10,
     }
 }
 
@@ -679,6 +682,9 @@ pub fn lane_for_transaction(tx: &Transaction) -> Result<LaneId, BlockError> {
                 .map_err(|e| BlockError::InvalidTransaction(e.to_string()))?;
             t.recipient_id.to_string().into_bytes()
         }
+        TransactionType::SmartContractExecution
+        | TransactionType::GovernanceVote
+        | TransactionType::GovernanceProposal => tx.tx_hash.as_bytes().to_vec(),
     };
 
     let h = blake3::hash(&key_bytes);
@@ -1068,6 +1074,15 @@ impl WorldState {
                 );
 
                 BASE_GAS + 8000 // Delivery proof verification costs gas
+            }
+
+            TransactionType::SmartContractExecution
+            | TransactionType::GovernanceVote
+            | TransactionType::GovernanceProposal => {
+                return Err(BlockError::InvalidTransaction(format!(
+                    "Transaction type {:?} is not supported by the legacy executor",
+                    tx.tx_type
+                )));
             }
         };
 

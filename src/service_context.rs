@@ -478,8 +478,13 @@ impl ServiceContext {
     }
 
     /// Set the initialized dchat-bridge manager
-    pub fn set_dchat_bridge(&self, bridge: Arc<std::sync::RwLock<dchat_bridge::BridgeManager>>) {
-        let _ = self.dchat_bridge.set(Some(bridge));
+    pub fn set_dchat_bridge(
+        &self,
+        bridge: Arc<std::sync::RwLock<dchat_bridge::BridgeManager>>,
+    ) -> Result<()> {
+        self.dchat_bridge
+            .set(Some(bridge))
+            .map_err(|_| Error::internal("dchat bridge manager is already initialized"))
     }
 
     /// Get dchat-bridge manager if initialized
