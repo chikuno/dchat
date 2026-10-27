@@ -13,6 +13,108 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+fn checked_add(left: u128, right: u128, context: &str) -> Result<u128> {
+    left.checked_add(right)
+        .ok_or_else(|| Error::validation(format!("{} overflow", context)))
+}
+
+fn refresh_total(balance: &mut Balance) -> Result<()> {
+    let total = checked_add(balance.available, balance.staked, "Balance total")?;
+    let total = checked_add(total, balance.delegated, "Balance total")?;
+    let total = checked_add(total, balance.unstaking, "Balance total")?;
+    balance.total = checked_add(total, balance.unclaimed_rewards, "Balance total")?;
+    Ok(())
+}
+
+fn empty_staking_info(account: UserId) -> StakingInfo {
+    StakingInfo {
+        account,
+        total_staked: 0,
+        validator_stake: 0,
+        relay_stake: 0,
+        reputation_stake: 0,
+        delegations: Vec::new(),
+        pending_unstakes: Vec::new(),
+        pending_undelegations: Vec::new(),
+    }
+}
+
+fn typed_stake_total(info: &StakingInfo) -> Result<u128> {
+    let total = checked_add(info.validator_stake, info.relay_stake, "Typed stake total")?;
+    checked_add(total, info.reputation_stake, "Typed stake total")
+}
+
+fn ensure_stake_consistency(account: UserId, balance: &Balance, info: &StakingInfo) -> Result<()> {
+    let pending_unstakes = info
+        .pending_unstakes
+        .iter()
+        .try_fold(0u128, |total, unstake| {
+            checked_add(total, unstake.amount, "Pending unstake total")
+        })?;
+    let pending_undelegations = info
+        .pending_undelegations
+        .iter()
+        .try_fold(0u128, |total, undelegation| {
+            checked_add(total, undelegation.amount, "Pending undelegation total")
+        })?;
+    let pending_returns = checked_add(
+        pending_unstakes,
+        pending_undelegations,
+        "Pending return total",
+    )?;
+    if info.account != account
+        || info.total_staked != typed_stake_total(info)?
+        || balance.staked != info.total_staked
+        || balance.delegated != delegation_total(info)?
+        || balance.unstaking != pending_returns
+    {
+        return Err(Error::validation(format!(
+            "Stake records are inconsistent for account {}",
+            info.account.0
+        )));
+    }
+    Ok(())
+}
+
+fn delegation_total(info: &StakingInfo) -> Result<u128> {
+    info.delegations
+        .iter()
+        .try_fold(0u128, |total, delegation| {
+            checked_add(total, delegation.amount, "Delegation total")
+        })
+}
+
+fn proportional_slash(amount: u128, total: u128, stakes: [u128; 3]) -> Result<[u128; 3]> {
+    if amount > total {
+        return Err(Error::validation("Slash amount exceeds staked balance"));
+    }
+    if total == 0 {
+        return Ok([0; 3]);
+    }
+
+    let mut reductions = [0; 3];
+    let mut allocated = 0;
+    for (index, stake) in stakes.iter().enumerate() {
+        reductions[index] = amount
+            .checked_mul(*stake)
+            .ok_or_else(|| Error::validation("Proportional slash calculation overflow"))?
+            / total;
+        allocated = checked_add(allocated, reductions[index], "Proportional slash total")?;
+    }
+
+    let mut remainder = amount - allocated;
+    for (index, stake) in stakes.iter().enumerate() {
+        let available = *stake - reductions[index];
+        let extra = available.min(remainder);
+        reductions[index] += extra;
+        remainder -= extra;
+    }
+    if remainder != 0 {
+        return Err(Error::validation("Unable to allocate slash amount"));
+    }
+    Ok(reductions)
+}
+
 /// Balance tracker maintaining account state
 pub struct BalanceTracker {
     /// Account balances
@@ -55,19 +157,26 @@ impl BalanceTracker {
     /// Process transfer transaction
     async fn process_transfer(&self, tx: &TransferTx) -> Result<()> {
         let mut balances = self.balances.write().await;
-
-        // Deduct from sender (amount + fee)
-        let sender_balance = balances.entry(tx.from).or_insert(Balance::default());
-        if sender_balance.available < tx.amount + tx.fee as u128 {
+        let debit = checked_add(tx.amount, u128::from(tx.fee), "Transfer debit")?;
+        let mut sender_balance = balances.get(&tx.from).cloned().unwrap_or_default();
+        if sender_balance.available < debit {
             return Err(Error::validation("Insufficient balance for transfer"));
         }
-        sender_balance.available -= tx.amount + tx.fee as u128;
-        sender_balance.total = sender_balance.calculate_total();
 
-        // Add to recipient
-        let recipient_balance = balances.entry(tx.to).or_insert(Balance::default());
-        recipient_balance.available += tx.amount;
-        recipient_balance.total = recipient_balance.calculate_total();
+        if tx.from == tx.to {
+            sender_balance.available -= u128::from(tx.fee);
+            refresh_total(&mut sender_balance)?;
+            balances.insert(tx.from, sender_balance);
+        } else {
+            let mut recipient_balance = balances.get(&tx.to).cloned().unwrap_or_default();
+            sender_balance.available -= debit;
+            recipient_balance.available =
+                checked_add(recipient_balance.available, tx.amount, "Recipient balance")?;
+            refresh_total(&mut sender_balance)?;
+            refresh_total(&mut recipient_balance)?;
+            balances.insert(tx.from, sender_balance);
+            balances.insert(tx.to, recipient_balance);
+        }
 
         debug!(
             "Transfer: {} -> {} amount: {} fee: {}",
@@ -83,34 +192,31 @@ impl BalanceTracker {
         let mut staking_info = self.staking_info.write().await;
         let mut total_staked = self.total_staked.write().await;
 
-        // Move from available to staked
-        let balance = balances.entry(tx.staker).or_insert(Balance::default());
+        let mut balance = balances.get(&tx.staker).cloned().unwrap_or_default();
+        let mut info = staking_info
+            .get(&tx.staker)
+            .cloned()
+            .unwrap_or_else(|| empty_staking_info(tx.staker));
+        ensure_stake_consistency(tx.staker, &balance, &info)?;
         if balance.available < tx.amount {
             return Err(Error::validation("Insufficient balance for staking"));
         }
         balance.available -= tx.amount;
-        balance.staked += tx.amount;
-        balance.total = balance.calculate_total();
+        balance.staked = checked_add(balance.staked, tx.amount, "Staked balance")?;
 
-        // Update staking info
-        let info = staking_info.entry(tx.staker).or_insert(StakingInfo {
-            account: tx.staker,
-            total_staked: 0,
-            validator_stake: 0,
-            relay_stake: 0,
-            reputation_stake: 0,
-            delegations: Vec::new(),
-            pending_unstakes: Vec::new(),
-        });
+        let typed_stake = match tx.stake_type {
+            StakeType::Validator => &mut info.validator_stake,
+            StakeType::Relay => &mut info.relay_stake,
+            StakeType::Reputation => &mut info.reputation_stake,
+        };
+        *typed_stake = checked_add(*typed_stake, tx.amount, "Stake type balance")?;
+        info.total_staked = checked_add(info.total_staked, tx.amount, "Account stake total")?;
+        let new_total_staked = checked_add(*total_staked, tx.amount, "Network stake total")?;
+        refresh_total(&mut balance)?;
 
-        match tx.stake_type {
-            StakeType::Validator => info.validator_stake += tx.amount,
-            StakeType::Relay => info.relay_stake += tx.amount,
-            StakeType::Reputation => info.reputation_stake += tx.amount,
-        }
-
-        info.total_staked += tx.amount;
-        *total_staked += tx.amount;
+        balances.insert(tx.staker, balance);
+        staking_info.insert(tx.staker, info);
+        *total_staked = new_total_staked;
 
         info!(
             "Stake: {} amount: {} type: {:?}",
@@ -126,47 +232,43 @@ impl BalanceTracker {
         let mut staking_info = self.staking_info.write().await;
         let mut total_staked = self.total_staked.write().await;
 
-        // Move from staked to unstaking (with timelock)
-        let balance = balances.entry(tx.unstaker).or_insert(Balance::default());
+        let mut balance = balances.get(&tx.unstaker).cloned().unwrap_or_default();
+        let mut info = staking_info
+            .get(&tx.unstaker)
+            .cloned()
+            .unwrap_or_else(|| empty_staking_info(tx.unstaker));
+        ensure_stake_consistency(tx.unstaker, &balance, &info)?;
         if balance.staked < tx.amount {
             return Err(Error::validation("Insufficient staked balance"));
         }
-        balance.staked -= tx.amount;
-        balance.unstaking += tx.amount;
-        balance.total = balance.calculate_total();
-
-        // Update staking info
-        let info = staking_info.entry(tx.unstaker).or_insert(StakingInfo {
-            account: tx.unstaker,
-            total_staked: 0,
-            validator_stake: 0,
-            relay_stake: 0,
-            reputation_stake: 0,
-            delegations: Vec::new(),
-            pending_unstakes: Vec::new(),
-        });
-
-        match tx.stake_type {
-            StakeType::Validator => {
-                info.validator_stake = info.validator_stake.saturating_sub(tx.amount)
-            }
-            StakeType::Relay => info.relay_stake = info.relay_stake.saturating_sub(tx.amount),
-            StakeType::Reputation => {
-                info.reputation_stake = info.reputation_stake.saturating_sub(tx.amount)
-            }
+        let typed_stake = match tx.stake_type {
+            StakeType::Validator => &mut info.validator_stake,
+            StakeType::Relay => &mut info.relay_stake,
+            StakeType::Reputation => &mut info.reputation_stake,
+        };
+        if *typed_stake < tx.amount {
+            return Err(Error::validation(
+                "Insufficient balance for the requested stake type",
+            ));
         }
+        let new_total_staked = total_staked
+            .checked_sub(tx.amount)
+            .ok_or_else(|| Error::validation("Network stake total is inconsistent"))?;
+        balance.staked -= tx.amount;
+        balance.unstaking = checked_add(balance.unstaking, tx.amount, "Unstaking balance")?;
+        *typed_stake -= tx.amount;
+        info.total_staked -= tx.amount;
 
-        info.total_staked = info.total_staked.saturating_sub(tx.amount);
-
-        // Add to pending unstakes
         info.pending_unstakes.push(PendingUnstake {
             amount: tx.amount,
-            stake_type: tx.stake_type.clone(),
+            stake_type: tx.stake_type,
             unlock_at: tx.unlock_at,
             staked_at: tx.timestamp,
         });
-
-        *total_staked = total_staked.saturating_sub(tx.amount);
+        refresh_total(&mut balance)?;
+        balances.insert(tx.unstaker, balance);
+        staking_info.insert(tx.unstaker, info);
+        *total_staked = new_total_staked;
 
         info!(
             "Unstake: {} amount: {} type: {:?} unlock_at: {}",
@@ -181,31 +283,32 @@ impl BalanceTracker {
         let mut balances = self.balances.write().await;
         let mut staking_info = self.staking_info.write().await;
 
-        // Move from available to delegated
-        let balance = balances.entry(tx.delegator).or_insert(Balance::default());
+        let mut balance = balances.get(&tx.delegator).cloned().unwrap_or_default();
+        let mut info = staking_info
+            .get(&tx.delegator)
+            .cloned()
+            .unwrap_or_else(|| empty_staking_info(tx.delegator));
+        ensure_stake_consistency(tx.delegator, &balance, &info)?;
+        if delegation_total(&info)? != balance.delegated {
+            return Err(Error::validation(format!(
+                "Delegation records are inconsistent for account {}",
+                tx.delegator.0
+            )));
+        }
         if balance.available < tx.amount {
             return Err(Error::validation("Insufficient balance for delegation"));
         }
         balance.available -= tx.amount;
-        balance.delegated += tx.amount;
-        balance.total = balance.calculate_total();
-
-        // Update staking info
-        let info = staking_info.entry(tx.delegator).or_insert(StakingInfo {
-            account: tx.delegator,
-            total_staked: 0,
-            validator_stake: 0,
-            relay_stake: 0,
-            reputation_stake: 0,
-            delegations: Vec::new(),
-            pending_unstakes: Vec::new(),
-        });
+        balance.delegated = checked_add(balance.delegated, tx.amount, "Delegated balance")?;
 
         info.delegations.push(Delegation {
             validator: tx.validator,
             amount: tx.amount,
             delegated_at: tx.timestamp,
         });
+        refresh_total(&mut balance)?;
+        balances.insert(tx.delegator, balance);
+        staking_info.insert(tx.delegator, info);
 
         info!(
             "Delegate: {} -> {} amount: {}",
@@ -220,33 +323,59 @@ impl BalanceTracker {
         let mut balances = self.balances.write().await;
         let mut staking_info = self.staking_info.write().await;
 
-        // Move from delegated to unstaking (with timelock)
-        let balance = balances.entry(tx.delegator).or_insert(Balance::default());
+        let mut balance = balances.get(&tx.delegator).cloned().unwrap_or_default();
+        let mut info = staking_info
+            .get(&tx.delegator)
+            .cloned()
+            .unwrap_or_else(|| empty_staking_info(tx.delegator));
+        ensure_stake_consistency(tx.delegator, &balance, &info)?;
+        if delegation_total(&info)? != balance.delegated {
+            return Err(Error::validation(format!(
+                "Delegation records are inconsistent for account {}",
+                tx.delegator.0
+            )));
+        }
         if balance.delegated < tx.amount {
             return Err(Error::validation("Insufficient delegated balance"));
         }
+        let validator_delegation = info
+            .delegations
+            .iter()
+            .filter(|delegation| delegation.validator == tx.validator)
+            .try_fold(0u128, |total, delegation| {
+                checked_add(total, delegation.amount, "Validator delegation total")
+            })?;
+        if validator_delegation < tx.amount {
+            return Err(Error::validation(
+                "Insufficient delegation to the requested validator",
+            ));
+        }
+
         balance.delegated -= tx.amount;
-        balance.unstaking += tx.amount;
-        balance.total = balance.calculate_total();
-
-        // Update staking info - remove from delegations
-        if let Some(info) = staking_info.get_mut(&tx.delegator) {
-            // Find and reduce delegation
-            if let Some(delegation) = info
-                .delegations
-                .iter_mut()
-                .find(|d| d.validator == tx.validator)
-            {
-                if delegation.amount >= tx.amount {
-                    delegation.amount -= tx.amount;
-
-                    // Remove delegation if amount is now zero
-                    if delegation.amount == 0 {
-                        info.delegations.retain(|d| d.validator != tx.validator);
-                    }
-                }
+        balance.unstaking = checked_add(balance.unstaking, tx.amount, "Unstaking balance")?;
+        let mut remaining = tx.amount;
+        for delegation in info
+            .delegations
+            .iter_mut()
+            .filter(|delegation| delegation.validator == tx.validator)
+        {
+            let reduction = delegation.amount.min(remaining);
+            delegation.amount -= reduction;
+            remaining -= reduction;
+            if remaining == 0 {
+                break;
             }
         }
+        info.delegations.retain(|delegation| delegation.amount > 0);
+        info.pending_undelegations.push(PendingUndelegation {
+            validator: tx.validator,
+            amount: tx.amount,
+            unlock_at: tx.unlock_at,
+            delegated_at: tx.timestamp,
+        });
+        refresh_total(&mut balance)?;
+        balances.insert(tx.delegator, balance);
+        staking_info.insert(tx.delegator, info);
 
         info!(
             "Undelegate: {} <- {} amount: {} unlock_at: {}",
@@ -260,14 +389,14 @@ impl BalanceTracker {
     async fn process_claim_rewards(&self, tx: &ClaimRewardsTx) -> Result<()> {
         let mut balances = self.balances.write().await;
 
-        // Move from unclaimed_rewards to available
-        let balance = balances.entry(tx.claimer).or_insert(Balance::default());
+        let mut balance = balances.get(&tx.claimer).cloned().unwrap_or_default();
         if balance.unclaimed_rewards < tx.amount {
-            warn!("Claiming more rewards than available, adjusting");
+            return Err(Error::validation("Insufficient unclaimed rewards"));
         }
-        balance.unclaimed_rewards = balance.unclaimed_rewards.saturating_sub(tx.amount);
-        balance.available += tx.amount;
-        balance.total = balance.calculate_total();
+        balance.unclaimed_rewards -= tx.amount;
+        balance.available = checked_add(balance.available, tx.amount, "Available balance")?;
+        refresh_total(&mut balance)?;
+        balances.insert(tx.claimer, balance);
 
         info!(
             "ClaimRewards: {} amount: {} type: {:?} blocks: {}-{}",
@@ -283,25 +412,47 @@ impl BalanceTracker {
         let mut staking_info = self.staking_info.write().await;
         let mut total_staked = self.total_staked.write().await;
 
-        // Reduce validator's staked balance
-        let balance = balances.entry(tx.validator).or_insert(Balance::default());
-        balance.staked = balance.staked.saturating_sub(tx.slash_amount);
-        balance.total = balance.calculate_total();
-
-        // Update staking info
-        if let Some(info) = staking_info.get_mut(&tx.validator) {
-            // Reduce validator stake proportionally
-            let total_validator_stake =
-                info.validator_stake + info.relay_stake + info.reputation_stake;
-            if total_validator_stake > 0 {
-                let ratio = tx.slash_amount as f64 / total_validator_stake as f64;
-                info.validator_stake = (info.validator_stake as f64 * (1.0 - ratio)) as u128;
-                info.relay_stake = (info.relay_stake as f64 * (1.0 - ratio)) as u128;
-                info.reputation_stake = (info.reputation_stake as f64 * (1.0 - ratio)) as u128;
-            }
+        let mut balance = balances
+            .get(&tx.validator)
+            .cloned()
+            .ok_or_else(|| Error::validation("Validator has no balance to slash"))?;
+        let mut info = staking_info
+            .get(&tx.validator)
+            .cloned()
+            .ok_or_else(|| Error::validation("Validator has no staking record to slash"))?;
+        ensure_stake_consistency(tx.validator, &balance, &info)?;
+        let stake_total = typed_stake_total(&info)?;
+        let expected_remaining = balance
+            .staked
+            .checked_sub(tx.slash_amount)
+            .ok_or_else(|| Error::validation("Slash amount exceeds staked balance"))?;
+        if tx.remaining_stake != expected_remaining {
+            return Err(Error::validation(
+                "Slash remaining-stake value is inconsistent",
+            ));
         }
+        let reductions = proportional_slash(
+            tx.slash_amount,
+            stake_total,
+            [
+                info.validator_stake,
+                info.relay_stake,
+                info.reputation_stake,
+            ],
+        )?;
+        let new_total_staked = total_staked
+            .checked_sub(tx.slash_amount)
+            .ok_or_else(|| Error::validation("Network stake total is inconsistent"))?;
 
-        *total_staked = total_staked.saturating_sub(tx.slash_amount);
+        balance.staked = expected_remaining;
+        info.validator_stake -= reductions[0];
+        info.relay_stake -= reductions[1];
+        info.reputation_stake -= reductions[2];
+        info.total_staked = expected_remaining;
+        refresh_total(&mut balance)?;
+        balances.insert(tx.validator, balance);
+        staking_info.insert(tx.validator, info);
+        *total_staked = new_total_staked;
 
         warn!(
             "Slash: {} amount: {} reason: {:?} remaining: {} authorized_by: {}",
@@ -316,19 +467,36 @@ impl BalanceTracker {
         let mut balances = self.balances.write().await;
         let mut total_supply = self.total_supply.write().await;
 
-        // Mint new tokens for proposer (40%)
-        let proposer_balance = balances.entry(tx.proposer).or_insert(Balance::default());
-        proposer_balance.unclaimed_rewards += tx.proposer_reward;
-        proposer_balance.total = proposer_balance.calculate_total();
-
-        // Mint new tokens for validators (60%)
+        let mut rewards = HashMap::new();
+        rewards.insert(tx.proposer, tx.proposer_reward);
+        let mut distributed = tx.proposer_reward;
         for (validator, reward) in &tx.validator_rewards {
-            let validator_balance = balances.entry(*validator).or_insert(Balance::default());
-            validator_balance.unclaimed_rewards += reward;
-            validator_balance.total = validator_balance.calculate_total();
+            let current = rewards.get(validator).copied().unwrap_or_default();
+            rewards.insert(
+                *validator,
+                checked_add(current, *reward, "Account block reward")?,
+            );
+            distributed = checked_add(distributed, *reward, "Distributed block reward")?;
+        }
+        if distributed != tx.total_reward {
+            return Err(Error::validation(
+                "Block reward distribution does not match total reward",
+            ));
+        }
+        let new_total_supply = checked_add(*total_supply, tx.total_reward, "Total supply")?;
+        let mut updated_balances = Vec::with_capacity(rewards.len());
+        for (account, reward) in rewards {
+            let mut balance = balances.get(&account).cloned().unwrap_or_default();
+            balance.unclaimed_rewards =
+                checked_add(balance.unclaimed_rewards, reward, "Unclaimed rewards")?;
+            refresh_total(&mut balance)?;
+            updated_balances.push((account, balance));
+        }
+        for (account, balance) in updated_balances {
+            balances.insert(account, balance);
         }
 
-        *total_supply += tx.total_reward;
+        *total_supply = new_total_supply;
 
         info!(
             "BlockReward: height {} proposer: {} total: {} proposer_share: {}",
@@ -342,17 +510,24 @@ impl BalanceTracker {
     async fn process_relay_payment(&self, tx: &RelayPaymentTx) -> Result<()> {
         let mut balances = self.balances.write().await;
 
-        // Transfer from payer to relay
-        let payer_balance = balances.entry(tx.payer).or_insert(Balance::default());
+        let mut payer_balance = balances.get(&tx.payer).cloned().unwrap_or_default();
         if payer_balance.available < tx.amount {
             return Err(Error::validation("Insufficient balance for relay payment"));
         }
         payer_balance.available -= tx.amount;
-        payer_balance.total = payer_balance.calculate_total();
 
-        let relay_balance = balances.entry(tx.relay).or_insert(Balance::default());
-        relay_balance.available += tx.amount;
-        relay_balance.total = relay_balance.calculate_total();
+        if tx.payer == tx.relay {
+            refresh_total(&mut payer_balance)?;
+            balances.insert(tx.payer, payer_balance);
+        } else {
+            let mut relay_balance = balances.get(&tx.relay).cloned().unwrap_or_default();
+            relay_balance.available =
+                checked_add(relay_balance.available, tx.amount, "Relay balance")?;
+            refresh_total(&mut payer_balance)?;
+            refresh_total(&mut relay_balance)?;
+            balances.insert(tx.payer, payer_balance);
+            balances.insert(tx.relay, relay_balance);
+        }
 
         info!(
             "RelayPayment: {} -> {} amount: {} messages: {} bytes: {}",
@@ -366,17 +541,27 @@ impl BalanceTracker {
     async fn process_channel_access(&self, tx: &ChannelAccessTx) -> Result<()> {
         let mut balances = self.balances.write().await;
 
-        // Transfer from user to channel creator
-        let user_balance = balances.entry(tx.user).or_insert(Balance::default());
+        let mut user_balance = balances.get(&tx.user).cloned().unwrap_or_default();
         if user_balance.available < tx.amount {
             return Err(Error::validation("Insufficient balance for channel access"));
         }
         user_balance.available -= tx.amount;
-        user_balance.total = user_balance.calculate_total();
 
-        let creator_balance = balances.entry(tx.creator).or_insert(Balance::default());
-        creator_balance.available += tx.amount;
-        creator_balance.total = creator_balance.calculate_total();
+        if tx.user == tx.creator {
+            refresh_total(&mut user_balance)?;
+            balances.insert(tx.user, user_balance);
+        } else {
+            let mut creator_balance = balances.get(&tx.creator).cloned().unwrap_or_default();
+            creator_balance.available = checked_add(
+                creator_balance.available,
+                tx.amount,
+                "Channel creator balance",
+            )?;
+            refresh_total(&mut user_balance)?;
+            refresh_total(&mut creator_balance)?;
+            balances.insert(tx.user, user_balance);
+            balances.insert(tx.creator, creator_balance);
+        }
 
         info!(
             "ChannelAccess: {} -> {} amount: {} channel: {} duration: {} days",
@@ -419,32 +604,63 @@ impl BalanceTracker {
         let mut balances = self.balances.write().await;
         let mut staking_info = self.staking_info.write().await;
 
-        for (user_id, info) in staking_info.iter_mut() {
+        let mut updated_balances = Vec::new();
+        let mut updated_staking_info = Vec::new();
+        for (user_id, existing_info) in staking_info.iter() {
+            let mut info = existing_info.clone();
             let mut completed_amount = 0u128;
-
-            // Find completed unstakes
-            info.pending_unstakes.retain(|unstake| {
+            let mut pending_unstakes = Vec::with_capacity(info.pending_unstakes.len());
+            for unstake in info.pending_unstakes.drain(..) {
                 if unstake.unlock_at <= current_time {
-                    completed_amount += unstake.amount;
-                    false // Remove from pending
+                    completed_amount =
+                        checked_add(completed_amount, unstake.amount, "Completed timelocks")?;
                 } else {
-                    true // Keep pending
-                }
-            });
-
-            // Move from unstaking to available
-            if completed_amount > 0 {
-                if let Some(balance) = balances.get_mut(user_id) {
-                    balance.unstaking = balance.unstaking.saturating_sub(completed_amount);
-                    balance.available += completed_amount;
-                    balance.total = balance.calculate_total();
-
-                    info!(
-                        "Timelock completed: {} amount: {}",
-                        user_id.0, completed_amount
-                    );
+                    pending_unstakes.push(unstake);
                 }
             }
+            info.pending_unstakes = pending_unstakes;
+            let mut pending_undelegations = Vec::with_capacity(info.pending_undelegations.len());
+            for undelegation in info.pending_undelegations.drain(..) {
+                if undelegation.unlock_at <= current_time {
+                    completed_amount =
+                        checked_add(completed_amount, undelegation.amount, "Completed timelocks")?;
+                } else {
+                    pending_undelegations.push(undelegation);
+                }
+            }
+            info.pending_undelegations = pending_undelegations;
+
+            if completed_amount == 0 {
+                continue;
+            }
+
+            let mut balance = balances.get(user_id).cloned().ok_or_else(|| {
+                Error::validation(format!(
+                    "Missing balance for completed timelock account {}",
+                    user_id.0
+                ))
+            })?;
+            if balance.unstaking < completed_amount {
+                return Err(Error::validation(format!(
+                    "Unstaking balance is inconsistent for account {}",
+                    user_id.0
+                )));
+            }
+            balance.unstaking -= completed_amount;
+            balance.available = checked_add(
+                balance.available,
+                completed_amount,
+                "Available balance after timelock",
+            )?;
+            refresh_total(&mut balance)?;
+            updated_balances.push((*user_id, balance));
+            updated_staking_info.push((*user_id, info));
+        }
+        for (user_id, balance) in updated_balances {
+            balances.insert(user_id, balance);
+        }
+        for (user_id, info) in updated_staking_info {
+            staking_info.insert(user_id, info);
         }
 
         Ok(())
@@ -469,12 +685,14 @@ impl BalanceTracker {
 
         let sender_id = match tx.tx_type {
             TransactionType::SendDirectMessage => {
-                let message = serde_json::from_slice::<crate::transactions::SendDirectMessageTx>(
-                    &tx.payload,
-                )
-                .map_err(|e| {
-                    Error::validation(format!("Invalid direct-message transaction payload: {}", e))
-                })?;
+                let message =
+                    serde_json::from_slice::<crate::transactions::SendDirectMessageTx>(&tx.payload)
+                        .map_err(|e| {
+                            Error::validation(format!(
+                                "Invalid direct-message transaction payload: {}",
+                                e
+                            ))
+                        })?;
                 message.sender_id
             }
             unsupported => {
@@ -501,15 +719,17 @@ impl BalanceTracker {
             ));
         }
 
-        let sender_balance = balances.entry(sender_id).or_default();
+        let mut sender_balance = balances.get(&sender_id).cloned().unwrap_or_default();
         sender_balance.available -= fee;
-        sender_balance.total = sender_balance.calculate_total();
+        refresh_total(&mut sender_balance)?;
+        balances.insert(sender_id, sender_balance);
         Ok(())
     }
 
     /// Verify balance tracker internal consistency and invariants before committing state root
     pub async fn verify_integrity(&self) -> Result<()> {
         let balances = self.balances.read().await;
+        let staking_info = self.staking_info.read().await;
         let total_staked = *self.total_staked.read().await;
         let mut computed_staked: u128 = 0;
 
@@ -521,10 +741,7 @@ impl BalanceTracker {
                 .and_then(|total| total.checked_add(balance.unstaking))
                 .and_then(|total| total.checked_add(balance.unclaimed_rewards))
                 .ok_or_else(|| {
-                    Error::validation(format!(
-                        "Balance total overflow for user {}",
-                        user.0
-                    ))
+                    Error::validation(format!("Balance total overflow for user {}", user.0))
                 })?;
             if balance.total != calculated_total {
                 return Err(Error::validation(format!(
@@ -532,9 +749,70 @@ impl BalanceTracker {
                     user.0, balance.total, calculated_total
                 )));
             }
-            computed_staked = computed_staked.checked_add(balance.staked).ok_or_else(|| {
-                Error::validation("Total staked balance overflow")
-            })?;
+            computed_staked = computed_staked
+                .checked_add(balance.staked)
+                .ok_or_else(|| Error::validation("Total staked balance overflow"))?;
+
+            match staking_info.get(user) {
+                Some(info) => {
+                    if info.account != *user
+                        || info.total_staked != typed_stake_total(info)?
+                        || balance.staked != info.total_staked
+                        || balance.delegated != delegation_total(info)?
+                    {
+                        return Err(Error::validation(format!(
+                            "Staking metadata invariant violated for user {}",
+                            user.0
+                        )));
+                    }
+
+                    let pending_unstakes =
+                        info.pending_unstakes
+                            .iter()
+                            .try_fold(0u128, |total, unstake| {
+                                checked_add(total, unstake.amount, "Pending unstake total")
+                            })?;
+                    let pending_undelegations = info.pending_undelegations.iter().try_fold(
+                        0u128,
+                        |total, undelegation| {
+                            checked_add(total, undelegation.amount, "Pending undelegation total")
+                        },
+                    )?;
+                    if checked_add(
+                        pending_unstakes,
+                        pending_undelegations,
+                        "Pending return total",
+                    )? != balance.unstaking
+                    {
+                        return Err(Error::validation(format!(
+                            "Pending return invariant violated for user {}",
+                            user.0
+                        )));
+                    }
+                }
+                None if balance.staked != 0 || balance.delegated != 0 || balance.unstaking != 0 => {
+                    return Err(Error::validation(format!(
+                        "Missing staking metadata for user {}",
+                        user.0
+                    )));
+                }
+                None => {}
+            }
+        }
+
+        for (user, info) in staking_info.iter() {
+            if !balances.contains_key(user)
+                && (info.total_staked != 0
+                    || typed_stake_total(info)? != 0
+                    || delegation_total(info)? != 0
+                    || !info.pending_unstakes.is_empty()
+                    || !info.pending_undelegations.is_empty())
+            {
+                return Err(Error::validation(format!(
+                    "Staking metadata has no balance for user {}",
+                    user.0
+                )));
+            }
         }
 
         if total_staked != computed_staked {
@@ -544,7 +822,10 @@ impl BalanceTracker {
             )));
         }
 
-        debug!("✓ Balance tracker state integrity verified: {} accounts checked", balances.len());
+        debug!(
+            "✓ Balance tracker state integrity verified: {} accounts checked",
+            balances.len()
+        );
         Ok(())
     }
 }
@@ -642,6 +923,236 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn transfer_overflow_does_not_mutate_either_account() {
+        let tracker = BalanceTracker::new();
+        let from = UserId(Uuid::new_v4());
+        let to = UserId(Uuid::new_v4());
+        tracker.balances.write().await.insert(
+            from,
+            Balance {
+                available: 100,
+                total: 100,
+                ..Balance::default()
+            },
+        );
+        tracker.balances.write().await.insert(
+            to,
+            Balance {
+                available: u128::MAX,
+                total: u128::MAX,
+                ..Balance::default()
+            },
+        );
+
+        let tx = TransferTx {
+            tx_id: Uuid::new_v4(),
+            from,
+            to,
+            amount: 1,
+            memo: None,
+            fee: 0,
+            timestamp: chrono::Utc::now(),
+            nonce: 1,
+            signature: vec![],
+        };
+        assert!(tracker.process_transfer(&tx).await.is_err());
+        assert_eq!(tracker.get_balance(from).await.available, 100);
+        assert_eq!(tracker.get_balance(to).await.available, u128::MAX);
+    }
+
+    #[tokio::test]
+    async fn unstake_rejects_a_different_stake_type_without_mutation() {
+        let tracker = BalanceTracker::new();
+        let user = UserId(Uuid::new_v4());
+        let mut info = empty_staking_info(user);
+        info.total_staked = 100;
+        info.validator_stake = 100;
+        tracker.staking_info.write().await.insert(user, info);
+        tracker.balances.write().await.insert(
+            user,
+            Balance {
+                staked: 100,
+                total: 100,
+                ..Balance::default()
+            },
+        );
+        *tracker.total_staked.write().await = 100;
+
+        let tx = UnstakeTx {
+            tx_id: Uuid::new_v4(),
+            unstaker: user,
+            amount: 10,
+            stake_type: StakeType::Relay,
+            unlock_at: chrono::Utc::now(),
+            timestamp: chrono::Utc::now(),
+            nonce: 1,
+            signature: vec![],
+        };
+        assert!(tracker.process_unstake(&tx).await.is_err());
+        assert_eq!(tracker.get_balance(user).await.staked, 100);
+        assert_eq!(tracker.get_total_staked().await, 100);
+        assert_eq!(
+            tracker
+                .get_staking_info(user)
+                .await
+                .unwrap()
+                .validator_stake,
+            100
+        );
+    }
+
+    #[tokio::test]
+    async fn undelegation_tracks_validator_and_unlocks_after_timelock() {
+        let tracker = BalanceTracker::new();
+        let delegator = UserId(Uuid::new_v4());
+        let validator = UserId(Uuid::new_v4());
+        let delegated_at = chrono::Utc::now();
+        let unlock_at = delegated_at + chrono::Duration::minutes(1);
+        let mut info = empty_staking_info(delegator);
+        info.delegations.push(Delegation {
+            validator,
+            amount: 100,
+            delegated_at,
+        });
+        tracker.staking_info.write().await.insert(delegator, info);
+        tracker.balances.write().await.insert(
+            delegator,
+            Balance {
+                delegated: 100,
+                total: 100,
+                ..Balance::default()
+            },
+        );
+
+        let tx = UndelegateTx {
+            tx_id: Uuid::new_v4(),
+            delegator,
+            validator,
+            amount: 60,
+            unlock_at,
+            timestamp: delegated_at,
+            nonce: 1,
+            signature: vec![],
+        };
+        tracker.process_undelegate(&tx).await.unwrap();
+        let balance = tracker.get_balance(delegator).await;
+        assert_eq!(balance.delegated, 40);
+        assert_eq!(balance.unstaking, 60);
+        assert_eq!(balance.available, 0);
+
+        tracker
+            .process_completed_timelocks(delegated_at)
+            .await
+            .unwrap();
+        assert_eq!(tracker.get_balance(delegator).await.available, 0);
+        tracker
+            .process_completed_timelocks(unlock_at)
+            .await
+            .unwrap();
+        let balance = tracker.get_balance(delegator).await;
+        assert_eq!(balance.delegated, 40);
+        assert_eq!(balance.unstaking, 0);
+        assert_eq!(balance.available, 60);
+        tracker.verify_integrity().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn claiming_more_than_unclaimed_rewards_does_not_mint_balance() {
+        let tracker = BalanceTracker::new();
+        let claimer = UserId(Uuid::new_v4());
+        tracker.balances.write().await.insert(
+            claimer,
+            Balance {
+                unclaimed_rewards: 10,
+                total: 10,
+                ..Balance::default()
+            },
+        );
+        let tx = ClaimRewardsTx {
+            tx_id: Uuid::new_v4(),
+            claimer,
+            reward_type: RewardType::BlockProduction,
+            amount: 11,
+            from_height: 1,
+            to_height: 1,
+            timestamp: chrono::Utc::now(),
+            nonce: 1,
+            signature: vec![],
+        };
+
+        assert!(tracker.process_claim_rewards(&tx).await.is_err());
+        let balance = tracker.get_balance(claimer).await;
+        assert_eq!(balance.available, 0);
+        assert_eq!(balance.unclaimed_rewards, 10);
+        assert_eq!(balance.total, 10);
+    }
+
+    #[tokio::test]
+    async fn slash_updates_stake_categories_exactly_and_checks_remaining_amount() {
+        let tracker = BalanceTracker::new();
+        let validator = UserId(Uuid::new_v4());
+        let mut info = empty_staking_info(validator);
+        info.total_staked = 100;
+        info.validator_stake = 60;
+        info.relay_stake = 30;
+        info.reputation_stake = 10;
+        tracker.staking_info.write().await.insert(validator, info);
+        tracker.balances.write().await.insert(
+            validator,
+            Balance {
+                staked: 100,
+                total: 100,
+                ..Balance::default()
+            },
+        );
+        *tracker.total_staked.write().await = 100;
+        let tx = SlashTx {
+            validator,
+            reason: SlashReason::DoubleSign,
+            slash_amount: 10,
+            remaining_stake: 89,
+            evidence_hash: "evidence".to_string(),
+            timestamp: chrono::Utc::now(),
+            authorized_by: Uuid::new_v4(),
+        };
+
+        assert!(tracker.process_slash(&tx).await.is_err());
+        assert_eq!(tracker.get_balance(validator).await.staked, 100);
+
+        let tx = SlashTx {
+            remaining_stake: 90,
+            ..tx
+        };
+        tracker.process_slash(&tx).await.unwrap();
+        let info = tracker.get_staking_info(validator).await.unwrap();
+        assert_eq!(info.validator_stake, 54);
+        assert_eq!(info.relay_stake, 27);
+        assert_eq!(info.reputation_stake, 9);
+        assert_eq!(info.total_staked, 90);
+        assert_eq!(tracker.get_total_staked().await, 90);
+        tracker.verify_integrity().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn block_reward_distribution_must_equal_total_before_minting() {
+        let tracker = BalanceTracker::new();
+        let proposer = UserId(Uuid::new_v4());
+        let tx = BlockRewardTx {
+            tx_id: Uuid::new_v4(),
+            block_height: 1,
+            proposer,
+            total_reward: 10,
+            proposer_reward: 6,
+            validator_rewards: vec![(UserId(Uuid::new_v4()), 3)],
+            timestamp: chrono::Utc::now(),
+        };
+
+        assert!(tracker.process_block_reward(&tx).await.is_err());
+        assert_eq!(tracker.get_total_supply().await, 0);
+        assert_eq!(tracker.get_balance(proposer).await.total, 0);
+    }
+
+    #[tokio::test]
     async fn chain_transaction_rejects_malformed_and_unsupported_payloads() {
         let tracker = BalanceTracker::new();
         let malformed = crate::transactions::Transaction::new(
@@ -654,10 +1165,7 @@ mod tests {
             crate::transactions::TransactionType::CreateChannel,
             b"{}".to_vec(),
         );
-        assert!(tracker
-            .apply_chain_transaction(&unsupported)
-            .await
-            .is_err());
+        assert!(tracker.apply_chain_transaction(&unsupported).await.is_err());
     }
 
     #[tokio::test]

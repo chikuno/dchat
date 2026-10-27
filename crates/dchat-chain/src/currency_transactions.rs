@@ -334,6 +334,9 @@ pub struct StakingInfo {
     pub delegations: Vec<Delegation>,
     /// Pending unstakes
     pub pending_unstakes: Vec<PendingUnstake>,
+    /// Pending undelegations
+    #[serde(default)]
+    pub pending_undelegations: Vec<PendingUndelegation>,
 }
 
 /// Delegation info
@@ -358,6 +361,19 @@ pub struct PendingUnstake {
     pub unlock_at: DateTime<Utc>,
     /// Original stake timestamp
     pub staked_at: DateTime<Utc>,
+}
+
+/// Pending return of delegated funds after an undelegation timelock.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingUndelegation {
+    /// Validator the funds were delegated to
+    pub validator: UserId,
+    /// Amount becoming available after the timelock
+    pub amount: u128,
+    /// Unlock timestamp
+    pub unlock_at: DateTime<Utc>,
+    /// Original delegation timestamp
+    pub delegated_at: DateTime<Utc>,
 }
 
 #[cfg(test)]
