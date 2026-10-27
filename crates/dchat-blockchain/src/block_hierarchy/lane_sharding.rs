@@ -102,7 +102,24 @@ pub fn compute_body_commitments(
 /// This is used by producers to shard transactions into lane-scoped miniblocks.
 /// The lane is derived from the transaction's primary account using BLAKE3.
 pub fn lane_for_transaction(tx: &Transaction) -> Result<LaneId, BlockError> {
-    let key_bytes: Vec<u8> = match tx.tx_type {
+    let key_bytes: Vec<u8> = if let Ok(envelope) =
+        dchat_chain::SignedTransactionEnvelope::from_bytes(&tx.payload)
+    {
+        match envelope.tx_type {
+            dchat_chain::UnifiedTransactionType::Chat(envelope_tx_type)
+                if envelope.domain == dchat_chain::EnvelopeDomain::Chat
+                    && envelope_tx_type == tx.tx_type =>
+            {
+                envelope.sender.to_vec()
+            }
+            _ => {
+                return Err(BlockError::InvalidTransaction(
+                    "signed envelope domain or transaction type does not match".to_string(),
+                ));
+            }
+        }
+    } else {
+        match tx.tx_type {
         TransactionType::RegisterUser => {
             let t: RegisterUserTx = serde_json::from_slice(&tx.payload)
                 .map_err(|e| BlockError::InvalidTransaction(e.to_string()))?;
@@ -140,6 +157,7 @@ pub fn lane_for_transaction(tx: &Transaction) -> Result<LaneId, BlockError> {
         TransactionType::SmartContractExecution
         | TransactionType::GovernanceVote
         | TransactionType::GovernanceProposal => tx.tx_hash.as_bytes().to_vec(),
+        }
     };
 
     let h = blake3::hash(&key_bytes);

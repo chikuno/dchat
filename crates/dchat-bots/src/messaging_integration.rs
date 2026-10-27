@@ -2878,7 +2878,7 @@ impl MessageRouter {
             block_hash,
             signature,
             timestamp,
-            transactions: vec![message.encrypted_payload.clone()],
+            block_data: Vec::new(),
             // Default values for system messages
             prev_hash: vec![0u8; 32],
             state_root: vec![0u8; 32],

@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use uuid::Uuid;
 
 const MAX_RECENTLY_ACCEPTED: usize = 10_000;
-const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
+const MAX_ENVELOPE_BYTES: usize = 512 * 1024 - 256;
 
 struct IngressState {
     verifier: EnvelopeVerifier,
@@ -75,6 +75,14 @@ impl TransactionIngress {
             .map_err(|_| Error::internal("Transaction ingress lock poisoned"))?;
         if let Some(accepted_hash) = state.accepted.get(&hash) {
             return Ok(accepted_hash.clone());
+        }
+        let sender = envelope.sender_uuid();
+        let expected_nonce = state.verifier.next_nonce(&sender);
+        if envelope.nonce != expected_nonce {
+            return Err(Error::validation(format!(
+                "Unexpected transaction nonce: expected {}, got {}",
+                expected_nonce, envelope.nonce
+            )));
         }
         state.verifier.verify(&envelope).map_err(|error| {
             Error::validation(format!("Envelope verification failed: {}", error))
@@ -159,6 +167,44 @@ fn validate_payload(envelope: &SignedTransactionEnvelope, tx_type: TransactionTy
             if tx.user_id != sender {
                 return Err(Error::validation(
                     "Channel-join user does not match signed envelope",
+                ));
+            }
+        }
+        TransactionType::GovernanceProposal => {
+            let tx: crate::governance_transactions::GovernanceTransaction =
+                decode_payload(envelope)?;
+            let crate::governance_transactions::GovernanceTransaction::SubmitProposal(proposal) =
+                tx
+            else {
+                return Err(Error::validation(
+                    "Governance proposal envelope must submit a proposal",
+                ));
+            };
+            if proposal.proposer != sender {
+                return Err(Error::validation(
+                    "Governance proposer does not match signed envelope",
+                ));
+            }
+        }
+        TransactionType::GovernanceVote => {
+            let tx: crate::governance_transactions::GovernanceTransaction =
+                decode_payload(envelope)?;
+            let signer = match tx {
+                crate::governance_transactions::GovernanceTransaction::CommitVote(vote) => {
+                    vote.voter
+                }
+                crate::governance_transactions::GovernanceTransaction::RevealVote(vote) => {
+                    vote.voter
+                }
+                _ => {
+                    return Err(Error::validation(
+                        "Governance vote envelope must commit or reveal a vote",
+                    ));
+                }
+            };
+            if signer != sender {
+                return Err(Error::validation(
+                    "Governance voter does not match signed envelope",
                 ));
             }
         }

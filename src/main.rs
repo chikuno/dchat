@@ -7308,9 +7308,10 @@ async fn run_validator_node(
         start_metrics_server(&metrics_addr, peer_metrics.clone(), shutdown_tx.subscribe())?;
     info!("✓ Metrics server listening on {}", metrics_addr);
 
+    let transaction_mempool = dchat_chain::Mempool::default();
     let transaction_ingress = Arc::new(dchat_chain::TransactionIngress::new(
         rpc_chain_id,
-        dchat_chain::Mempool::default(),
+        transaction_mempool.clone(),
     ));
     let _rpc_handle =
         start_chain_rpc_server(&rpc_addr, transaction_ingress, shutdown_tx.subscribe())?;
@@ -8635,8 +8636,25 @@ async fn run_validator_node(
     use std::collections::HashMap;
 
     // Track block acknowledgments for BFT consensus
-    let block_acknowledgments: Arc<tokio::sync::Mutex<HashMap<u64, HashMap<Vec<u8>, Vec<u8>>>>> =
-        Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let block_acknowledgments: Arc<
+        tokio::sync::Mutex<HashMap<u64, HashMap<Vec<u8>, (Vec<u8>, Vec<u8>)>>>,
+    > = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+
+    let execution_state = Arc::new(tokio::sync::Mutex::new(
+        dchat_blockchain::WorldState::new(),
+    ));
+    let pending_candidate_states: Arc<
+        tokio::sync::Mutex<
+            HashMap<
+                u64,
+                (
+                    Vec<u8>,
+                    dchat_blockchain::WorldState,
+                    Vec<uuid::Uuid>,
+                ),
+            >,
+        >,
+    > = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
     // Initialize state validator for Byzantine fault detection
     let state_validator: Arc<tokio::sync::Mutex<StateValidator>> =
@@ -8766,6 +8784,9 @@ async fn run_validator_node(
         let validator_key_arc_clone = Arc::clone(&validator_key_arc);
         let block_acks_clone = block_acknowledgments.clone();
         let state_validator_clone = state_validator.clone();
+        let transaction_mempool_consensus = transaction_mempool.clone();
+        let execution_state_consensus = Arc::clone(&execution_state);
+        let pending_candidates_consensus = Arc::clone(&pending_candidate_states);
         let staking_manager_consensus = staking_manager.clone();
         let shared_block_height = Arc::clone(&shared_block_height_global);
         let currency_rpc_url_for_consensus = consensus_currency_rpc_url.clone();
@@ -8784,6 +8805,7 @@ async fn run_validator_node(
         let balance_tracker_consensus = Arc::clone(&balance_tracker);
         let vote_persistence_consensus = vote_persistence.clone();
         let staking_enforcer_consensus = staking_enforcer.clone();
+        let rpc_chain_id_consensus = rpc_chain_id;
 
         tokio::spawn(async move {
             info!("Starting consensus engine with BFT verification and FULL state validation...");
@@ -8856,7 +8878,7 @@ async fn run_validator_node(
             //   6. Periodically cleanup old state roots
 
             use dchat_blockchain::block_hierarchy::{
-                ExecutionContext, ExecutionEngine, Hash as BlockHash, LaneId, MiniblockBody,
+                Hash as BlockHash, LaneId, MiniblockBody,
             };
             use dchat_blockchain::{Block, MerkleTree, Miniblock, StateValidationError, Subblock};
             use std::sync::atomic::Ordering;
@@ -8866,11 +8888,6 @@ async fn run_validator_node(
             let mut stats_interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
 
             // World state for transaction execution
-            let mut world_state = dchat_blockchain::WorldState::new();
-
-            // Execution engine for parallel transaction processing
-            let execution_engine = ExecutionEngine::new(true); // Enable parallel execution
-
             // Initialize Slot Leader Selector for coordinated block production
             // This ensures only one validator produces blocks per slot, preventing forks
             let mut slot_leader_selector = SlotLeaderSelector::with_defaults();
@@ -9028,16 +9045,22 @@ async fn run_validator_node(
                                 }
                             }
 
-                            let block_height = shared_block_height.fetch_add(1, Ordering::SeqCst) + 1;
+                            let block_height = shared_block_height.load(Ordering::SeqCst) + 1;
                             info!("📦 Producing block #{} (slot {}) - WE ARE THE LEADER", block_height, current_slot);
 
-                            // Advance tokenomics block counter for inflation tracking
-                            if let Err(e) = tokenomics_manager.advance_block() {
-                                warn!("Failed to advance tokenomics block counter: {}", e);
-                            }
+                            // Execute against a candidate copy; publish it only after BFT finality.
+                            let mut world_state = execution_state_consensus.lock().await.clone();
 
-                            // Gather pending transactions from mempool
-                            let pending_txs: Vec<dchat_chain::Transaction> = Vec::new();
+                            // Keep transactions queued until the candidate block is finalized.
+                            let pending_txs = match transaction_mempool_consensus
+                                .pending_transactions_limited(2500, 4 * 1024 * 1024)
+                            {
+                                Ok(txs) => txs,
+                                Err(e) => {
+                                    error!("Unable to snapshot transaction mempool: {}", e);
+                                    continue;
+                                }
+                            };
                             info!("  • Gathered {} pending transactions from mempool", pending_txs.len());
 
                             // Create hierarchical block structure
@@ -9075,6 +9098,7 @@ async fn run_validator_node(
                             }
 
                             let mut next_miniblock_index: u16 = 0;
+                            let mut block_execution_failed = false;
 
                             for (lane_u16, queue) in txs_by_lane.iter_mut() {
                                 if next_miniblock_index >= 10 {
@@ -9085,16 +9109,30 @@ async fn run_validator_node(
                                     continue;
                                 }
 
-                                // Keep miniblocks small for bounded worst-case cost.
+                                // Keep miniblocks within both count and serialized body bounds.
                                 let mut txs: Vec<dchat_chain::Transaction> = Vec::with_capacity(250);
+                                let mut body_bytes = 0usize;
                                 while txs.len() < 250 {
-                                    match queue.pop_front() {
-                                        Some(tx) => txs.push(tx),
-                                        None => break,
+                                    let Some(tx) = queue.front() else {
+                                        break;
+                                    };
+                                    let tx_bytes = tx.payload.len() + tx.tx_hash.len() + 64;
+                                    if body_bytes.saturating_add(tx_bytes) > Miniblock::MAX_BODY_BYTES {
+                                        break;
                                     }
+                                    let Some(tx) = queue.pop_front() else {
+                                        break;
+                                    };
+                                    body_bytes += tx_bytes;
+                                    txs.push(tx);
+                                }
+                                if txs.is_empty() {
+                                    warn!("No transaction in lane {} fits miniblock size limits", lane_u16);
+                                    continue;
                                 }
 
                                 let lane = LaneId(*lane_u16);
+                                let tx_count = txs.len();
                                 let body = MiniblockBody {
                                     transactions: txs,
                                     receipts: Vec::new(),
@@ -9112,34 +9150,77 @@ async fn run_validator_node(
                                 let pre_state_hash = world_state.compute_state_root();
                                 miniblock.header.pre_state_hash = pre_state_hash;
 
-                                // Create execution context for this miniblock
-                                let timestamp = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_secs())
-                                    .unwrap_or(0);
-                                let mut exec_ctx = ExecutionContext::new(
-                                    block_height,
-                                    timestamp,
-                                    miniblock.header.gas_limit,
-                                );
-
-                                // Execute miniblock transactions
-                                let receipts = match execution_engine.execute_miniblock(&miniblock, &mut world_state, &mut exec_ctx) {
-                                    Ok(r) => r,
-                                    Err(e) => {
-                                        warn!("Miniblock execution failed lane={}: {:?}", lane_u16, e);
-                                        continue;
-                                    }
+                                let mut gas_used = 0u64;
+                                let mut receipts = Vec::with_capacity(tx_count);
+                                let mut execution_failed = false;
+                                let Some(miniblock_txs) = miniblock
+                                    .body
+                                    .as_ref()
+                                    .map(|body| &body.transactions)
+                                else {
+                                    warn!("New miniblock body missing in lane {}", lane_u16);
+                                    block_execution_failed = true;
+                                    break;
                                 };
+                                for (tx_index, tx) in miniblock_txs.iter().enumerate() {
+                                    match world_state.execute_chat_transaction(
+                                        tx,
+                                        rpc_chain_id_consensus,
+                                        block_height,
+                                        tx_index as u32,
+                                    ) {
+                                        Ok(receipt) => {
+                                            gas_used = match gas_used.checked_add(receipt.gas_used) {
+                                                Some(total) if total <= miniblock.header.gas_limit => total,
+                                                _ => {
+                                                    warn!("Miniblock gas limit exceeded in lane {}", lane_u16);
+                                                    execution_failed = true;
+                                                    break;
+                                                }
+                                            };
+                                            receipts.push(receipt);
+                                        }
+                                        Err(e) => {
+                                            warn!("Miniblock execution failed lane={}: {:?}", lane_u16, e);
+                                            execution_failed = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if execution_failed {
+                                    block_execution_failed = true;
+                                    break;
+                                }
 
                                 // Update miniblock with execution results
                                 let post_state_hash = world_state.compute_state_root();
                                 miniblock.header.post_state_hash = post_state_hash;
-                                miniblock.header.gas_used = exec_ctx.gas_used;
+                                miniblock.header.gas_used = gas_used;
 
                                 // Store receipts in body
                                 if let Some(ref mut body) = miniblock.body {
                                     body.receipts = receipts;
+                                }
+                                let commitments = match miniblock.body.as_ref() {
+                                    Some(body) => dchat_blockchain::block_hierarchy::lane_sharding::compute_body_commitments(
+                                        lane,
+                                        body,
+                                    ),
+                                    None => {
+                                        warn!("Miniblock body missing after execution in lane {}", lane_u16);
+                                        block_execution_failed = true;
+                                        break;
+                                    }
+                                };
+                                match commitments {
+                                    Ok(commitments) => {
+                                        miniblock.header.receipts_root = commitments.receipts_root;
+                                    }
+                                    Err(error) => {
+                                        warn!("Failed to commit miniblock receipts in lane {}: {:?}", lane_u16, error);
+                                        block_execution_failed = true;
+                                        break;
+                                    }
                                 }
 
                                 // Collect state transition for Merkle tree
@@ -9157,6 +9238,10 @@ async fn run_validator_node(
                                         break;
                                     }
                                 }
+                            }
+
+                            if block_execution_failed {
+                                continue;
                             }
 
                             // If no transactions, create an empty miniblock (keeps state_root deterministic).
@@ -9177,34 +9262,14 @@ async fn run_validator_node(
                                 let pre_state_hash = world_state.compute_state_root();
                                 miniblock.header.pre_state_hash = pre_state_hash;
 
-                                // Create execution context
-                                let timestamp = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_secs())
-                                    .unwrap_or(0);
-                                let mut exec_ctx = ExecutionContext::new(
-                                    block_height,
-                                    timestamp,
-                                    miniblock.header.gas_limit,
-                                );
-
-                                // Execute (empty miniblock produces no receipts but maintains state consistency)
-                                let receipts = match execution_engine.execute_miniblock(&miniblock, &mut world_state, &mut exec_ctx) {
-                                    Ok(r) => r,
-                                    Err(e) => {
-                                        warn!("Empty miniblock execution failed: {:?}", e);
-                                        continue;
-                                    }
-                                };
-
                                 // Update miniblock with execution results
                                 let post_state_hash = world_state.compute_state_root();
                                 miniblock.header.post_state_hash = post_state_hash;
-                                miniblock.header.gas_used = exec_ctx.gas_used;
+                                miniblock.header.gas_used = 0;
 
                                 // Store receipts in body
                                 if let Some(ref mut body) = miniblock.body {
-                                    body.receipts = receipts;
+                                    body.receipts = Vec::new();
                                 }
 
                                 let mut transition = Vec::new();
@@ -9437,6 +9502,19 @@ async fn run_validator_node(
 
                             info!("  • Block signed with Ed25519 signature: {}", hex::encode(&block_signature.to_bytes()[..8]));
 
+                            let included_tx_ids: Vec<_> = block
+                                .subblocks
+                                .iter()
+                                .flat_map(|subblock| &subblock.miniblocks)
+                                .filter_map(|miniblock| miniblock.body.as_ref())
+                                .flat_map(|body| body.transactions.iter())
+                                .map(|tx| tx.tx_id)
+                                .collect();
+                            pending_candidates_consensus.lock().await.insert(
+                                block_height,
+                                (block_hash.clone(), world_state.clone(), included_tx_ids),
+                            );
+
                             // Validate our own block before broadcasting
                             {
                                 let mut validator = state_validator_clone.lock().await;
@@ -9487,7 +9565,13 @@ async fn run_validator_node(
                                 block_hash: block_hash.clone(),
                                 signature: block_signature.to_bytes().to_vec(),
                                 timestamp,
-                                transactions: tx_bytes,
+                                block_data: match bincode::serialize(&block) {
+                                    Ok(bytes) => bytes,
+                                    Err(error) => {
+                                        error!("Failed to serialize full block #{}: {}", block_height, error);
+                                        continue;
+                                    }
+                                },
                                 prev_hash: block.previous_hash.as_bytes().to_vec(),
                                 state_root: state_root.to_vec(),
                                 da_root: block.da_root.map(|root| root.to_vec()),
@@ -9504,6 +9588,18 @@ async fn run_validator_node(
                                 Ok(_) => {
                                     info!("✓ Block #{} broadcast to validator consensus network", block_height);
                                     info!("  • Waiting for BFT acknowledgments ({} required)...", required_signatures);
+                                    block_acks_clone
+                                        .lock()
+                                        .await
+                                        .entry(block_height)
+                                        .or_default()
+                                        .insert(
+                                            validator_id.clone(),
+                                            (
+                                                block_hash.clone(),
+                                                block_signature.to_bytes().to_vec(),
+                                            ),
+                                        );
                                 }
                                 Err(e) => {
                                     error!("❌ Failed to broadcast block #{}: {}", block_height, e);
@@ -9525,7 +9621,10 @@ async fn run_validator_node(
                             while tokio::time::Instant::now() < ack_deadline {
                                 let acks = block_acks_clone.lock().await;
                                 if let Some(height_acks) = acks.get(&block_height) {
-                                    received_acks = height_acks.len();
+                                    received_acks = height_acks
+                                        .values()
+                                        .filter(|(ack_hash, _)| ack_hash == &block_hash)
+                                        .count();
                                     if received_acks >= required_signatures {
                                         info!("✅ Block #{} finalized with {} acknowledgments (BFT threshold reached)",
                                             block_height, received_acks);
@@ -9560,6 +9659,37 @@ async fn run_validator_node(
                                 warn!("⚠️  Block #{} did not reach BFT threshold ({}/{} acks)",
                                     block_height, received_acks, required_signatures);
                                 warn!("   Block may not be finalized - potential network partition");
+                            } else {
+                                let candidate = pending_candidates_consensus
+                                    .lock()
+                                    .await
+                                    .remove(&block_height);
+                                if let Some((candidate_hash, candidate_state, included_tx_ids)) =
+                                    candidate
+                                {
+                                    if candidate_hash == block_hash {
+                                        *execution_state_consensus.lock().await = candidate_state;
+                                        shared_block_height
+                                            .store(block_height, Ordering::SeqCst);
+                                        match transaction_mempool_consensus
+                                            .remove_transactions(&included_tx_ids)
+                                        {
+                                            Ok(removed) => info!(
+                                                "Finalized block #{} and removed {} included transactions from mempool",
+                                                block_height, removed
+                                            ),
+                                            Err(error) => error!(
+                                                "Block #{} finalized but mempool cleanup failed: {}",
+                                                block_height, error
+                                            ),
+                                        }
+                                    } else {
+                                        warn!("Block #{} candidate hash changed before finality", block_height);
+                                    }
+                                }
+                                if let Err(error) = tokenomics_manager.advance_block() {
+                                    warn!("Failed to advance tokenomics block counter: {}", error);
+                                }
                             }
                         } else if is_producer {
                             // We are a producer but not the leader for this slot
@@ -9626,6 +9756,11 @@ async fn run_validator_node(
         let validator_public_key_bytes_clone = validator_public_key_bytes;
         let block_acks_clone = block_acknowledgments.clone();
         let state_validator_clone2 = state_validator.clone();
+        let execution_state_net = Arc::clone(&execution_state);
+        let pending_candidates_net = Arc::clone(&pending_candidate_states);
+        let transaction_mempool_net = transaction_mempool.clone();
+        let rpc_chain_id_net = rpc_chain_id;
+        let required_signatures_net = required_signatures;
         let peer_registry_arc_clone = peer_registry_arc.clone();
         let relay_work_store_clone = Arc::clone(&relay_work_store);
         let chain_genesis_timestamp = config.chain.genesis_timestamp;
@@ -9661,7 +9796,7 @@ async fn run_validator_node(
                                     block_hash,
                                     signature,
                                     timestamp: _,
-                                    transactions,
+                                    block_data,
                                     prev_hash,
                                     state_root,
                                     da_root,
@@ -9671,7 +9806,80 @@ async fn run_validator_node(
                                     slot_epoch,
                                     slot_index,
                                 } => {
-                                    info!("📨 Received validator block #{} from {}", height, hex::encode(&validator_id[..4]));
+                                    if height == 0 {
+                                        continue;
+                                    }
+                                    info!(
+                                        "📨 Received validator block #{} from {}",
+                                        height,
+                                        hex::encode(&validator_id[..4.min(validator_id.len())])
+                                    );
+                                    if block_hash.len() != 32 {
+                                        warn!("⚠️  Block #{} has an invalid hash length", height);
+                                        continue;
+                                    }
+
+                                    const MAX_BLOCK_DATA_BYTES: usize = 5 * 1024 * 1024;
+                                    if block_data.len() > MAX_BLOCK_DATA_BYTES {
+                                        warn!("⚠️  Block #{} exceeds the full-block size limit", height);
+                                        continue;
+                                    }
+                                    use bincode::Options;
+                                    let received_block: dchat_blockchain::Block =
+                                        match bincode::DefaultOptions::new()
+                                            .with_fixint_encoding()
+                                            .with_limit(MAX_BLOCK_DATA_BYTES as u64)
+                                            .deserialize(&block_data)
+                                        {
+                                            Ok(block) => block,
+                                            Err(error) => {
+                                                warn!("⚠️  Invalid full block #{}: {}", height, error);
+                                                continue;
+                                            }
+                                        };
+                                    let transactions: Vec<Vec<u8>> = match received_block
+                                        .subblocks
+                                        .iter()
+                                        .flat_map(|subblock| &subblock.miniblocks)
+                                        .try_fold(Vec::new(), |mut all, miniblock| {
+                                            let body = miniblock.body.as_ref().ok_or_else(|| {
+                                                "full block contains a miniblock without a body".to_string()
+                                            })?;
+                                            for tx in &body.transactions {
+                                                all.push(bincode::serialize(tx).map_err(|error| error.to_string())?);
+                                            }
+                                            Ok::<_, String>(all)
+                                        }) {
+                                        Ok(transactions) => transactions,
+                                        Err(error) => {
+                                            warn!("⚠️  Invalid transaction bodies in block #{}: {}", height, error);
+                                            continue;
+                                        }
+                                    };
+                                    let received_metadata: Vec<(u16, u64, u16)> = received_block
+                                        .subblocks
+                                        .iter()
+                                        .map(|subblock| {
+                                            let timestamp = subblock.timestamp
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap_or_default()
+                                                .as_secs();
+                                            (subblock.index, timestamp, subblock.miniblocks.len() as u16)
+                                        })
+                                        .collect();
+                                    if received_block.height != height
+                                        || received_block.previous_hash.as_bytes() != prev_hash.as_slice()
+                                        || received_block.state_root.as_bytes() != state_root.as_slice()
+                                        || received_block.da_root.map(|root| root.to_vec()) != da_root.clone()
+                                        || received_block.da_chunk_count != da_chunk_count
+                                        || received_metadata != subblock_metadata
+                                        || received_block.transaction_count() != transactions.len()
+                                        || received_block.consensus_hash().as_bytes().as_slice()
+                                            != block_hash.as_slice()
+                                    {
+                                        warn!("⚠️  Full block #{} does not match its announced metadata", height);
+                                        continue;
+                                    }
 
                                     // Verify block signature
                                     if validator_id.len() != 32 {
@@ -9791,6 +9999,196 @@ async fn run_validator_node(
                                         info!("✓ Block #{} consensus hash verified", height);
                                     }
 
+                                    let current_height =
+                                        shared_block_height_clone.load(Ordering::SeqCst);
+                                    if height != current_height.saturating_add(1) {
+                                        warn!(
+                                            "⚠️  Rejecting block #{}; expected height {}",
+                                            height,
+                                            current_height.saturating_add(1)
+                                        );
+                                        continue;
+                                    }
+                                    let expected_previous_hash = if height == 1 {
+                                        [0u8; 32]
+                                    } else {
+                                        *blake3::hash(&current_height.to_le_bytes()).as_bytes()
+                                    };
+                                    if prev_hash.as_slice() != expected_previous_hash.as_slice() {
+                                        warn!("⚠️  Block #{} does not extend the current chain tip", height);
+                                        continue;
+                                    }
+
+                                    let mut candidate_state = execution_state_net.lock().await.clone();
+                                    let mut state_transitions = Vec::new();
+                                    let mut execution_invalid = false;
+                                    for (subblock_index, subblock) in
+                                        received_block.subblocks.iter().enumerate()
+                                    {
+                                        if subblock.index != subblock_index as u16 {
+                                            execution_invalid = true;
+                                            break;
+                                        }
+                                        for (miniblock_index, miniblock) in
+                                            subblock.miniblocks.iter().enumerate()
+                                        {
+                                            if miniblock.header.block_height != height
+                                                || miniblock.header.subblock_index
+                                                    != subblock.index
+                                                || miniblock.header.index
+                                                    != miniblock_index as u16
+                                                || miniblock.verify_body().is_err()
+                                            {
+                                                execution_invalid = true;
+                                                break;
+                                            }
+                                            let pre_state_root =
+                                                candidate_state.compute_state_root();
+                                            if miniblock.header.pre_state_hash != pre_state_root {
+                                                execution_invalid = true;
+                                                break;
+                                            }
+                                            let Some(body) = miniblock.body.as_ref() else {
+                                                execution_invalid = true;
+                                                break;
+                                            };
+                                            let mut receipts =
+                                                Vec::with_capacity(body.transactions.len());
+                                            let mut gas_used = 0u64;
+                                            for (tx_index, tx) in
+                                                body.transactions.iter().enumerate()
+                                            {
+                                                match candidate_state.execute_chat_transaction(
+                                                    tx,
+                                                    rpc_chain_id_net,
+                                                    height,
+                                                    tx_index as u32,
+                                                ) {
+                                                    Ok(receipt) => {
+                                                        gas_used = match gas_used
+                                                            .checked_add(receipt.gas_used)
+                                                        {
+                                                            Some(total)
+                                                                if total
+                                                                    <= miniblock.header.gas_limit =>
+                                                            {
+                                                                total
+                                                            }
+                                                            _ => {
+                                                                execution_invalid = true;
+                                                                break;
+                                                            }
+                                                        };
+                                                        receipts.push(receipt);
+                                                    }
+                                                    Err(error) => {
+                                                        warn!(
+                                                            "⚠️  Block #{} transaction replay failed: {}",
+                                                            height, error
+                                                        );
+                                                        execution_invalid = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                            if execution_invalid {
+                                                break;
+                                            }
+                                            let post_state_root =
+                                                candidate_state.compute_state_root();
+                                            if receipts != body.receipts
+                                                || gas_used != miniblock.header.gas_used
+                                                || post_state_root
+                                                    != miniblock.header.post_state_hash
+                                            {
+                                                execution_invalid = true;
+                                                break;
+                                            }
+                                            let mut transition = Vec::new();
+                                            transition.extend_from_slice(
+                                                &miniblock.header.index.to_le_bytes(),
+                                            );
+                                            transition.extend_from_slice(
+                                                miniblock.header.pre_state_hash.as_bytes(),
+                                            );
+                                            transition.extend_from_slice(
+                                                miniblock.header.post_state_hash.as_bytes(),
+                                            );
+                                            transition.extend_from_slice(&gas_used.to_le_bytes());
+                                            state_transitions.push(transition);
+                                        }
+                                        if execution_invalid {
+                                            break;
+                                        }
+                                    }
+                                    if execution_invalid {
+                                        warn!("⚠️  Block #{} failed deterministic execution replay", height);
+                                        continue;
+                                    }
+                                    let replayed_state_root =
+                                        dchat_blockchain::MerkleTree::from_state_transitions(state_transitions)
+                                            .root_hash();
+                                    if replayed_state_root.as_deref()
+                                        != Some(received_block.state_root.as_bytes().as_slice())
+                                    {
+                                        warn!("⚠️  Block #{} state-transition root does not match replay", height);
+                                        continue;
+                                    }
+                                    {
+                                        let mut validator = state_validator_clone2.lock().await;
+                                        if let Err(error) = validator.validate_block(&received_block) {
+                                            warn!("⚠️  Block #{} failed state validation: {:?}", height, error);
+                                            continue;
+                                        }
+                                    }
+
+                                    let included_tx_ids: Vec<_> = received_block
+                                        .subblocks
+                                        .iter()
+                                        .flat_map(|subblock| &subblock.miniblocks)
+                                        .filter_map(|miniblock| miniblock.body.as_ref())
+                                        .flat_map(|body| body.transactions.iter())
+                                        .map(|tx| tx.tx_id)
+                                        .collect();
+                                    let existing_candidate_hash = pending_candidates_net
+                                        .lock()
+                                        .await
+                                        .get(&height)
+                                        .map(|(existing_hash, _, _)| existing_hash.clone());
+                                    if let Some(existing_hash) = existing_candidate_hash {
+                                        if existing_hash != block_hash {
+                                            let old_votes = block_acks_clone
+                                                .lock()
+                                                .await
+                                                .get(&height)
+                                                .map(|acks| {
+                                                    acks.values()
+                                                        .filter(|(ack_hash, _)| ack_hash == &existing_hash)
+                                                        .count()
+                                                })
+                                                .unwrap_or(0);
+                                            if old_votes >= required_signatures_net {
+                                                warn!("⚠️  Conflicting block #{} already has a BFT threshold", height);
+                                                continue;
+                                            }
+                                            if let Some(acks) =
+                                                block_acks_clone.lock().await.get_mut(&height)
+                                            {
+                                                acks.retain(|_, (ack_hash, _)| {
+                                                    ack_hash != &existing_hash
+                                                });
+                                            }
+                                        }
+                                    }
+                                    pending_candidates_net.lock().await.insert(
+                                        height,
+                                        (
+                                            block_hash.clone(),
+                                            candidate_state,
+                                            included_tx_ids,
+                                        ),
+                                    );
+
                                     info!("✓ Block #{} accepted from validator {} ({} transactions)",
                                           height, hex::encode(&validator_id[..4]), transactions.len());
 
@@ -9891,15 +10289,6 @@ async fn run_validator_node(
 
                                     info!("✓ Block #{} passed Byzantine fault check", height);
 
-                                    // Update shared block height if this block is higher than current
-                                    // This ensures consensus loop knows we've received a valid block at this height
-                                    let current_height = shared_block_height_clone.load(Ordering::SeqCst);
-                                    if height > current_height {
-                                        shared_block_height_clone.store(height, Ordering::SeqCst);
-                                        info!("📊 Updated shared block height from {} to {} (received from leader)",
-                                              current_height, height);
-                                    }
-
                                     // Create and sign acknowledgment
                                     let our_validator_id = validator_public_key_bytes_clone.to_vec();
                                     let ack_signature_result = {
@@ -9918,7 +10307,7 @@ async fn run_validator_node(
                                     let ack_message = DchatMessage::BlockAcknowledgment {
                                         block_height: height,
                                         block_hash: block_hash.clone(),
-                                        validator_id: our_validator_id,
+                                        validator_id: our_validator_id.clone(),
                                         signature: ack_signature.to_bytes().to_vec(),
                                     };
 
@@ -9926,7 +10315,50 @@ async fn run_validator_node(
                                     let mut net = network_arc_clone.lock().await;
                                     match net.broadcast_validator_block(&ack_message) {
                                         Ok(_) => {
+                                            drop(net);
                                             info!("✓ Sent acknowledgment for block #{}", height);
+                                            block_acks_clone
+                                                .lock()
+                                                .await
+                                                .entry(height)
+                                                .or_default()
+                                                .insert(
+                                                    our_validator_id.clone(),
+                                                    (block_hash.clone(), ack_signature.to_bytes().to_vec()),
+                                                );
+                                            let ack_count = block_acks_clone
+                                                .lock()
+                                                .await
+                                                .get(&height)
+                                                .map(|acks| {
+                                                    acks.values()
+                                                        .filter(|(ack_hash, _)| ack_hash == &block_hash)
+                                                        .count()
+                                                })
+                                                .unwrap_or(0);
+                                            if ack_count >= required_signatures_net {
+                                                let candidate = pending_candidates_net
+                                                    .lock()
+                                                    .await
+                                                    .remove(&height);
+                                                if let Some((candidate_hash, candidate_state, included_tx_ids)) =
+                                                    candidate
+                                                {
+                                                    if candidate_hash == block_hash {
+                                                        *execution_state_net.lock().await = candidate_state;
+                                                        shared_block_height_clone
+                                                            .store(height, Ordering::SeqCst);
+                                                        if let Err(error) = transaction_mempool_net
+                                                            .remove_transactions(&included_tx_ids)
+                                                        {
+                                                            error!(
+                                                                "Block #{} finalized but mempool cleanup failed: {}",
+                                                                height, error
+                                                            );
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
                                         Err(e) => {
                                             error!("❌ Failed to broadcast acknowledgment: {}", e);
@@ -9941,7 +10373,7 @@ async fn run_validator_node(
                                     signature,
                                 } => {
                                     info!("📨 Received acknowledgment for block #{} from {}",
-                                        block_height, hex::encode(&validator_id[..4]));
+                                        block_height, hex::encode(&validator_id[..4.min(validator_id.len())]));
 
                                     // Verify acknowledgment signature
                                     if validator_id.len() != 32 || signature.len() != 64 {
@@ -10022,11 +10454,48 @@ async fn run_validator_node(
                                     let mut acks = block_acks_clone.lock().await;
                                     acks.entry(block_height)
                                         .or_insert_with(HashMap::new)
-                                        .insert(validator_id.clone(), signature.clone());
+                                        .insert(
+                                            validator_id.clone(),
+                                            (block_hash.clone(), signature.clone()),
+                                        );
 
-                                    let ack_count = acks.get(&block_height).map(|m| m.len()).unwrap_or(0);
+                                    let ack_count = acks
+                                        .get(&block_height)
+                                        .map(|m| {
+                                            m.values()
+                                                .filter(|(ack_hash, _)| ack_hash == &block_hash)
+                                                .count()
+                                        })
+                                        .unwrap_or(0);
                                     info!("✓ Acknowledgment verified for block #{} ({} total acks)",
                                         block_height, ack_count);
+                                    drop(acks);
+
+                                    if ack_count >= required_signatures_net {
+                                        let candidate =
+                                            pending_candidates_net.lock().await.remove(&block_height);
+                                        if let Some((candidate_hash, candidate_state, included_tx_ids)) =
+                                            candidate
+                                        {
+                                            if candidate_hash == block_hash {
+                                                *execution_state_net.lock().await = candidate_state;
+                                                shared_block_height_clone
+                                                    .store(block_height, Ordering::SeqCst);
+                                                match transaction_mempool_net
+                                                    .remove_transactions(&included_tx_ids)
+                                                {
+                                                    Ok(removed) => info!(
+                                                        "Finalized block #{} and removed {} included transactions from mempool",
+                                                        block_height, removed
+                                                    ),
+                                                    Err(error) => error!(
+                                                        "Block #{} finalized but mempool cleanup failed: {}",
+                                                        block_height, error
+                                                    ),
+                                                }
+                                            }
+                                        }
+                                    }
 
                                     // AUDIT: Persist vote to database for transparency and slashing evidence
                                     if let Some(ref persistence) = vote_persistence_net {

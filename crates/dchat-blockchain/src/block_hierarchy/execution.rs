@@ -9,10 +9,18 @@ use super::core_types::{
 use super::lane_sharding::BodyCommitments;
 use super::BlockError;
 use crate::canonical;
+use bincode::Options;
+use dchat_chain::{
+    ChannelVisibility, CreateChannelTx, EnvelopeDomain, EnvelopeVerifier, GovernanceProposalTx,
+    GovernanceTransaction, JoinChannelTx, PostToChannelTx, RegisterUserTx,
+    SendDirectMessageTx, SignedTransactionEnvelope, Transaction as ChainTransaction,
+    TransactionType, UnifiedTransactionType,
+};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
+use uuid::Uuid;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -72,6 +80,8 @@ impl AccountState {
 pub struct WorldState {
     /// Account states indexed by address
     accounts: BTreeMap<Address, AccountState>,
+    /// Deterministic application records for executed chat transactions
+    chat_records: BTreeMap<Vec<u8>, Vec<u8>>,
     /// State root (cached)
     state_root: Option<Hash>,
     /// Dirty accounts (modified since last root computation)
@@ -83,6 +93,7 @@ impl WorldState {
     pub fn new() -> Self {
         Self {
             accounts: BTreeMap::new(),
+            chat_records: BTreeMap::new(),
             state_root: None,
             dirty: false,
         }
@@ -92,6 +103,7 @@ impl WorldState {
     pub fn from_accounts(accounts: BTreeMap<Address, AccountState>) -> Self {
         Self {
             accounts,
+            chat_records: BTreeMap::new(),
             state_root: None,
             dirty: true,
         }
@@ -116,7 +128,332 @@ impl WorldState {
         self.accounts.entry(*address).or_default()
     }
 
-    /// Compute state root (Merkle root of all accounts)
+    /// Execute a signed chat transaction and produce its deterministic receipt.
+    ///
+    /// Invalid envelopes reject the proposed block. Valid envelopes whose
+    /// application rules fail produce a failed receipt and still consume nonce.
+    pub fn execute_chat_transaction(
+        &mut self,
+        tx: &ChainTransaction,
+        chain_id: u32,
+        block_height: u64,
+        tx_index: u32,
+    ) -> Result<TxReceipt, BlockError> {
+        const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
+        const CHAT_BASE_GAS: u64 = 21_000;
+        const CHAT_GAS_PER_BYTE: u64 = 16;
+
+        if tx.payload.len() > MAX_ENVELOPE_BYTES {
+            return Err(BlockError::InvalidTransaction(
+                "signed envelope exceeds the execution size limit".to_string(),
+            ));
+        }
+        let envelope: SignedTransactionEnvelope = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(MAX_ENVELOPE_BYTES as u64)
+            .deserialize(&tx.payload)
+            .map_err(|error| {
+                BlockError::InvalidTransaction(format!("invalid signed envelope: {}", error))
+            })?;
+        if envelope.domain != EnvelopeDomain::Chat
+            || envelope.tx_type != UnifiedTransactionType::Chat(tx.tx_type)
+        {
+            return Err(BlockError::InvalidTransaction(
+                "envelope domain or transaction type does not match".to_string(),
+            ));
+        }
+
+        let sender = Uuid::from_bytes(envelope.sender);
+        let sender_address = chat_user_address(&envelope.sender);
+        let previous_nonce = self.get_account(&sender_address).nonce;
+        let verifier = EnvelopeVerifier::with_nonces(
+            chain_id,
+            HashMap::from([(sender, previous_nonce)]),
+        );
+        verifier.verify(&envelope).map_err(|error| {
+            BlockError::InvalidTransaction(format!("signed envelope verification failed: {}", error))
+        })?;
+        if envelope.nonce != previous_nonce.saturating_add(1) {
+            return Err(BlockError::InvalidTransaction(format!(
+                "unexpected sender nonce: expected {}, got {}",
+                previous_nonce.saturating_add(1),
+                envelope.nonce
+            )));
+        }
+
+        let mut hash_input = envelope.signing_bytes();
+        hash_input.extend_from_slice(&envelope.signature);
+        let transaction_hash = blake3::hash(&hash_input);
+        let mut expected_tx_id = [0; 16];
+        expected_tx_id.copy_from_slice(&transaction_hash.as_bytes()[..16]);
+        if tx.tx_id.as_bytes() != &expected_tx_id
+            || tx.tx_hash != format!("0x{}", hex::encode(transaction_hash.as_bytes()))
+        {
+            return Err(BlockError::InvalidTransaction(
+                "transaction ID or hash does not match its signed envelope".to_string(),
+            ));
+        }
+
+        let gas_used = CHAT_BASE_GAS
+            .checked_add((envelope.payload.len() as u64).saturating_mul(CHAT_GAS_PER_BYTE))
+            .ok_or_else(|| BlockError::InvalidTransaction("chat transaction gas overflow".into()))?;
+
+        let application_result = self.apply_chat_operation(&envelope, block_height);
+        self.get_account_mut(&sender_address).nonce = envelope.nonce;
+        let post_state_root = self.compute_state_root();
+
+        let mut receipt = match application_result {
+            Ok(()) => TxReceipt::success(tx.tx_id, tx_index, gas_used, post_state_root),
+            Err(reason) => {
+                let mut receipt = TxReceipt::failure(tx.tx_id, tx_index, &reason);
+                receipt.gas_used = gas_used;
+                receipt.post_state_root = post_state_root;
+                receipt
+            }
+        };
+        receipt.post_state_root = post_state_root;
+        Ok(receipt)
+    }
+
+    fn apply_chat_operation(
+        &mut self,
+        envelope: &SignedTransactionEnvelope,
+        block_height: u64,
+    ) -> Result<(), String> {
+        let sender = Uuid::from_bytes(envelope.sender);
+        match envelope.tx_type {
+            UnifiedTransactionType::Chat(TransactionType::RegisterUser) => {
+                let tx: RegisterUserTx = decode_chat_payload(&envelope.payload)?;
+                let key = chat_record_key(b"user", tx.user_id.0.as_bytes());
+                if tx.user_id.0 != sender
+                    || tx.public_key != hex::encode(envelope.public_key)
+                    || tx.username.trim().is_empty()
+                    || tx.username.len() > 64
+                    || tx.initial_reputation != 0
+                {
+                    return Err("invalid registration fields".to_string());
+                }
+                self.insert_chat_record(key, payload_commitment(&envelope.payload).to_vec())
+            }
+            UnifiedTransactionType::Chat(TransactionType::SendDirectMessage) => {
+                let tx: SendDirectMessageTx = decode_chat_payload(&envelope.payload)?;
+                if tx.sender_id.0 != sender
+                    || !self.has_chat_record(b"user", tx.sender_id.0.as_bytes())
+                    || !self.has_chat_record(b"user", tx.recipient_id.0.as_bytes())
+                {
+                    return Err("sender or recipient is not registered".to_string());
+                }
+                let key = chat_record_key(b"message", tx.message_id.0.as_bytes());
+                self.insert_chat_record(key, payload_commitment(&envelope.payload).to_vec())
+            }
+            UnifiedTransactionType::Chat(TransactionType::CreateChannel) => {
+                let tx: CreateChannelTx = decode_chat_payload(&envelope.payload)?;
+                if tx.creator_id.0 != sender
+                    || !self.has_chat_record(b"user", tx.creator_id.0.as_bytes())
+                    || tx.name.trim().is_empty()
+                    || tx.name.len() > 128
+                    || tx.stake_amount.is_some_and(|stake| stake != 0)
+                {
+                    return Err("invalid channel creation or unsupported stake".to_string());
+                }
+                let channel_key = chat_record_key(b"channel", tx.channel_id.0.as_bytes());
+                if self.chat_records.contains_key(&channel_key) {
+                    return Err("channel already exists".to_string());
+                }
+                let visibility = bincode::serialize(&(
+                    tx.visibility,
+                    payload_commitment(&envelope.payload),
+                ))
+                .map_err(|error| error.to_string())?;
+                self.insert_chat_record(channel_key, visibility)?;
+                self.insert_chat_record(
+                    chat_membership_key(tx.channel_id.0.as_bytes(), tx.creator_id.0.as_bytes()),
+                    payload_commitment(&envelope.payload).to_vec(),
+                )
+            }
+            UnifiedTransactionType::Chat(TransactionType::JoinChannel) => {
+                let tx: JoinChannelTx = decode_chat_payload(&envelope.payload)?;
+                if tx.user_id.0 != sender
+                    || !self.has_chat_record(b"user", tx.user_id.0.as_bytes())
+                {
+                    return Err("joining user is not registered".to_string());
+                }
+                let channel_key = chat_record_key(b"channel", tx.channel_id.0.as_bytes());
+                let (visibility, _channel_commitment): (ChannelVisibility, [u8; 32]) = self
+                    .chat_records
+                    .get(&channel_key)
+                    .ok_or_else(|| "channel does not exist".to_string())
+                    .and_then(|bytes| {
+                        bincode::deserialize(bytes)
+                            .map_err(|error| format!("invalid channel state: {}", error))
+                    })?;
+                if visibility != ChannelVisibility::Public || tx.access_token.is_some() {
+                    return Err("private and token-gated joins are not supported".to_string());
+                }
+                self.insert_chat_record(
+                    chat_membership_key(tx.channel_id.0.as_bytes(), tx.user_id.0.as_bytes()),
+                    payload_commitment(&envelope.payload).to_vec(),
+                )
+            }
+            UnifiedTransactionType::Chat(TransactionType::PostToChannel) => {
+                let tx: PostToChannelTx = decode_chat_payload(&envelope.payload)?;
+                if tx.sender_id.0 != sender
+                    || !self.has_chat_record(b"user", tx.sender_id.0.as_bytes())
+                {
+                    return Err("posting user is not registered".to_string());
+                }
+                let channel_key = chat_record_key(b"channel", tx.channel_id.0.as_bytes());
+                let (visibility, _channel_commitment): (ChannelVisibility, [u8; 32]) = self
+                    .chat_records
+                    .get(&channel_key)
+                    .ok_or_else(|| "channel does not exist".to_string())
+                    .and_then(|bytes| {
+                        bincode::deserialize(bytes)
+                            .map_err(|error| format!("invalid channel state: {}", error))
+                    })?;
+                if matches!(visibility, ChannelVisibility::TokenGated { .. }) {
+                    return Err("token-gated channel posting is not supported".to_string());
+                }
+                if !self.chat_records.contains_key(&chat_membership_key(
+                    tx.channel_id.0.as_bytes(),
+                    tx.sender_id.0.as_bytes(),
+                )) {
+                    return Err("posting user is not a channel member".to_string());
+                }
+                self.insert_chat_record(
+                    chat_record_key(b"message", tx.message_id.0.as_bytes()),
+                    payload_commitment(&envelope.payload).to_vec(),
+                )
+            }
+            UnifiedTransactionType::Chat(TransactionType::GovernanceProposal) => {
+                let tx: GovernanceTransaction = decode_chat_payload(&envelope.payload)?;
+                let GovernanceTransaction::SubmitProposal(proposal) = tx else {
+                    return Err("governance proposal envelope must submit a proposal".to_string());
+                };
+                self.apply_governance_proposal(&proposal, sender)
+            }
+            UnifiedTransactionType::Chat(TransactionType::GovernanceVote) => {
+                let tx: GovernanceTransaction = decode_chat_payload(&envelope.payload)?;
+                self.apply_governance_vote(tx, sender, block_height)
+            }
+            UnifiedTransactionType::Chat(unsupported) => Err(format!(
+                "chat transaction type {:?} has no deterministic handler",
+                unsupported
+            )),
+            UnifiedTransactionType::Currency(_) => {
+                Err("currency transaction cannot execute on the chat chain".to_string())
+            }
+        }
+    }
+
+    fn apply_governance_proposal(
+        &mut self,
+        proposal: &GovernanceProposalTx,
+        sender: Uuid,
+    ) -> Result<(), String> {
+        if proposal.proposer.0 != sender
+            || !self.has_chat_record(b"user", proposal.proposer.0.as_bytes())
+            || proposal.title.trim().is_empty()
+            || proposal.voting_end_height <= proposal.voting_start_height
+            || proposal.quorum_required_bps > 10_000
+            || proposal.approval_required_bps > 10_000
+        {
+            return Err("invalid governance proposal".to_string());
+        }
+        self.insert_chat_record(
+            chat_record_key(b"proposal", proposal.proposal_id.as_bytes()),
+            bincode::serialize(proposal).map_err(|error| error.to_string())?,
+        )
+    }
+
+    fn apply_governance_vote(
+        &mut self,
+        tx: GovernanceTransaction,
+        sender: Uuid,
+        block_height: u64,
+    ) -> Result<(), String> {
+        match tx {
+            GovernanceTransaction::CommitVote(vote) => {
+                if vote.voter.0 != sender
+                    || !self.has_chat_record(b"user", vote.voter.0.as_bytes())
+                {
+                    return Err("governance voter is not registered".to_string());
+                }
+                let proposal: GovernanceProposalTx = self.governance_proposal(vote.proposal_id)?;
+                if block_height < proposal.voting_start_height
+                    || block_height > proposal.voting_end_height
+                {
+                    return Err("vote commitment is outside the voting window".to_string());
+                }
+                self.insert_chat_record(
+                    governance_vote_key(b"commit", vote.proposal_id, vote.voter.0.as_bytes()),
+                    bincode::serialize(&vote).map_err(|error| error.to_string())?,
+                )
+            }
+            GovernanceTransaction::RevealVote(vote) => {
+                if vote.voter.0 != sender
+                    || !self.has_chat_record(b"user", vote.voter.0.as_bytes())
+                {
+                    return Err("governance voter is not registered".to_string());
+                }
+                let proposal: GovernanceProposalTx = self.governance_proposal(vote.proposal_id)?;
+                if block_height <= proposal.voting_end_height || vote.vote_choice > 2 {
+                    return Err("vote reveal is invalid or premature".to_string());
+                }
+                let commit_key =
+                    governance_vote_key(b"commit", vote.proposal_id, vote.voter.0.as_bytes());
+                let commitment: dchat_chain::GovernanceVoteCommitTx = self
+                    .chat_records
+                    .get(&commit_key)
+                    .ok_or_else(|| "vote reveal has no commitment".to_string())
+                    .and_then(|bytes| {
+                        bincode::deserialize(bytes)
+                            .map_err(|error| format!("invalid vote commitment: {}", error))
+                    })?;
+                if !dchat_chain::verify_vote_reveal(
+                    &commitment.commitment,
+                    vote.vote_choice,
+                    &vote.salt,
+                ) {
+                    return Err("vote reveal does not match its commitment".to_string());
+                }
+                self.insert_chat_record(
+                    governance_vote_key(b"reveal", vote.proposal_id, vote.voter.0.as_bytes()),
+                    payload_commitment(
+                        &bincode::serialize(&vote).map_err(|error| error.to_string())?,
+                    )
+                    .to_vec(),
+                )
+            }
+            _ => Err("unsupported governance vote operation".to_string()),
+        }
+    }
+
+    fn governance_proposal(&self, proposal_id: Uuid) -> Result<GovernanceProposalTx, String> {
+        self.chat_records
+            .get(&chat_record_key(b"proposal", proposal_id.as_bytes()))
+            .ok_or_else(|| "governance proposal does not exist".to_string())
+            .and_then(|bytes| {
+                bincode::deserialize(bytes)
+                    .map_err(|error| format!("invalid governance proposal: {}", error))
+            })
+    }
+
+    fn has_chat_record(&self, namespace: &[u8], id: &[u8]) -> bool {
+        self.chat_records.contains_key(&chat_record_key(namespace, id))
+    }
+
+    fn insert_chat_record(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<(), String> {
+        if self.chat_records.contains_key(&key) {
+            return Err("chat record already exists".to_string());
+        }
+        self.chat_records.insert(key, value);
+        self.dirty = true;
+        self.state_root = None;
+        Ok(())
+    }
+
+    /// Compute state root (Merkle root of accounts and chat application records)
     pub fn compute_state_root(&mut self) -> Hash {
         if !self.dirty {
             if let Some(root) = self.state_root {
@@ -135,10 +472,50 @@ impl WorldState {
             })
             .collect();
 
+        leaves.extend(self.chat_records.iter().map(|(key, value)| {
+            canonical::domain_hash_parts(b"dchat/chat_record/v1", &[key, value])
+        }));
+
         let root = compute_merkle_root(&mut leaves);
         self.state_root = Some(root);
         self.dirty = false;
         root
+    }
+
+    fn decode_chat_payload<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
+        bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(1024 * 1024)
+            .deserialize(bytes)
+            .map_err(|error| format!("invalid chat transaction payload: {}", error))
+    }
+
+    fn chat_user_address(user_id: &[u8; 16]) -> Address {
+        *canonical::domain_hash(b"dchat/chat/user_address/v1", user_id).as_bytes()
+    }
+
+    fn chat_record_key(namespace: &[u8], id: &[u8]) -> Vec<u8> {
+        let mut key = Vec::with_capacity(namespace.len() + id.len() + 1);
+        key.extend_from_slice(namespace);
+        key.push(b'/');
+        key.extend_from_slice(id);
+        key
+    }
+
+    fn chat_membership_key(channel_id: &[u8], user_id: &[u8]) -> Vec<u8> {
+        let mut key = chat_record_key(b"membership", channel_id);
+        key.extend_from_slice(user_id);
+        key
+    }
+
+    fn governance_vote_key(kind: &[u8], proposal_id: Uuid, voter_id: &[u8]) -> Vec<u8> {
+        let mut key = chat_record_key(kind, proposal_id.as_bytes());
+        key.extend_from_slice(voter_id);
+        key
+    }
+
+    fn payload_commitment(payload: &[u8]) -> [u8; 32] {
+        *blake3::hash(payload).as_bytes()
     }
 
     /// Get current state root (may be stale)
@@ -563,6 +940,48 @@ fn compute_merkle_root(leaves: &mut Vec<Hash>) -> Hash {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use dchat_chain::{
+        address_from_public_key, chain_ids, EnvelopeBuilder, RegisterUserTx, TransactionStatus,
+    };
+    use dchat_core::types::UserId;
+    use ed25519_dalek::SigningKey;
+
+    fn signed_registration(nonce: u64) -> ChainTransaction {
+        let signing_key = SigningKey::from_bytes(&[7; 32]);
+        let public_key = signing_key.verifying_key().to_bytes();
+        let user_id = UserId(address_from_public_key(&public_key));
+        let payload = bincode::serialize(&RegisterUserTx {
+            user_id,
+            username: "alice".to_string(),
+            public_key: hex::encode(public_key),
+            timestamp: Utc::now(),
+            initial_reputation: 0,
+        })
+        .unwrap();
+        let envelope = EnvelopeBuilder::new(chain_ids::TESTNET_CHAT, public_key)
+            .nonce(nonce)
+            .chat_tx(TransactionType::RegisterUser)
+            .payload(payload)
+            .build_and_sign(&signing_key)
+            .unwrap();
+        let bytes = envelope.to_bytes().unwrap();
+        let mut hash_input = envelope.signing_bytes();
+        hash_input.extend_from_slice(&envelope.signature);
+        let hash = blake3::hash(&hash_input);
+        let mut tx_id = [0; 16];
+        tx_id.copy_from_slice(&hash.as_bytes()[..16]);
+        ChainTransaction {
+            tx_id: Uuid::from_bytes(tx_id),
+            tx_type: TransactionType::RegisterUser,
+            payload: bytes,
+            tx_hash: format!("0x{}", hex::encode(hash.as_bytes())),
+            status: TransactionStatus::Pending,
+            submitted_at: Utc::now(),
+            confirmed_at: None,
+            fee_paid: 0,
+        }
+    }
 
     #[test]
     fn test_account_state() {
@@ -585,6 +1004,29 @@ mod tests {
 
         let root = state.compute_state_root();
         assert_ne!(root, Hash::ZERO);
+    }
+
+    #[test]
+    fn signed_chat_execution_is_replayable_and_nonce_protected() {
+        let tx = signed_registration(1);
+        let mut producer_state = WorldState::new();
+        let producer_receipt = producer_state
+            .execute_chat_transaction(&tx, dchat_chain::chain_ids::TESTNET_CHAT, 1, 0)
+            .unwrap();
+        assert!(producer_receipt.success);
+
+        let mut peer_state = WorldState::new();
+        let peer_receipt = peer_state
+            .execute_chat_transaction(&tx, dchat_chain::chain_ids::TESTNET_CHAT, 1, 0)
+            .unwrap();
+        assert_eq!(producer_receipt, peer_receipt);
+        assert_eq!(
+            producer_state.compute_state_root(),
+            peer_state.compute_state_root()
+        );
+        assert!(producer_state
+            .execute_chat_transaction(&tx, dchat_chain::chain_ids::TESTNET_CHAT, 2, 0)
+            .is_err());
     }
 
     #[test]

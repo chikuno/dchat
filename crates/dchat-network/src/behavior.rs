@@ -127,7 +127,8 @@ pub enum DchatMessage {
         block_hash: Vec<u8>,
         signature: Vec<u8>,
         timestamp: u64,
-        transactions: Vec<Vec<u8>>,
+        /// Bincode-serialized complete block, including transaction bodies and receipts.
+        block_data: Vec<u8>,
         // NEW FIELDS for full block hash verification (Option A)
         prev_hash: Vec<u8>,
         state_root: Vec<u8>,
@@ -225,6 +226,7 @@ impl DchatBehavior {
             .mesh_n_low(3) // Min mesh peers (MUST be >= 1 to prevent panic)
             .mesh_n(6) // Target mesh peers (optimal for redundancy)
             .mesh_n_high(12) // Max mesh peers
+            .max_transmit_size(6 * 1024 * 1024) // Full validator blocks are bounded to 6 MiB
             .flood_publish(true) // Send to ALL connected peers (not just mesh)
             .do_px() // Enable peer exchange
             .build()
