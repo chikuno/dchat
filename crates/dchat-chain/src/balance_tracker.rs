@@ -44,7 +44,11 @@ fn typed_stake_total(info: &StakingInfo) -> Result<u128> {
     checked_add(total, info.reputation_stake, "Typed stake total")
 }
 
-fn ensure_stake_consistency(account: UserId, balance: &Balance, info: &StakingInfo) -> Result<()> {
+fn ensure_account_consistency(
+    account: UserId,
+    balance: &Balance,
+    info: &StakingInfo,
+) -> Result<()> {
     let pending_unstakes = info
         .pending_unstakes
         .iter()
@@ -197,7 +201,7 @@ impl BalanceTracker {
             .get(&tx.staker)
             .cloned()
             .unwrap_or_else(|| empty_staking_info(tx.staker));
-        ensure_stake_consistency(tx.staker, &balance, &info)?;
+        ensure_account_consistency(tx.staker, &balance, &info)?;
         if balance.available < tx.amount {
             return Err(Error::validation("Insufficient balance for staking"));
         }
@@ -237,7 +241,7 @@ impl BalanceTracker {
             .get(&tx.unstaker)
             .cloned()
             .unwrap_or_else(|| empty_staking_info(tx.unstaker));
-        ensure_stake_consistency(tx.unstaker, &balance, &info)?;
+        ensure_account_consistency(tx.unstaker, &balance, &info)?;
         if balance.staked < tx.amount {
             return Err(Error::validation("Insufficient staked balance"));
         }
@@ -288,7 +292,7 @@ impl BalanceTracker {
             .get(&tx.delegator)
             .cloned()
             .unwrap_or_else(|| empty_staking_info(tx.delegator));
-        ensure_stake_consistency(tx.delegator, &balance, &info)?;
+        ensure_account_consistency(tx.delegator, &balance, &info)?;
         if delegation_total(&info)? != balance.delegated {
             return Err(Error::validation(format!(
                 "Delegation records are inconsistent for account {}",
@@ -328,7 +332,7 @@ impl BalanceTracker {
             .get(&tx.delegator)
             .cloned()
             .unwrap_or_else(|| empty_staking_info(tx.delegator));
-        ensure_stake_consistency(tx.delegator, &balance, &info)?;
+        ensure_account_consistency(tx.delegator, &balance, &info)?;
         if delegation_total(&info)? != balance.delegated {
             return Err(Error::validation(format!(
                 "Delegation records are inconsistent for account {}",
@@ -420,7 +424,7 @@ impl BalanceTracker {
             .get(&tx.validator)
             .cloned()
             .ok_or_else(|| Error::validation("Validator has no staking record to slash"))?;
-        ensure_stake_consistency(tx.validator, &balance, &info)?;
+        ensure_account_consistency(tx.validator, &balance, &info)?;
         let stake_total = typed_stake_total(&info)?;
         let expected_remaining = balance
             .staked
@@ -607,6 +611,8 @@ impl BalanceTracker {
         let mut updated_balances = Vec::new();
         let mut updated_staking_info = Vec::new();
         for (user_id, existing_info) in staking_info.iter() {
+            let existing_balance = balances.get(user_id).cloned().unwrap_or_default();
+            ensure_account_consistency(*user_id, &existing_balance, existing_info)?;
             let mut info = existing_info.clone();
             let mut completed_amount = 0u128;
             let mut pending_unstakes = Vec::with_capacity(info.pending_unstakes.len());
@@ -920,6 +926,7 @@ mod tests {
         assert_eq!(balance.available, 500);
         assert_eq!(balance.staked, 500);
         assert_eq!(tracker.get_total_staked().await, 500);
+        tracker.verify_integrity().await.unwrap();
     }
 
     #[tokio::test]
@@ -1012,7 +1019,7 @@ mod tests {
         info.delegations.push(Delegation {
             validator,
             amount: 100,
-            delegated_at,
+            delegated_at: delegated_at.clone(),
         });
         tracker.staking_info.write().await.insert(delegator, info);
         tracker.balances.write().await.insert(
@@ -1029,8 +1036,8 @@ mod tests {
             delegator,
             validator,
             amount: 60,
-            unlock_at,
-            timestamp: delegated_at,
+            unlock_at: unlock_at.clone(),
+            timestamp: delegated_at.clone(),
             nonce: 1,
             signature: vec![],
         };
