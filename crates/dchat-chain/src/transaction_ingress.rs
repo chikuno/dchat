@@ -337,6 +337,18 @@ mod tests {
     }
 
     #[test]
+    fn requires_contiguous_sender_nonces() {
+        let ingress = TransactionIngress::new(chain_ids::TESTNET_CHAT, Mempool::default());
+        let (_, nonce_two) = signed_registration(2);
+        let (_, nonce_one) = signed_registration(1);
+
+        assert!(ingress.submit_envelope(&nonce_two).is_err());
+        assert!(ingress.submit_envelope(&nonce_one).is_ok());
+        assert!(ingress.submit_envelope(&nonce_two).is_ok());
+        assert_eq!(ingress.mempool().len().unwrap(), 2);
+    }
+
+    #[test]
     fn rejects_transactions_when_the_mempool_is_full() {
         let ingress = TransactionIngress::new(chain_ids::TESTNET_CHAT, Mempool::new(0));
         let (_, bytes) = signed_registration(1);

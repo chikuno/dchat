@@ -9202,7 +9202,7 @@ async fn run_validator_node(
                                     body.receipts = receipts;
                                 }
                                 let commitments = match miniblock.body.as_ref() {
-                                    Some(body) => dchat_blockchain::block_hierarchy::lane_sharding::compute_body_commitments(
+                                    Some(body) => dchat_blockchain::block_hierarchy::compute_body_commitments(
                                         lane,
                                         body,
                                     ),
@@ -9818,6 +9818,48 @@ async fn run_validator_node(
                                         warn!("⚠️  Block #{} has an invalid hash length", height);
                                         continue;
                                     }
+                                    if validator_id.len() != 32 || signature.len() != 64 {
+                                        warn!("⚠️  Block #{} has an invalid signer or signature length", height);
+                                        continue;
+                                    }
+                                    let validator_id_bytes: [u8; 32] =
+                                        match validator_id.as_slice().try_into() {
+                                            Ok(bytes) => bytes,
+                                            Err(_) => {
+                                                warn!("⚠️  Invalid validator ID for block #{}", height);
+                                                continue;
+                                            }
+                                        };
+                                    let verifying_key =
+                                        match ed25519_dalek::VerifyingKey::from_bytes(&validator_id_bytes) {
+                                            Ok(key) => key,
+                                            Err(error) => {
+                                                warn!("⚠️  Invalid validator key for block #{}: {}", height, error);
+                                                continue;
+                                            }
+                                        };
+                                    let signature_bytes: [u8; 64] =
+                                        match signature.as_slice().try_into() {
+                                            Ok(bytes) => bytes,
+                                            Err(_) => {
+                                                warn!("⚠️  Invalid block signature for block #{}", height);
+                                                continue;
+                                            }
+                                        };
+                                    use ed25519_dalek::Verifier;
+                                    if let Err(error) = verifying_key.verify(
+                                        &block_hash,
+                                        &ed25519_dalek::Signature::from_bytes(&signature_bytes),
+                                    ) {
+                                        warn!("⚠️  Block #{} signature verification failed: {}", height, error);
+                                        continue;
+                                    }
+                                    if !authorized_validators_clone.is_empty()
+                                        && !authorized_validators_clone.contains(&validator_id_bytes)
+                                    {
+                                        warn!("⚠️  Block #{} was proposed by an unauthorized validator", height);
+                                        continue;
+                                    }
 
                                     const MAX_BLOCK_DATA_BYTES: usize = 5 * 1024 * 1024;
                                     if block_data.len() > MAX_BLOCK_DATA_BYTES {
@@ -9881,59 +9923,11 @@ async fn run_validator_node(
                                         continue;
                                     }
 
-                                    // Verify block signature
-                                    if validator_id.len() != 32 {
-                                        warn!("⚠️  Invalid validator ID length: {}", validator_id.len());
-                                        continue;
-                                    }
-
-                                    let validator_id_bytes: [u8; 32] = match validator_id.clone().try_into() {
-                                        Ok(bytes) => bytes,
-                                        Err(_) => {
-                                            warn!("⚠️  Failed to convert validator ID to bytes");
-                                            continue;
-                                        }
-                                    };
-
-                                    let verifying_key = match ed25519_dalek::VerifyingKey::from_bytes(&validator_id_bytes) {
-                                        Ok(key) => key,
-                                        Err(e) => {
-                                            warn!("⚠️  Invalid verifying key: {}", e);
-                                            continue;
-                                        }
-                                    };
-
-                                    if signature.len() != 64 {
-                                        warn!("⚠️  Invalid signature length: {}", signature.len());
-                                        continue;
-                                    }
-
-                                    let sig_bytes: [u8; 64] = match signature.clone().try_into() {
-                                        Ok(bytes) => bytes,
-                                        Err(_) => {
-                                            warn!("⚠️  Failed to convert signature to bytes");
-                                            continue;
-                                        }
-                                    };
-                                    let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
-
-                                    // Verify signature
-                                    use ed25519_dalek::Verifier;
-                                    if let Err(e) = verifying_key.verify(&block_hash, &sig) {
-                                        warn!("⚠️  Block #{} signature verification FAILED: {}", height, e);
-                                        warn!("   Block rejected - invalid validator signature");
-                                        continue;
-                                    }
-
-                                    info!("✓ Block #{} signature verified from validator {}", height, hex::encode(&validator_id[..4]));
-
-                                    // Verify the validator is authorized (in genesis validator set)
-                                    if !authorized_validators_clone.is_empty() && !authorized_validators_clone.contains(&validator_id_bytes) {
-                                        warn!("⚠️  Block #{} from UNAUTHORIZED validator {}", height, hex::encode(&validator_id[..8]));
-                                        warn!("   Block rejected - validator not in genesis set");
-                                        warn!("   Expected one of {} authorized validators", authorized_validators_clone.len());
-                                        continue;
-                                    }
+                                    info!(
+                                        "✓ Block #{} signature verified from validator {}",
+                                        height,
+                                        hex::encode(&validator_id[..4])
+                                    );
 
                                     if da_root.as_ref().is_some_and(|root| root.len() != 32)
                                         || (da_root.is_none() && da_chunk_count != 0)
