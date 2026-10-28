@@ -9920,6 +9920,14 @@ async fn run_validator_node(
                                             *currency_last_hash.lock().await = hash;
                                             currency_block_height
                                                 .store(currency_height, Ordering::SeqCst);
+                                            let minimum_ack_height =
+                                                currency_height.saturating_sub(100);
+                                            currency_block_acks_clone
+                                                .lock()
+                                                .await
+                                                .retain(|height, _| {
+                                                    *height >= minimum_ack_height
+                                                });
                                             match currency_mempool_consensus
                                                 .remove_transactions(&included_ids)
                                             {
@@ -10845,7 +10853,10 @@ async fn run_validator_node(
                                         warn!("Currency block #{} signature verification failed", height);
                                         continue;
                                     }
-                                    if height != currency_block_height_net.load(Ordering::SeqCst) + 1
+                                    if currency_block_height_net
+                                        .load(Ordering::SeqCst)
+                                        .checked_add(1)
+                                        != Some(height)
                                     {
                                         warn!("Currency block #{} is not the next height", height);
                                         continue;
@@ -11017,6 +11028,17 @@ async fn run_validator_node(
                                     validator_id,
                                     signature,
                                 } => {
+                                    if currency_block_height_net
+                                        .load(Ordering::SeqCst)
+                                        .checked_add(1)
+                                        != Some(block_height)
+                                    {
+                                        warn!(
+                                            "Rejected currency acknowledgment for unexpected height {}",
+                                            block_height
+                                        );
+                                        continue;
+                                    }
                                     if block_hash.len() != 32
                                         || validator_id.len() != 32
                                         || signature.len() != 64
@@ -11087,30 +11109,51 @@ async fn run_validator_node(
                                             .count()
                                     };
                                     if ack_count >= required_signatures_net {
-                                        if let Some((candidate_hash, candidate_state, included_ids, hash)) =
-                                            pending_currency_candidates_net
+                                        let candidate = {
+                                            let mut candidates =
+                                                pending_currency_candidates_net.lock().await;
+                                            if candidates
+                                                .get(&block_height)
+                                                .is_some_and(|(candidate_hash, ..)| {
+                                                    candidate_hash == &block_hash
+                                                })
+                                            {
+                                                candidates.remove(&block_height)
+                                            } else {
+                                                None
+                                            }
+                                        };
+                                        if let Some((
+                                            _candidate_hash,
+                                            candidate_state,
+                                            included_ids,
+                                            hash,
+                                        )) = candidate
+                                        {
+                                            *currency_execution_state_net.lock().await =
+                                                candidate_state;
+                                            *currency_last_hash_net.lock().await = hash;
+                                            currency_block_height_net
+                                                .store(block_height, Ordering::SeqCst);
+                                            let minimum_ack_height =
+                                                block_height.saturating_sub(100);
+                                            currency_block_acks_net
                                                 .lock()
                                                 .await
-                                                .remove(&block_height)
-                                        {
-                                            if candidate_hash == block_hash {
-                                                *currency_execution_state_net.lock().await =
-                                                    candidate_state;
-                                                *currency_last_hash_net.lock().await = hash;
-                                                currency_block_height_net
-                                                    .store(block_height, Ordering::SeqCst);
-                                                match currency_mempool_net
-                                                    .remove_transactions(&included_ids)
-                                                {
-                                                    Ok(removed) => info!(
-                                                        "Finalized currency block #{} and removed {} transfers",
-                                                        block_height, removed
-                                                    ),
-                                                    Err(error) => error!(
-                                                        "Currency block #{} finalized but mempool cleanup failed: {}",
-                                                        block_height, error
-                                                    ),
-                                                }
+                                                .retain(|height, _| {
+                                                    *height >= minimum_ack_height
+                                                });
+                                            match currency_mempool_net
+                                                .remove_transactions(&included_ids)
+                                            {
+                                                Ok(removed) => info!(
+                                                    "Finalized currency block #{} and removed {} transfers",
+                                                    block_height, removed
+                                                ),
+                                                Err(error) => error!(
+                                                    "Currency block #{} finalized but mempool cleanup failed: {}",
+                                                    block_height, error
+                                                ),
                                             }
                                         }
                                     }
