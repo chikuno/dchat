@@ -138,6 +138,29 @@ fn validate_payload(envelope: &SignedTransactionEnvelope, tx_type: TransactionTy
                 ));
             }
         }
+        TransactionType::UpdateProfile => {
+            let tx: crate::transactions::UpdateProfileTx = decode_payload(envelope)?;
+            if tx.user_id != sender
+                || tx.username.trim().is_empty()
+                || tx.username.len() > 64
+                || tx
+                    .display_name
+                    .as_ref()
+                    .is_some_and(|name| name.len() > 128)
+                || tx.avatar_hash.as_ref().is_some_and(|hash| hash.len() > 128)
+                || tx.bio.as_ref().is_some_and(|bio| bio.len() > 512)
+            {
+                return Err(Error::validation(
+                    "Profile update identity or fields are invalid",
+                ));
+            }
+        }
+        TransactionType::SubmitDeliveryProof => {
+            let tx: crate::transactions::OnChainDeliveryProofTx = decode_payload(envelope)?;
+            tx.verify(&envelope.public_key).map_err(|error| {
+                Error::validation(format!("Invalid delivery proof: {}", error))
+            })?;
+        }
         TransactionType::SendDirectMessage => {
             let tx: crate::transactions::SendDirectMessageTx = decode_payload(envelope)?;
             if tx.sender_id != sender {
@@ -264,6 +287,45 @@ mod tests {
         (signing_key, envelope.to_bytes().unwrap())
     }
 
+    fn signed_delivery_proof() -> Vec<u8> {
+        use ed25519_dalek::Signer;
+
+        let relay_key = SigningKey::from_bytes(&[8; 32]);
+        let recipient_key = SigningKey::from_bytes(&[7; 32]);
+        let message_id = [3; 32];
+        let timestamp = 1_000;
+        let mut recipient_message = Vec::new();
+        recipient_message.extend_from_slice(&message_id);
+        recipient_message.extend_from_slice(relay_key.verifying_key().as_bytes());
+        recipient_message.extend_from_slice(&timestamp.to_le_bytes());
+        let recipient_signature = recipient_key.sign(&recipient_message).to_bytes();
+        let mut relay_message = Vec::new();
+        relay_message.extend_from_slice(&message_id);
+        relay_message.extend_from_slice(recipient_key.verifying_key().as_bytes());
+        relay_message.extend_from_slice(&recipient_signature);
+        relay_message.extend_from_slice(&timestamp.to_le_bytes());
+        let proof = crate::transactions::OnChainDeliveryProofTx {
+            message_id,
+            recipient_id: UserId(address_from_public_key(
+                &recipient_key.verifying_key().to_bytes(),
+            )),
+            recipient_public_key: recipient_key.verifying_key().to_bytes(),
+            recipient_signature: recipient_signature.to_vec(),
+            timestamp,
+            relay_signature: relay_key.sign(&relay_message).to_bytes().to_vec(),
+        };
+        let envelope = EnvelopeBuilder::new(
+            chain_ids::TESTNET_CHAT,
+            relay_key.verifying_key().to_bytes(),
+        )
+        .nonce(1)
+        .chat_tx(TransactionType::SubmitDeliveryProof)
+        .payload(bincode::serialize(&proof).unwrap())
+        .build_and_sign(&relay_key)
+        .unwrap();
+        envelope.to_bytes().unwrap()
+    }
+
     #[test]
     fn accepts_and_deduplicates_a_valid_signed_envelope() {
         let ingress = TransactionIngress::new(chain_ids::TESTNET_CHAT, Mempool::default());
@@ -275,6 +337,87 @@ mod tests {
         assert_eq!(first_hash, retry_hash);
         assert!(first_hash.starts_with("0x"));
         assert_eq!(ingress.mempool().len().unwrap(), 1);
+    }
+
+    #[test]
+    fn accepts_a_profile_update_for_the_signed_user() {
+        let ingress = TransactionIngress::new(chain_ids::TESTNET_CHAT, Mempool::default());
+        let signing_key = SigningKey::from_bytes(&[7; 32]);
+        let public_key = signing_key.verifying_key().to_bytes();
+        let user_id = UserId(address_from_public_key(&public_key));
+        let payload = bincode::serialize(&crate::transactions::UpdateProfileTx {
+            user_id,
+            username: "alice-new".to_string(),
+            display_name: Some("Alice".to_string()),
+            avatar_hash: Some("ab".repeat(32)),
+            bio: Some("Hello".to_string()),
+        })
+        .unwrap();
+        let envelope = EnvelopeBuilder::new(chain_ids::TESTNET_CHAT, public_key)
+            .nonce(1)
+            .chat_tx(TransactionType::UpdateProfile)
+            .payload(payload)
+            .build_and_sign(&signing_key)
+            .unwrap();
+
+        assert!(ingress
+            .submit_envelope(&envelope.to_bytes().unwrap())
+            .is_ok());
+        assert_eq!(ingress.mempool().len().unwrap(), 1);
+    }
+
+    #[test]
+    fn rejects_profile_updates_for_another_user() {
+        let ingress = TransactionIngress::new(chain_ids::TESTNET_CHAT, Mempool::default());
+        let signing_key = SigningKey::from_bytes(&[7; 32]);
+        let public_key = signing_key.verifying_key().to_bytes();
+        let payload = bincode::serialize(&crate::transactions::UpdateProfileTx {
+            user_id: UserId::new(),
+            username: "alice-new".to_string(),
+            display_name: None,
+            avatar_hash: None,
+            bio: None,
+        })
+        .unwrap();
+        let envelope = EnvelopeBuilder::new(chain_ids::TESTNET_CHAT, public_key)
+            .nonce(1)
+            .chat_tx(TransactionType::UpdateProfile)
+            .payload(payload)
+            .build_and_sign(&signing_key)
+            .unwrap();
+
+        assert!(ingress
+            .submit_envelope(&envelope.to_bytes().unwrap())
+            .is_err());
+        assert_eq!(ingress.mempool().len().unwrap(), 0);
+    }
+
+    #[test]
+    fn accepts_delivery_proofs_with_both_valid_signatures() {
+        let ingress = TransactionIngress::new(chain_ids::TESTNET_CHAT, Mempool::default());
+        let bytes = signed_delivery_proof();
+
+        assert!(ingress.submit_envelope(&bytes).is_ok());
+        assert_eq!(ingress.mempool().len().unwrap(), 1);
+    }
+
+    #[test]
+    fn rejects_delivery_proofs_with_an_invalid_recipient_signature() {
+        let ingress = TransactionIngress::new(chain_ids::TESTNET_CHAT, Mempool::default());
+        let relay_key = SigningKey::from_bytes(&[8; 32]);
+        let mut envelope =
+            SignedTransactionEnvelope::from_bytes(&signed_delivery_proof()).unwrap();
+        let mut proof: crate::transactions::OnChainDeliveryProofTx =
+            bincode::deserialize(&envelope.payload).unwrap();
+        proof.recipient_signature[0] ^= 0x80;
+        envelope.payload = bincode::serialize(&proof).unwrap();
+        envelope.payload_hash = *blake3::hash(&envelope.payload).as_bytes();
+        envelope.sign(&relay_key);
+
+        assert!(ingress
+            .submit_envelope(&envelope.to_bytes().unwrap())
+            .is_err());
+        assert_eq!(ingress.mempool().len().unwrap(), 0);
     }
 
     #[test]

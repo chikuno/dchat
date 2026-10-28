@@ -12,9 +12,9 @@ use crate::canonical;
 use bincode::Options;
 use dchat_chain::{
     ChannelVisibility, CreateChannelTx, EnvelopeDomain, EnvelopeVerifier, GovernanceProposalTx,
-    GovernanceTransaction, JoinChannelTx, PostToChannelTx, RegisterUserTx,
+    GovernanceTransaction, JoinChannelTx, OnChainDeliveryProofTx, PostToChannelTx, RegisterUserTx,
     SendDirectMessageTx, SignedTransactionEnvelope, Transaction as ChainTransaction,
-    TransactionType, UnifiedTransactionType,
+    TransactionType, UnifiedTransactionType, UpdateProfileTx,
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -86,6 +86,15 @@ pub struct WorldState {
     state_root: Option<Hash>,
     /// Dirty accounts (modified since last root computation)
     dirty: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChatUserRecord {
+    public_key: [u8; 32],
+    username: String,
+    display_name: Option<String>,
+    avatar_hash: Option<String>,
+    bio: Option<String>,
 }
 
 impl WorldState {
@@ -233,7 +242,66 @@ impl WorldState {
                 {
                     return Err("invalid registration fields".to_string());
                 }
-                self.insert_chat_record(key, payload_commitment(&envelope.payload).to_vec())
+                let user = ChatUserRecord {
+                    public_key: envelope.public_key,
+                    username: tx.username,
+                    display_name: None,
+                    avatar_hash: None,
+                    bio: None,
+                };
+                let value = bincode::serialize(&user).map_err(|error| error.to_string())?;
+                self.insert_chat_record(key, value)
+            }
+            UnifiedTransactionType::Chat(TransactionType::UpdateProfile) => {
+                let tx: UpdateProfileTx = decode_chat_payload(&envelope.payload)?;
+                if tx.user_id.0 != sender
+                    || tx.username.trim().is_empty()
+                    || tx.username.len() > 64
+                    || tx
+                        .display_name
+                        .as_ref()
+                        .is_some_and(|name| name.len() > 128)
+                    || tx.avatar_hash.as_ref().is_some_and(|hash| hash.len() > 128)
+                    || tx.bio.as_ref().is_some_and(|bio| bio.len() > 512)
+                {
+                    return Err("invalid profile update fields".to_string());
+                }
+                let key = chat_record_key(b"user", tx.user_id.0.as_bytes());
+                let mut user: ChatUserRecord = self
+                    .chat_records
+                    .get(&key)
+                    .ok_or_else(|| "profile owner is not registered".to_string())
+                    .and_then(|bytes| {
+                        bincode::deserialize(bytes)
+                            .map_err(|error| format!("invalid user state: {}", error))
+                    })?;
+                user.username = tx.username;
+                user.display_name = tx.display_name;
+                user.avatar_hash = tx.avatar_hash;
+                user.bio = tx.bio;
+                let value = bincode::serialize(&user).map_err(|error| error.to_string())?;
+                self.set_chat_record(key, value);
+                Ok(())
+            }
+            UnifiedTransactionType::Chat(TransactionType::SubmitDeliveryProof) => {
+                let tx: OnChainDeliveryProofTx = decode_chat_payload(&envelope.payload)?;
+                tx.verify(&envelope.public_key)?;
+                let recipient_key = chat_record_key(b"user", tx.recipient_id.0.as_bytes());
+                let recipient: ChatUserRecord = self
+                    .chat_records
+                    .get(&recipient_key)
+                    .ok_or_else(|| "delivery recipient is not registered".to_string())
+                    .and_then(|bytes| {
+                        bincode::deserialize(bytes)
+                            .map_err(|error| format!("invalid recipient state: {}", error))
+                    })?;
+                if recipient.public_key != tx.recipient_public_key {
+                    return Err("delivery proof key does not match registered recipient".to_string());
+                }
+                self.insert_chat_record(
+                    chat_record_key(b"delivery-proof", &tx.message_id),
+                    payload_commitment(&envelope.payload).to_vec(),
+                )
             }
             UnifiedTransactionType::Chat(TransactionType::SendDirectMessage) => {
                 let tx: SendDirectMessageTx = decode_chat_payload(&envelope.payload)?;
@@ -447,10 +515,14 @@ impl WorldState {
         if self.chat_records.contains_key(&key) {
             return Err("chat record already exists".to_string());
         }
+        self.set_chat_record(key, value);
+        Ok(())
+    }
+
+    fn set_chat_record(&mut self, key: Vec<u8>, value: Vec<u8>) {
         self.chat_records.insert(key, value);
         self.dirty = true;
         self.state_root = None;
-        Ok(())
     }
 
     /// Compute state root (Merkle root of accounts and chat application records)
@@ -1027,6 +1099,174 @@ mod tests {
         assert!(producer_state
             .execute_chat_transaction(&tx, dchat_chain::chain_ids::TESTNET_CHAT, 2, 0)
             .is_err());
+    }
+
+    #[test]
+    fn signed_profile_update_is_replayable_and_changes_user_state() {
+        let registration = signed_registration(1);
+        let mut producer_state = WorldState::new();
+        assert!(
+            producer_state
+                .execute_chat_transaction(&registration, chain_ids::TESTNET_CHAT, 1, 0)
+                .unwrap()
+                .success
+        );
+
+        let signing_key = SigningKey::from_bytes(&[7; 32]);
+        let public_key = signing_key.verifying_key().to_bytes();
+        let user_id = UserId(address_from_public_key(&public_key));
+        let payload = bincode::serialize(&UpdateProfileTx {
+            user_id,
+            username: "alice-updated".to_string(),
+            display_name: Some("Alice".to_string()),
+            avatar_hash: None,
+            bio: Some("Updated bio".to_string()),
+        })
+        .unwrap();
+        let envelope = EnvelopeBuilder::new(chain_ids::TESTNET_CHAT, public_key)
+            .nonce(2)
+            .chat_tx(TransactionType::UpdateProfile)
+            .payload(payload)
+            .build_and_sign(&signing_key)
+            .unwrap();
+        let bytes = envelope.to_bytes().unwrap();
+        let mut hash_input = envelope.signing_bytes();
+        hash_input.extend_from_slice(&envelope.signature);
+        let hash = blake3::hash(&hash_input);
+        let mut tx_id = [0; 16];
+        tx_id.copy_from_slice(&hash.as_bytes()[..16]);
+        let tx = ChainTransaction {
+            tx_id: Uuid::from_bytes(tx_id),
+            tx_type: TransactionType::UpdateProfile,
+            payload: bytes,
+            tx_hash: format!("0x{}", hex::encode(hash.as_bytes())),
+            status: TransactionStatus::Pending,
+            submitted_at: Utc::now(),
+            confirmed_at: None,
+            fee_paid: 0,
+        };
+
+        let producer_receipt = producer_state
+            .execute_chat_transaction(&tx, chain_ids::TESTNET_CHAT, 2, 0)
+            .unwrap();
+        assert!(producer_receipt.success);
+        let user_key = WorldState::chat_record_key(b"user", user_id.0.as_bytes());
+        let user: ChatUserRecord =
+            bincode::deserialize(producer_state.chat_records.get(&user_key).unwrap()).unwrap();
+        assert_eq!(user.username, "alice-updated");
+        assert_eq!(user.display_name.as_deref(), Some("Alice"));
+        assert_eq!(user.bio.as_deref(), Some("Updated bio"));
+
+        let mut peer_state = WorldState::new();
+        assert!(
+            peer_state
+                .execute_chat_transaction(&registration, chain_ids::TESTNET_CHAT, 1, 0)
+                .unwrap()
+                .success
+        );
+        let peer_receipt = peer_state
+            .execute_chat_transaction(&tx, chain_ids::TESTNET_CHAT, 2, 0)
+            .unwrap();
+        assert_eq!(producer_receipt, peer_receipt);
+        assert_eq!(
+            producer_state.compute_state_root(),
+            peer_state.compute_state_root()
+        );
+    }
+
+    #[test]
+    fn delivery_proof_is_replayed_and_cannot_be_included_twice() {
+        use dchat_network::relay::proof::{
+            create_recipient_acknowledgment, MessageId as ProofMessageId,
+        };
+        use ed25519_dalek::Signer;
+
+        let recipient_key = SigningKey::from_bytes(&[7; 32]);
+        let recipient_public_key = recipient_key.verifying_key().to_bytes();
+        let recipient_id = UserId(address_from_public_key(&recipient_public_key));
+        let registration = signed_registration(1);
+        let relay_key = SigningKey::from_bytes(&[8; 32]);
+        let message_id = ProofMessageId::new([3; 32]);
+        let timestamp = 1_000;
+        let recipient_signature = create_recipient_acknowledgment(
+            message_id,
+            &relay_key.verifying_key(),
+            timestamp,
+            &recipient_key,
+        );
+        let mut relay_message = Vec::new();
+        relay_message.extend_from_slice(message_id.as_bytes());
+        relay_message.extend_from_slice(recipient_key.verifying_key().as_bytes());
+        relay_message.extend_from_slice(&recipient_signature.to_bytes());
+        relay_message.extend_from_slice(&timestamp.to_le_bytes());
+        let delivery = OnChainDeliveryProofTx {
+            message_id: message_id.0,
+            recipient_id,
+            recipient_public_key,
+            recipient_signature: recipient_signature.to_bytes().to_vec(),
+            timestamp,
+            relay_signature: relay_key.sign(&relay_message).to_bytes().to_vec(),
+        };
+        let make_delivery_transaction = |nonce| {
+            let envelope = EnvelopeBuilder::new(
+                chain_ids::TESTNET_CHAT,
+                relay_key.verifying_key().to_bytes(),
+            )
+            .nonce(nonce)
+            .chat_tx(TransactionType::SubmitDeliveryProof)
+            .payload(bincode::serialize(&delivery).unwrap())
+            .build_and_sign(&relay_key)
+            .unwrap();
+            let bytes = envelope.to_bytes().unwrap();
+            let mut hash_input = envelope.signing_bytes();
+            hash_input.extend_from_slice(&envelope.signature);
+            let hash = blake3::hash(&hash_input);
+            let mut tx_id = [0; 16];
+            tx_id.copy_from_slice(&hash.as_bytes()[..16]);
+            ChainTransaction {
+                tx_id: Uuid::from_bytes(tx_id),
+                tx_type: TransactionType::SubmitDeliveryProof,
+                payload: bytes,
+                tx_hash: format!("0x{}", hex::encode(hash.as_bytes())),
+                status: TransactionStatus::Pending,
+                submitted_at: Utc::now(),
+                confirmed_at: None,
+                fee_paid: 0,
+            }
+        };
+        let tx = make_delivery_transaction(1);
+        let mut producer_state = WorldState::new();
+        assert!(producer_state
+            .execute_chat_transaction(&registration, chain_ids::TESTNET_CHAT, 1, 0)
+            .unwrap()
+            .success);
+        let producer_receipt = producer_state
+            .execute_chat_transaction(&tx, chain_ids::TESTNET_CHAT, 2, 0)
+            .unwrap();
+        assert!(producer_receipt.success);
+        assert!(!producer_state
+            .execute_chat_transaction(
+                &make_delivery_transaction(2),
+                chain_ids::TESTNET_CHAT,
+                3,
+                0,
+            )
+            .unwrap()
+            .success);
+
+        let mut peer_state = WorldState::new();
+        assert!(peer_state
+            .execute_chat_transaction(&registration, chain_ids::TESTNET_CHAT, 1, 0)
+            .unwrap()
+            .success);
+        let peer_receipt = peer_state
+            .execute_chat_transaction(&tx, chain_ids::TESTNET_CHAT, 2, 0)
+            .unwrap();
+        assert_eq!(producer_receipt, peer_receipt);
+        assert_eq!(
+            producer_state.compute_state_root(),
+            peer_state.compute_state_root()
+        );
     }
 
     #[test]

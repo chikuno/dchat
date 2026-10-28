@@ -82,9 +82,9 @@ pub use transaction_storage::{
 };
 pub use transaction_ingress::TransactionIngress;
 pub use transactions::{
-    ChannelVisibility, CreateChannelTx, JoinChannelTx, PostToChannelTx, RegisterUserTx,
-    SendDirectMessageTx, SubmitDeliveryProofTx, Transaction, TransactionReceipt, TransactionStatus,
-    TransactionType,
+    ChannelVisibility, CreateChannelTx, JoinChannelTx, OnChainDeliveryProofTx, PostToChannelTx,
+    RegisterUserTx, SendDirectMessageTx, SubmitDeliveryProofTx, Transaction, TransactionReceipt,
+    TransactionStatus, TransactionType, UpdateProfileTx,
 };
 pub use validator_registry::{
     InMemoryValidatorRegistry, OnChainValidatorRegistry, ValidatorInfo, ValidatorRegistry,

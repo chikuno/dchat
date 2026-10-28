@@ -51,6 +51,21 @@ pub struct RegisterUserTx {
     pub initial_reputation: i64,
 }
 
+/// Replace the public profile fields for a registered user.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateProfileTx {
+    /// User whose profile is being updated
+    pub user_id: UserId,
+    /// Unique username
+    pub username: String,
+    /// Optional display name
+    pub display_name: Option<String>,
+    /// Content hash of the profile image
+    pub avatar_hash: Option<String>,
+    /// Optional profile description
+    pub bio: Option<String>,
+}
+
 /// On-chain direct message transaction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendDirectMessageTx {
@@ -106,6 +121,74 @@ pub struct SubmitDeliveryProofTx {
     pub content_hash: String,
     /// Relay reward amount (calculated based on message size/priority)
     pub reward_amount: u64,
+}
+
+/// Cryptographic delivery evidence submitted by the relay that created the proof.
+///
+/// The relay's envelope signature authenticates the submitter. The signatures
+/// here follow the network delivery-proof format and do not mint relay rewards.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OnChainDeliveryProofTx {
+    /// Network-level 32-byte message identifier covered by both signatures
+    pub message_id: [u8; 32],
+    /// Recipient whose registered key signed the acknowledgment
+    pub recipient_id: UserId,
+    /// Recipient's registered Ed25519 public key
+    pub recipient_public_key: [u8; 32],
+    /// Recipient signature over message ID, relay key, and timestamp
+    pub recipient_signature: Vec<u8>,
+    /// Unix timestamp in seconds, covered by both signatures
+    pub timestamp: u64,
+    /// Relay signature over message ID, recipient key, recipient signature, and timestamp
+    pub relay_signature: Vec<u8>,
+}
+
+impl OnChainDeliveryProofTx {
+    /// Verify the signatures using the submitting relay's envelope key.
+    pub fn verify(&self, relay_public_key: &[u8; 32]) -> Result<(), String> {
+        use ed25519_dalek::{Signature, VerifyingKey, Verifier};
+
+        if crate::signed_envelope::address_from_public_key(&self.recipient_public_key)
+            != self.recipient_id.0
+        {
+            return Err("delivery proof recipient does not match its public key".to_string());
+        }
+
+        let recipient_key = VerifyingKey::from_bytes(&self.recipient_public_key)
+            .map_err(|error| format!("invalid recipient public key: {}", error))?;
+        let relay_key = VerifyingKey::from_bytes(relay_public_key)
+            .map_err(|error| format!("invalid relay public key: {}", error))?;
+        let recipient_signature: [u8; 64] = self
+            .recipient_signature
+            .as_slice()
+            .try_into()
+            .map_err(|_| "invalid recipient signature length".to_string())?;
+        let relay_signature: [u8; 64] = self
+            .relay_signature
+            .as_slice()
+            .try_into()
+            .map_err(|_| "invalid relay signature length".to_string())?;
+
+        let mut recipient_message = Vec::with_capacity(72);
+        recipient_message.extend_from_slice(&self.message_id);
+        recipient_message.extend_from_slice(relay_public_key);
+        recipient_message.extend_from_slice(&self.timestamp.to_le_bytes());
+        recipient_key
+            .verify(
+                &recipient_message,
+                &Signature::from_bytes(&recipient_signature),
+            )
+            .map_err(|error| format!("invalid recipient delivery signature: {}", error))?;
+
+        let mut relay_message = Vec::with_capacity(136);
+        relay_message.extend_from_slice(&self.message_id);
+        relay_message.extend_from_slice(&self.recipient_public_key);
+        relay_message.extend_from_slice(&recipient_signature);
+        relay_message.extend_from_slice(&self.timestamp.to_le_bytes());
+        relay_key
+            .verify(&relay_message, &Signature::from_bytes(&relay_signature))
+            .map_err(|error| format!("invalid relay delivery signature: {}", error))
+    }
 }
 
 /// On-chain channel message transaction
