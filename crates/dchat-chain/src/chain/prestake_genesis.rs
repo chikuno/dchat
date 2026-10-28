@@ -29,7 +29,7 @@ use tracing::info;
 
 use super::genesis::{
     ChatGenesisBlock, ChatGenesisConfig, CurrencyGenesisBlock, CurrencyGenesisConfig,
-    GenesisValidator,
+    GenesisBalance, GenesisValidator,
 };
 
 /// Minimum validators required to launch mainnet
@@ -239,6 +239,10 @@ pub struct PreStakeManifest {
     /// Token allocations
     pub allocations: TokenAllocations,
 
+    /// Additional liquid account allocations; validator stake is derived from commitments.
+    #[serde(default)]
+    pub account_allocations: Vec<GenesisBalance>,
+
     /// Manifest hash (computed after all commitments added)
     pub manifest_hash: String,
 
@@ -286,9 +290,24 @@ impl PreStakeManifest {
             min_stake: DEFAULT_MIN_GENESIS_STAKE,
             commitments: Vec::new(),
             allocations: TokenAllocations::default(),
+            account_allocations: Vec::new(),
             manifest_hash: String::new(),
             coordinator_signature: None,
         }
+    }
+
+    /// Set explicit liquid account allocations and update the signed manifest hash.
+    pub fn set_account_allocations(&mut self, allocations: Vec<GenesisBalance>) -> Result<()> {
+        Self::validate_account_allocations(
+            &allocations,
+            self.commitments
+                .iter()
+                .map(|commitment| commitment.stake_amount),
+            self.initial_supply,
+        )?;
+        self.account_allocations = allocations;
+        self.recompute_hash();
+        Ok(())
     }
 
     /// Add a bond commitment from a validator
@@ -350,6 +369,13 @@ impl PreStakeManifest {
         for commitment in &self.commitments {
             commitment.validate(self.min_stake)?;
         }
+        Self::validate_account_allocations(
+            &self.account_allocations,
+            self.commitments
+                .iter()
+                .map(|commitment| commitment.stake_amount),
+            self.initial_supply,
+        )?;
 
         // Check geographic diversity (minimum 3 regions)
         let regions: std::collections::HashSet<_> =
@@ -389,7 +415,56 @@ impl PreStakeManifest {
             hasher_input.extend_from_slice(&commitment.stake_amount.to_be_bytes());
         }
 
+        if !self.account_allocations.is_empty() {
+            hasher_input.extend_from_slice(b"dchat/pre-stake-account-allocations/v1");
+            let mut allocations = self.account_allocations.clone();
+            allocations.sort_by_key(|allocation| *allocation.account.0.as_bytes());
+            hasher_input.extend_from_slice(&(allocations.len() as u64).to_be_bytes());
+            for allocation in allocations {
+                hasher_input.extend_from_slice(allocation.account.0.as_bytes());
+                hasher_input.extend_from_slice(&allocation.available.to_be_bytes());
+            }
+        }
+
         self.manifest_hash = hex::encode(blake3::hash(&hasher_input).as_bytes());
+    }
+
+    fn validate_account_allocations(
+        allocations: &[GenesisBalance],
+        validator_stakes: impl Iterator<Item = u64>,
+        initial_supply: u64,
+    ) -> Result<()> {
+        let mut accounts = std::collections::HashSet::new();
+        let allocated = allocations.iter().try_fold(0u128, |total, allocation| {
+            if allocation.staked != 0 {
+                return Err(Error::validation(
+                    "Pre-stake account allocations must not override validator stake",
+                ));
+            }
+            if !accounts.insert(allocation.account) {
+                return Err(Error::validation(format!(
+                    "Duplicate pre-stake account allocation for {}",
+                    allocation.account.0
+                )));
+            }
+            total
+                .checked_add(u128::from(allocation.available))
+                .ok_or_else(|| Error::validation("Pre-stake account allocation overflow"))
+        })?;
+        let total_staked = validator_stakes.try_fold(0u128, |total, amount| {
+            total
+                .checked_add(u128::from(amount))
+                .ok_or_else(|| Error::validation("Pre-stake validator amount overflow"))
+        })?;
+        if allocated
+            .checked_add(total_staked)
+            .map_or(true, |total| total > u128::from(initial_supply))
+        {
+            return Err(Error::validation(
+                "Pre-stake account allocations and validator stakes exceed initial supply",
+            ));
+        }
+        Ok(())
     }
 
     /// Get total stake across all validators
@@ -506,7 +581,42 @@ impl PreStakeGenesisBuilder {
         };
 
         let builder = GenesisBuilder::new(self.signing_key.clone());
-        builder.create_currency_genesis(validators.to_vec(), config, self.manifest.initial_supply)
+        let mut initial_balances = validators
+            .iter()
+            .map(|validator| {
+                let public_key = hex::decode(&validator.public_key).map_err(|error| {
+                    Error::validation(format!("Invalid validator public key: {}", error))
+                })?;
+                let public_key: [u8; 32] = public_key
+                    .try_into()
+                    .map_err(|_| Error::validation("Validator public key must be 32 bytes"))?;
+                Ok(GenesisBalance {
+                    account: dchat_core::types::UserId(
+                        crate::signed_envelope::address_from_public_key(&public_key),
+                    ),
+                    available: 0,
+                    staked: validator.stake_amount,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        for allocation in &self.manifest.account_allocations {
+            if let Some(existing) = initial_balances
+                .iter_mut()
+                .find(|balance| balance.account == allocation.account)
+            {
+                existing.available = allocation.available;
+            } else {
+                initial_balances.push(allocation.clone());
+            }
+        }
+
+        builder.create_currency_genesis_with_balances(
+            validators.to_vec(),
+            config,
+            self.manifest.initial_supply,
+            initial_balances,
+        )
     }
 
     /// Generate all genesis files and save to directory
@@ -722,6 +832,19 @@ mod tests {
             manifest.add_commitment(commitment).unwrap();
         }
 
+        let account_key = generate_test_key();
+        let account_id =
+            dchat_core::types::UserId(crate::signed_envelope::address_from_public_key(
+                &account_key.verifying_key().to_bytes(),
+            ));
+        manifest
+            .set_account_allocations(vec![GenesisBalance {
+                account: account_id,
+                available: 123,
+                staked: 0,
+            }])
+            .unwrap();
+
         // Build genesis
         let coordinator_key = generate_test_key();
         let builder = PreStakeGenesisBuilder::new(manifest, coordinator_key);
@@ -731,6 +854,11 @@ mod tests {
         assert_eq!(currency_genesis.block_number, 0);
         assert_eq!(chat_genesis.initial_validators.len(), 4);
         assert_eq!(currency_genesis.initial_validators.len(), 4);
+        assert_eq!(currency_genesis.initial_balances.len(), 5);
+        assert!(currency_genesis
+            .initial_balances
+            .iter()
+            .any(|balance| balance.account == account_id && balance.available == 123));
     }
 
     #[test]

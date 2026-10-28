@@ -12,7 +12,7 @@ pub use currency_chain::staking;
 pub use currency_chain::validator_enforcement;
 pub use genesis::{
     ChatGenesisBlock, ChatGenesisConfig, CurrencyGenesisBlock, CurrencyGenesisConfig,
-    GenesisBuilder, GenesisCoordinator, GenesisValidator,
+    GenesisBalance, GenesisBuilder, GenesisCoordinator, GenesisValidator,
 };
 pub use guardians::{
     GuardianChainState, InitiateRecoveryTx, RegisterGuardianTx, SubmitGuardianSignatureTx,

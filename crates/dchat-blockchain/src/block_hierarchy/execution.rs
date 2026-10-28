@@ -10,11 +10,13 @@ use super::lane_sharding::BodyCommitments;
 use super::BlockError;
 use crate::canonical;
 use bincode::Options;
+use dchat_chain::chain::{CurrencyGenesisBlock, GenesisBalance};
 use dchat_chain::{
-    ChannelVisibility, CreateChannelTx, EnvelopeDomain, EnvelopeVerifier, GovernanceProposalTx,
-    GovernanceTransaction, JoinChannelTx, OnChainDeliveryProofTx, PostToChannelTx, RegisterUserTx,
-    SendDirectMessageTx, SignedTransactionEnvelope, Transaction as ChainTransaction,
-    TransactionType, UnifiedTransactionType, UpdateProfileTx,
+    ChannelVisibility, CreateChannelTx, CurrencyTransactionType, EnvelopeDomain,
+    EnvelopeVerifier, GovernanceProposalTx, GovernanceTransaction, JoinChannelTx,
+    OnChainDeliveryProofTx, PostToChannelTx, RegisterUserTx, SendDirectMessageTx,
+    SignedTransactionEnvelope, Transaction as ChainTransaction, TransactionType, TransferTx,
+    UnifiedTransactionType, UpdateProfileTx,
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -621,6 +623,234 @@ impl Default for WorldState {
     }
 }
 
+/// Currency account state used by the independent currency-chain state machine.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct CurrencyAccountState {
+    pub available: u128,
+    pub staked: u128,
+    pub nonce: u64,
+}
+
+/// Deterministic currency state with an explicit non-spendable reserve.
+#[derive(Debug, Clone)]
+pub struct CurrencyWorldState {
+    accounts: BTreeMap<Uuid, CurrencyAccountState>,
+    total_supply: u128,
+    treasury_reserve: u128,
+    state_root: Option<Hash>,
+    dirty: bool,
+}
+
+impl CurrencyWorldState {
+    pub fn from_genesis(genesis: &CurrencyGenesisBlock) -> Result<Self, BlockError> {
+        let initial_balances = genesis
+            .effective_initial_balances()
+            .map_err(|error| BlockError::InvalidTransaction(error.to_string()))?;
+        let treasury_reserve = genesis
+            .treasury_reserve()
+            .map_err(|error| BlockError::InvalidTransaction(error.to_string()))?;
+        let accounts = initial_balances
+            .into_iter()
+            .map(|balance: GenesisBalance| {
+                (
+                    balance.account.0,
+                    CurrencyAccountState {
+                        available: u128::from(balance.available),
+                        staked: u128::from(balance.staked),
+                        nonce: 0,
+                    },
+                )
+            })
+            .collect();
+
+        Ok(Self {
+            accounts,
+            total_supply: u128::from(genesis.initial_supply),
+            treasury_reserve: u128::from(treasury_reserve),
+            state_root: None,
+            dirty: true,
+        })
+    }
+
+    pub fn get_account(&self, account: &Uuid) -> CurrencyAccountState {
+        self.accounts.get(account).cloned().unwrap_or_default()
+    }
+
+    pub fn total_supply(&self) -> u128 {
+        self.total_supply
+    }
+
+    pub fn treasury_reserve(&self) -> u128 {
+        self.treasury_reserve
+    }
+
+    /// Execute a signed transfer. Valid-but-unfunded transfers consume their nonce and fail.
+    pub fn execute_transfer(
+        &mut self,
+        tx: &ChainTransaction,
+        chain_id: u32,
+        tx_index: u32,
+    ) -> Result<TxReceipt, BlockError> {
+        const MAX_ENVELOPE_BYTES: usize = 1024 * 1024;
+        const TRANSFER_GAS: u64 = 21_000;
+        const GAS_PER_BYTE: u64 = 16;
+
+        if tx.tx_type != TransactionType::CurrencyTransfer || tx.payload.len() > MAX_ENVELOPE_BYTES
+        {
+            return Err(BlockError::InvalidTransaction(
+                "invalid currency transaction type or oversized envelope".to_string(),
+            ));
+        }
+        let envelope: SignedTransactionEnvelope = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(MAX_ENVELOPE_BYTES as u64)
+            .deserialize(&tx.payload)
+            .map_err(|error| {
+                BlockError::InvalidTransaction(format!("invalid signed envelope: {}", error))
+            })?;
+        if envelope.domain != EnvelopeDomain::Currency
+            || envelope.tx_type
+                != UnifiedTransactionType::Currency(CurrencyTransactionType::Transfer)
+        {
+            return Err(BlockError::InvalidTransaction(
+                "currency transfer envelope type mismatch".to_string(),
+            ));
+        }
+        let transfer: TransferTx = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_limit(MAX_ENVELOPE_BYTES as u64)
+            .deserialize(&envelope.payload)
+            .map_err(|error| {
+                BlockError::InvalidTransaction(format!(
+                    "invalid currency transfer payload: {}",
+                    error
+                ))
+            })?;
+
+        let sender = Uuid::from_bytes(envelope.sender);
+        let sender_state = self.get_account(&sender);
+        let verifier = EnvelopeVerifier::with_nonces(
+            chain_id,
+            HashMap::from([(sender, sender_state.nonce)]),
+        );
+        verifier.verify(&envelope).map_err(|error| {
+            BlockError::InvalidTransaction(format!(
+                "signed envelope verification failed: {}",
+                error
+            ))
+        })?;
+        if envelope.nonce != sender_state.nonce.saturating_add(1)
+            || transfer.from.0 != sender
+            || transfer.nonce != envelope.nonce
+            || transfer.amount == 0
+            || tx.fee_paid != transfer.fee
+            || tx.confirmed_at.is_some()
+            || !matches!(&tx.status, dchat_chain::TransactionStatus::Pending)
+        {
+            return Err(BlockError::InvalidTransaction(
+                "currency transfer metadata, sender, nonce, or amount is invalid".to_string(),
+            ));
+        }
+
+        let mut hash_input = envelope.signing_bytes();
+        hash_input.extend_from_slice(&envelope.signature);
+        let transaction_hash = blake3::hash(&hash_input);
+        let mut expected_tx_id = [0; 16];
+        expected_tx_id.copy_from_slice(&transaction_hash.as_bytes()[..16]);
+        if tx.tx_id.as_bytes() != &expected_tx_id
+            || tx.tx_hash != format!("0x{}", hex::encode(transaction_hash.as_bytes()))
+        {
+            return Err(BlockError::InvalidTransaction(
+                "transaction ID or hash does not match signed envelope".to_string(),
+            ));
+        }
+
+        let gas_used = TRANSFER_GAS
+            .saturating_add((envelope.payload.len() as u64).saturating_mul(GAS_PER_BYTE));
+        let original_available = sender_state.available;
+        let mut next_sender = sender_state;
+        next_sender.nonce = envelope.nonce;
+        let mut next_recipient = None;
+        let mut failure = None;
+        if let Some(debit) = transfer.amount.checked_add(u128::from(transfer.fee)) {
+            if next_sender.available < debit {
+                failure = Some("insufficient currency balance".to_string());
+            } else if transfer.from.0 == transfer.to.0 {
+                next_sender.available -= u128::from(transfer.fee);
+            } else {
+                let recipient = self.get_account(&transfer.to.0);
+                match recipient.available.checked_add(transfer.amount) {
+                    Some(recipient_available) => {
+                        next_sender.available -= debit;
+                        next_recipient = Some((
+                            transfer.to.0,
+                            CurrencyAccountState {
+                                available: recipient_available,
+                                ..recipient
+                            },
+                        ));
+                    }
+                    None => failure = Some("currency recipient balance overflow".to_string()),
+                }
+            }
+        } else {
+            failure = Some("currency transfer debit overflow".to_string());
+        }
+
+        let next_supply = if failure.is_none() {
+            match self.total_supply.checked_sub(u128::from(transfer.fee)) {
+                Some(supply) => Some(supply),
+                None => {
+                    failure = Some("currency supply underflow".to_string());
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        if failure.is_some() {
+            next_sender.available = original_available;
+        }
+        self.accounts.insert(sender, next_sender);
+        if let Some((recipient, state)) = next_recipient.filter(|_| failure.is_none()) {
+            self.accounts.insert(recipient, state);
+        }
+        if let Some(supply) = next_supply {
+            self.total_supply = supply;
+        }
+        self.dirty = true;
+        self.state_root = None;
+
+        let post_state_root = self.compute_state_root();
+        let mut receipt = if let Some(reason) = failure {
+            TxReceipt::failure(tx.tx_id, tx_index, &reason)
+        } else {
+            TxReceipt::success(tx.tx_id, tx_index, gas_used, post_state_root)
+        };
+        receipt.gas_used = gas_used;
+        receipt.post_state_root = post_state_root;
+        Ok(receipt)
+    }
+
+    pub fn compute_state_root(&mut self) -> Hash {
+        if !self.dirty {
+            if let Some(root) = self.state_root {
+                return root;
+            }
+        }
+        let encoded = canonical::canonical_serialize(&(
+            self.total_supply,
+            self.treasury_reserve,
+            &self.accounts,
+        ));
+        let root = canonical::domain_hash(b"dchat/currency_world_state/v1", &encoded);
+        self.state_root = Some(root);
+        self.dirty = false;
+        root
+    }
+}
+
 /// Immutable snapshot for parallel reads
 #[derive(Debug, Clone)]
 pub struct WorldStateSnapshot {
@@ -1013,8 +1243,13 @@ fn compute_merkle_root(leaves: &mut Vec<Hash>) -> Hash {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use dchat_chain::chain::{
+        CurrencyGenesisBlock, CurrencyGenesisConfig, GenesisBalance, GenesisBuilder,
+        GenesisValidator,
+    };
     use dchat_chain::{
         address_from_public_key, chain_ids, EnvelopeBuilder, RegisterUserTx, TransactionStatus,
+        TransferTx,
     };
     use dchat_core::types::UserId;
     use ed25519_dalek::SigningKey;
@@ -1055,6 +1290,82 @@ mod tests {
         }
     }
 
+    fn signed_currency_transfer(
+        signing_key: &SigningKey,
+        recipient: Uuid,
+        nonce: u64,
+        amount: u128,
+        fee: u64,
+    ) -> ChainTransaction {
+        let public_key = signing_key.verifying_key().to_bytes();
+        let transfer = TransferTx {
+            tx_id: Uuid::new_v4(),
+            from: UserId(address_from_public_key(&public_key)),
+            to: UserId(recipient),
+            amount,
+            memo: None,
+            fee,
+            timestamp: Utc::now(),
+            nonce,
+            signature: Vec::new(),
+        };
+        let envelope = EnvelopeBuilder::new(chain_ids::TESTNET_CURRENCY, public_key)
+            .nonce(nonce)
+            .currency_tx(CurrencyTransactionType::Transfer)
+            .payload(bincode::serialize(&transfer).unwrap())
+            .build_and_sign(signing_key)
+            .unwrap();
+        let mut hash_input = envelope.signing_bytes();
+        hash_input.extend_from_slice(&envelope.signature);
+        let hash = blake3::hash(&hash_input);
+        let mut tx_id = [0; 16];
+        tx_id.copy_from_slice(&hash.as_bytes()[..16]);
+        ChainTransaction {
+            tx_id: Uuid::from_bytes(tx_id),
+            tx_type: TransactionType::CurrencyTransfer,
+            payload: envelope.to_bytes().unwrap(),
+            tx_hash: format!("0x{}", hex::encode(hash.as_bytes())),
+            status: TransactionStatus::Pending,
+            submitted_at: Utc::now(),
+            confirmed_at: None,
+            fee_paid: fee,
+        }
+    }
+
+    fn currency_genesis(
+        sender: Uuid,
+        recipient: Uuid,
+    ) -> CurrencyGenesisBlock {
+        let signing_key = SigningKey::from_bytes(&[11; 32]);
+        let builder = GenesisBuilder::new(signing_key);
+        let genesis = builder
+            .create_currency_genesis_with_balances(
+                Vec::<GenesisValidator>::new(),
+                CurrencyGenesisConfig {
+                    chain_id: "test-currency".to_string(),
+                    block_time_secs: 5,
+                    token_name: "Test Token".to_string(),
+                    token_symbol: "TEST".to_string(),
+                    token_decimals: 8,
+                },
+                2_000,
+                vec![
+                    GenesisBalance {
+                        account: UserId(sender),
+                        available: 1_000,
+                        staked: 0,
+                    },
+                    GenesisBalance {
+                        account: UserId(recipient),
+                        available: 0,
+                        staked: 0,
+                    },
+                ],
+            )
+            .unwrap();
+        genesis
+    }
+
     #[test]
     fn test_account_state() {
         let state = AccountState::with_balance(1000);
@@ -1076,6 +1387,89 @@ mod tests {
 
         let root = state.compute_state_root();
         assert_ne!(root, Hash::ZERO);
+    }
+
+    #[test]
+    fn currency_transfer_replays_with_burned_fee_and_conserved_state() {
+        let sender_key = SigningKey::from_bytes(&[12; 32]);
+        let recipient_key = SigningKey::from_bytes(&[13; 32]);
+        let sender = address_from_public_key(&sender_key.verifying_key().to_bytes());
+        let recipient = address_from_public_key(&recipient_key.verifying_key().to_bytes());
+        let genesis = currency_genesis(sender, recipient);
+        let tx = signed_currency_transfer(&sender_key, recipient, 1, 100, 2);
+
+        let mut producer_state = CurrencyWorldState::from_genesis(&genesis).unwrap();
+        let producer_receipt = producer_state
+            .execute_transfer(&tx, chain_ids::TESTNET_CURRENCY, 0)
+            .unwrap();
+        let mut peer_state = CurrencyWorldState::from_genesis(&genesis).unwrap();
+        let peer_receipt = peer_state
+            .execute_transfer(&tx, chain_ids::TESTNET_CURRENCY, 0)
+            .unwrap();
+
+        assert!(producer_receipt.success);
+        assert_eq!(producer_receipt, peer_receipt);
+        assert_eq!(producer_state.get_account(&sender).available, 898);
+        assert_eq!(producer_state.get_account(&recipient).available, 100);
+        assert_eq!(producer_state.total_supply(), 1_998);
+        assert_eq!(producer_state.treasury_reserve(), 1_000);
+        assert_eq!(
+            producer_state.compute_state_root(),
+            peer_state.compute_state_root()
+        );
+    }
+
+    #[test]
+    fn failed_currency_transfer_consumes_nonce_without_changing_balances_or_supply() {
+        let sender_key = SigningKey::from_bytes(&[14; 32]);
+        let recipient_key = SigningKey::from_bytes(&[15; 32]);
+        let sender = address_from_public_key(&sender_key.verifying_key().to_bytes());
+        let recipient = address_from_public_key(&recipient_key.verifying_key().to_bytes());
+        let genesis = currency_genesis(sender, recipient);
+        let tx = signed_currency_transfer(&sender_key, recipient, 1, 2_000, 2);
+        let mut state = CurrencyWorldState::from_genesis(&genesis).unwrap();
+
+        let receipt = state
+            .execute_transfer(&tx, chain_ids::TESTNET_CURRENCY, 0)
+            .unwrap();
+
+        assert!(!receipt.success);
+        assert_eq!(state.get_account(&sender).nonce, 1);
+        assert_eq!(state.get_account(&sender).available, 1_000);
+        assert_eq!(state.get_account(&recipient).available, 0);
+        assert_eq!(state.total_supply(), 2_000);
+    }
+
+    #[test]
+    fn currency_block_replay_rejects_receipt_tampering() {
+        let sender_key = SigningKey::from_bytes(&[16; 32]);
+        let recipient_key = SigningKey::from_bytes(&[17; 32]);
+        let sender = address_from_public_key(&sender_key.verifying_key().to_bytes());
+        let recipient = address_from_public_key(&recipient_key.verifying_key().to_bytes());
+        let genesis = currency_genesis(sender, recipient);
+        let tx = signed_currency_transfer(&sender_key, recipient, 1, 100, 2);
+        let initial_state = CurrencyWorldState::from_genesis(&genesis).unwrap();
+        let (block, producer_state) = crate::CurrencyBlock::build(
+            1,
+            [0; 32],
+            vec![tx],
+            &initial_state,
+            chain_ids::TESTNET_CURRENCY,
+        )
+        .unwrap();
+        let replayed_state = block
+            .verify_and_execute(&initial_state, chain_ids::TESTNET_CURRENCY)
+            .unwrap();
+        assert_eq!(
+            producer_state.clone().compute_state_root(),
+            replayed_state.clone().compute_state_root()
+        );
+
+        let mut tampered = block;
+        tampered.receipts[0].success = false;
+        assert!(tampered
+            .verify_and_execute(&initial_state, chain_ids::TESTNET_CURRENCY)
+            .is_err());
     }
 
     #[test]

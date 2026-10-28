@@ -1191,13 +1191,17 @@ struct Cli {
     #[arg(long, default_value_t = default_health_addr())]
     health_addr: String,
 
-    /// Chat-chain JSON-RPC server listen address
+    /// Transaction JSON-RPC server listen address for chat and currency chains
     #[arg(long, default_value_t = default_rpc_addr())]
     rpc_addr: String,
 
     /// Chat-chain ID used to validate signed transaction envelopes
     #[arg(long, default_value = "1337")]
     rpc_chain_id: u32,
+
+    /// Currency-chain ID used to validate signed transaction envelopes
+    #[arg(long, default_value = "1338")]
+    currency_chain_id: u32,
 
     #[command(subcommand)]
     command: Commands,
@@ -1313,7 +1317,7 @@ enum Commands {
         #[arg(long)]
         genesis_bootstrap: bool,
 
-        /// Genesis directory containing pre-stake genesis files (uses pre-staked validators, no RPC required)
+        /// Required genesis directory containing currency_chain_genesis.json and the pre-stake validator set
         #[arg(long)]
         genesis_dir: Option<PathBuf>,
     },
@@ -3534,6 +3538,7 @@ async fn main() -> Result<()> {
                 cli.health_addr.clone(),
                 cli.rpc_addr.clone(),
                 cli.rpc_chain_id,
+                cli.currency_chain_id,
                 genesis_bootstrap,
                 genesis_dir,
             )
@@ -7258,6 +7263,7 @@ async fn run_validator_node(
     health_addr: String,
     rpc_addr: String,
     rpc_chain_id: u32,
+    currency_chain_id: u32,
     genesis_bootstrap: bool,
     genesis_dir: Option<PathBuf>,
 ) -> Result<()> {
@@ -7266,10 +7272,9 @@ async fn run_validator_node(
     // MAINNET SECURITY: Validate production environment
     validate_mainnet_environment(&config, NodeType::Validator).await?;
 
-    // Validate chain_rpc requirement
-    if chain_rpc.is_none() && genesis_dir.is_none() {
+    if genesis_dir.is_none() {
         return Err(Error::validation(
-            "Either --chain-rpc or --genesis-dir must be specified".to_string(),
+            "The local currency-chain BFT pipeline requires --genesis-dir with currency_chain_genesis.json",
         ));
     }
 
@@ -7313,11 +7318,20 @@ async fn run_validator_node(
         rpc_chain_id,
         transaction_mempool.clone(),
     ));
-    let _rpc_handle =
-        start_chain_rpc_server(&rpc_addr, transaction_ingress, shutdown_tx.subscribe())?;
+    let currency_transaction_mempool = dchat_chain::Mempool::default();
+    let currency_transaction_ingress = Arc::new(dchat_chain::CurrencyTransactionIngress::new(
+        currency_chain_id,
+        currency_transaction_mempool.clone(),
+    ));
+    let _rpc_handle = start_chain_rpc_server(
+        &rpc_addr,
+        transaction_ingress,
+        currency_transaction_ingress,
+        shutdown_tx.subscribe(),
+    )?;
     info!(
-        "✓ Chat-chain JSON-RPC server listening on {} (chain ID {})",
-        rpc_addr, rpc_chain_id
+        "✓ Chat and currency-chain JSON-RPC server listening on {} (chain IDs {} / {})",
+        rpc_addr, rpc_chain_id, currency_chain_id
     );
 
     // Load validator key
@@ -8409,6 +8423,7 @@ async fn run_validator_node(
     let authorized_validators: Arc<std::collections::HashSet<[u8; 32]>> =
         Arc::new(std::collections::HashSet::new());
 
+    let mut currency_genesis_for_state = None;
     let genesis_stake_amount = if let Some(ref genesis_path) = genesis_dir {
         // Load pre-stake genesis and verify this validator is included
         use dchat_chain::chain::genesis::CurrencyGenesisBlock;
@@ -8425,6 +8440,7 @@ async fn run_validator_node(
             .map_err(|e| Error::io(format!("Failed to read genesis file: {}", e)))?;
         let currency_genesis: CurrencyGenesisBlock = serde_json::from_str(&genesis_json)
             .map_err(|e| Error::serialization(format!("Failed to parse genesis: {}", e)))?;
+        currency_genesis_for_state = Some(currency_genesis.clone());
 
         // Collect all authorized validator public keys from genesis
         let mut auth_validators = std::collections::HashSet::new();
@@ -8640,6 +8656,42 @@ async fn run_validator_node(
         tokio::sync::Mutex<HashMap<u64, HashMap<Vec<u8>, (Vec<u8>, Vec<u8>)>>>,
     > = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
 
+    let currency_genesis = currency_genesis_for_state
+        .as_ref()
+        .ok_or_else(|| Error::validation("Currency genesis was not loaded"))?;
+    let mut currency_initial_state = dchat_blockchain::CurrencyWorldState::from_genesis(
+        currency_genesis,
+    )
+    .map_err(|error| Error::validation(format!("Invalid currency genesis allocations: {}", error)))?;
+    currency_initial_state.compute_state_root();
+    let currency_genesis_hash = hex::decode(&currency_genesis.hash)
+        .map_err(|error| Error::validation(format!("Invalid currency genesis hash: {}", error)))?;
+    let currency_genesis_hash: [u8; 32] = currency_genesis_hash
+        .as_slice()
+        .try_into()
+        .map_err(|_| Error::validation("Currency genesis hash must be 32 bytes"))?;
+    let currency_execution_state =
+        Arc::new(tokio::sync::Mutex::new(currency_initial_state));
+    let currency_block_height_global = Arc::new(AtomicU64::new(0));
+    let currency_last_block_hash =
+        Arc::new(tokio::sync::Mutex::new(currency_genesis_hash));
+    let currency_block_acknowledgments: Arc<
+        tokio::sync::Mutex<HashMap<u64, HashMap<Vec<u8>, (Vec<u8>, Vec<u8>)>>>,
+    > = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let pending_currency_candidates: Arc<
+        tokio::sync::Mutex<
+            HashMap<
+                u64,
+                (
+                    Vec<u8>,
+                    dchat_blockchain::CurrencyWorldState,
+                    Vec<uuid::Uuid>,
+                    [u8; 32],
+                ),
+            >,
+        >,
+    > = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+
     let execution_state = Arc::new(tokio::sync::Mutex::new(
         dchat_blockchain::WorldState::new(),
     ));
@@ -8783,12 +8835,18 @@ async fn run_validator_node(
         let network_arc_clone = network_arc.clone();
         let validator_key_arc_clone = Arc::clone(&validator_key_arc);
         let block_acks_clone = block_acknowledgments.clone();
+        let currency_block_acks_clone = currency_block_acknowledgments.clone();
         let state_validator_clone = state_validator.clone();
         let transaction_mempool_consensus = transaction_mempool.clone();
+        let currency_mempool_consensus = currency_transaction_mempool.clone();
         let execution_state_consensus = Arc::clone(&execution_state);
+        let currency_execution_state_consensus = Arc::clone(&currency_execution_state);
         let pending_candidates_consensus = Arc::clone(&pending_candidate_states);
+        let pending_currency_candidates_consensus = Arc::clone(&pending_currency_candidates);
         let staking_manager_consensus = staking_manager.clone();
         let shared_block_height = Arc::clone(&shared_block_height_global);
+        let currency_block_height = Arc::clone(&currency_block_height_global);
+        let currency_last_hash = Arc::clone(&currency_last_block_hash);
         let currency_rpc_url_for_consensus = consensus_currency_rpc_url.clone();
         let relay_registry_store = Arc::clone(&relay_registry_store);
         let relay_work_store = Arc::clone(&relay_work_store);
@@ -8806,6 +8864,7 @@ async fn run_validator_node(
         let vote_persistence_consensus = vote_persistence.clone();
         let staking_enforcer_consensus = staking_enforcer.clone();
         let rpc_chain_id_consensus = rpc_chain_id;
+        let currency_chain_id_consensus = currency_chain_id;
 
         tokio::spawn(async move {
             info!("Starting consensus engine with BFT verification and FULL state validation...");
@@ -9691,6 +9750,199 @@ async fn run_validator_node(
                                     warn!("Failed to advance tokenomics block counter: {}", error);
                                 }
                             }
+
+                            let currency_pending = match currency_mempool_consensus
+                                .pending_transactions_limited(2_500, 3 * 1024 * 1024)
+                            {
+                                Ok(transactions) => transactions,
+                                Err(error) => {
+                                    error!("Unable to snapshot currency mempool: {}", error);
+                                    continue;
+                                }
+                            };
+                            if !currency_pending.is_empty() {
+                                let currency_height =
+                                    currency_block_height.load(Ordering::SeqCst) + 1;
+                                let previous_currency_hash = *currency_last_hash.lock().await;
+                                let currency_base_state =
+                                    currency_execution_state_consensus.lock().await.clone();
+                                let (currency_block, candidate_currency_state) =
+                                    match dchat_blockchain::CurrencyBlock::build(
+                                        currency_height,
+                                        previous_currency_hash,
+                                        currency_pending,
+                                        &currency_base_state,
+                                        currency_chain_id_consensus,
+                                    ) {
+                                        Ok(candidate) => candidate,
+                                        Err(error) => {
+                                            error!(
+                                                "Currency block #{} candidate execution failed: {}",
+                                                currency_height, error
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                let currency_hash = currency_block.hash;
+                                let currency_hash_bytes = currency_hash.to_vec();
+                                let currency_tx_ids = currency_block.transaction_ids();
+                                let currency_block_data =
+                                    match bincode::serialize(&currency_block) {
+                                        Ok(bytes) => bytes,
+                                        Err(error) => {
+                                            error!(
+                                                "Failed to serialize currency block #{}: {}",
+                                                currency_height, error
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                {
+                                    let mut candidates =
+                                        pending_currency_candidates_consensus.lock().await;
+                                    if let Some((existing_hash, ..)) =
+                                        candidates.get(&currency_height)
+                                    {
+                                        if existing_hash != &currency_hash_bytes {
+                                            warn!(
+                                                "Refusing conflicting currency candidate at height {}",
+                                                currency_height
+                                            );
+                                            continue;
+                                        }
+                                    } else {
+                                        candidates.insert(
+                                            currency_height,
+                                            (
+                                                currency_hash_bytes.clone(),
+                                                candidate_currency_state,
+                                                currency_tx_ids,
+                                                currency_hash,
+                                            ),
+                                        );
+                                    }
+                                }
+                                let currency_signature_bytes = {
+                                    let mut acknowledgments =
+                                        currency_block_acks_clone.lock().await;
+                                    let votes = acknowledgments
+                                        .entry(currency_height)
+                                        .or_default();
+                                    if let Some((voted_hash, signature)) =
+                                        votes.get(validator_public_key_bytes.as_slice())
+                                    {
+                                        if voted_hash != &currency_hash_bytes {
+                                            warn!(
+                                                "Refusing to double-vote on currency block height {}",
+                                                currency_height
+                                            );
+                                            continue;
+                                        }
+                                        signature.clone()
+                                    } else {
+                                        let signature = {
+                                            let validator_key = validator_key_arc_clone.lock().await;
+                                            match validator_key
+                                                .sign_async(&currency_hash_bytes)
+                                                .await
+                                            {
+                                                Ok(signature) => signature.to_bytes().to_vec(),
+                                                Err(error) => {
+                                                    error!(
+                                                        "Failed to sign currency block #{}: {}",
+                                                        currency_height, error
+                                                    );
+                                                    continue;
+                                                }
+                                            }
+                                        };
+                                        votes.insert(
+                                            validator_public_key_bytes.to_vec(),
+                                            (
+                                                currency_hash_bytes.clone(),
+                                                signature.clone(),
+                                            ),
+                                        );
+                                        signature
+                                    }
+                                };
+                                let currency_message = DchatMessage::CurrencyValidatorBlock {
+                                    height: currency_height,
+                                    validator_id: validator_public_key_bytes.to_vec(),
+                                    block_hash: currency_hash_bytes.clone(),
+                                    signature: currency_signature_bytes,
+                                    block_data: currency_block_data,
+                                };
+                                let mut network = network_arc_clone.lock().await;
+                                match network.broadcast_validator_block(&currency_message) {
+                                    Ok(_) => drop(network),
+                                    Err(error) => {
+                                        error!(
+                                            "Failed to broadcast currency block #{}: {}",
+                                            currency_height, error
+                                        );
+                                        continue;
+                                    }
+                                }
+
+                                let deadline = tokio::time::Instant::now()
+                                    + tokio::time::Duration::from_secs(10);
+                                let mut currency_ack_count = 0;
+                                while tokio::time::Instant::now() < deadline {
+                                    let acknowledgments =
+                                        currency_block_acks_clone.lock().await;
+                                    currency_ack_count = acknowledgments
+                                        .get(&currency_height)
+                                        .map(|height_acks| {
+                                            height_acks
+                                                .values()
+                                                .filter(|(hash, _)| hash == &currency_hash_bytes)
+                                                .count()
+                                        })
+                                        .unwrap_or(0);
+                                    if currency_ack_count >= required_signatures {
+                                        break;
+                                    }
+                                    drop(acknowledgments);
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(100))
+                                        .await;
+                                }
+                                if currency_ack_count >= required_signatures {
+                                    if let Some((candidate_hash, candidate_state, included_ids, hash)) =
+                                        pending_currency_candidates_consensus
+                                            .lock()
+                                            .await
+                                            .remove(&currency_height)
+                                    {
+                                        if candidate_hash == currency_hash_bytes {
+                                            *currency_execution_state_consensus.lock().await =
+                                                candidate_state;
+                                            *currency_last_hash.lock().await = hash;
+                                            currency_block_height
+                                                .store(currency_height, Ordering::SeqCst);
+                                            match currency_mempool_consensus
+                                                .remove_transactions(&included_ids)
+                                            {
+                                                Ok(removed) => info!(
+                                                    "Finalized currency block #{} with {} votes; removed {} transfers",
+                                                    currency_height, currency_ack_count, removed
+                                                ),
+                                                Err(error) => error!(
+                                                    "Currency block #{} finalized but mempool cleanup failed: {}",
+                                                    currency_height, error
+                                                ),
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    warn!(
+                                        "Currency block #{} did not reach BFT threshold ({}/{} acks)",
+                                        currency_height,
+                                        currency_ack_count,
+                                        required_signatures
+                                    );
+                                }
+                            }
                         } else if is_producer {
                             // We are a producer but not the leader for this slot
                             // Do NOT increment block_height locally - wait for leader's block via network
@@ -9755,17 +10007,24 @@ async fn run_validator_node(
         let validator_key_arc_clone2 = Arc::clone(&validator_key_arc);
         let validator_public_key_bytes_clone = validator_public_key_bytes;
         let block_acks_clone = block_acknowledgments.clone();
+        let currency_block_acks_net = currency_block_acknowledgments.clone();
         let state_validator_clone2 = state_validator.clone();
         let execution_state_net = Arc::clone(&execution_state);
+        let currency_execution_state_net = Arc::clone(&currency_execution_state);
         let pending_candidates_net = Arc::clone(&pending_candidate_states);
+        let pending_currency_candidates_net = Arc::clone(&pending_currency_candidates);
         let transaction_mempool_net = transaction_mempool.clone();
+        let currency_mempool_net = currency_transaction_mempool.clone();
         let rpc_chain_id_net = rpc_chain_id;
+        let currency_chain_id_net = currency_chain_id;
         let required_signatures_net = required_signatures;
         let peer_registry_arc_clone = peer_registry_arc.clone();
         let relay_work_store_clone = Arc::clone(&relay_work_store);
         let chain_genesis_timestamp = config.chain.genesis_timestamp;
         let chain_block_time_secs = config.chain.block_time_secs;
         let shared_block_height_clone = Arc::clone(&shared_block_height_global);
+        let currency_block_height_net = Arc::clone(&currency_block_height_global);
+        let currency_last_hash_net = Arc::clone(&currency_last_block_hash);
         let authorized_validators_clone = Arc::clone(&authorized_validators);
         // Clone slashing detector for double-sign detection in network handler
         let slashing_detector_net = Arc::clone(&slashing_detector);
@@ -10528,6 +10787,335 @@ async fn run_validator_node(
                                     }
                                 }
 
+                                DchatMessage::CurrencyValidatorBlock {
+                                    height,
+                                    validator_id,
+                                    block_hash,
+                                    signature,
+                                    block_data,
+                                } => {
+                                    if height == 0
+                                        || block_hash.len() != 32
+                                        || validator_id.len() != 32
+                                        || signature.len() != 64
+                                        || block_data.len() > 5 * 1024 * 1024
+                                    {
+                                        warn!("Rejected malformed currency block proposal");
+                                        continue;
+                                    }
+                                    let validator_key_bytes: [u8; 32] =
+                                        match validator_id.as_slice().try_into() {
+                                            Ok(bytes) => bytes,
+                                            Err(_) => continue,
+                                        };
+                                    if !authorized_validators_clone
+                                        .contains(&validator_key_bytes)
+                                    {
+                                        warn!(
+                                            "Rejected currency block #{} from unauthorized proposer",
+                                            height
+                                        );
+                                        continue;
+                                    }
+                                    let verifying_key =
+                                        match ed25519_dalek::VerifyingKey::from_bytes(
+                                            &validator_key_bytes,
+                                        ) {
+                                            Ok(key) => key,
+                                            Err(error) => {
+                                                warn!("Invalid currency proposer key: {}", error);
+                                                continue;
+                                            }
+                                        };
+                                    let signature_bytes: [u8; 64] =
+                                        match signature.as_slice().try_into() {
+                                            Ok(bytes) => bytes,
+                                            Err(_) => continue,
+                                        };
+                                    use ed25519_dalek::Verifier;
+                                    if verifying_key
+                                        .verify(
+                                            &block_hash,
+                                            &ed25519_dalek::Signature::from_bytes(
+                                                &signature_bytes,
+                                            ),
+                                        )
+                                        .is_err()
+                                    {
+                                        warn!("Currency block #{} signature verification failed", height);
+                                        continue;
+                                    }
+                                    if height != currency_block_height_net.load(Ordering::SeqCst) + 1
+                                    {
+                                        warn!("Currency block #{} is not the next height", height);
+                                        continue;
+                                    }
+                                    let currency_block: dchat_blockchain::CurrencyBlock =
+                                        match bincode::DefaultOptions::new()
+                                            .with_fixint_encoding()
+                                            .with_limit((5 * 1024 * 1024) as u64)
+                                            .deserialize(&block_data)
+                                        {
+                                            Ok(block) => block,
+                                            Err(error) => {
+                                                warn!("Invalid currency block data: {}", error);
+                                                continue;
+                                            }
+                                        };
+                                    let block_hash_array: [u8; 32] =
+                                        match block_hash.as_slice().try_into() {
+                                            Ok(hash) => hash,
+                                            Err(_) => continue,
+                                        };
+                                    let previous_hash = *currency_last_hash_net.lock().await;
+                                    if currency_block.height != height
+                                        || currency_block.hash != block_hash_array
+                                        || currency_block.previous_hash != previous_hash
+                                    {
+                                        warn!("Currency block #{} header mismatch", height);
+                                        continue;
+                                    }
+                                    let candidate_state = match currency_block.verify_and_execute(
+                                        &currency_execution_state_net.lock().await,
+                                        currency_chain_id_net,
+                                    ) {
+                                        Ok(state) => state,
+                                        Err(error) => {
+                                            warn!(
+                                                "Currency block #{} deterministic replay failed: {}",
+                                                height, error
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    let tx_ids = currency_block.transaction_ids();
+                                    {
+                                        let mut candidates =
+                                            pending_currency_candidates_net.lock().await;
+                                        if let Some((existing_hash, ..)) = candidates.get(&height) {
+                                            if existing_hash != &block_hash {
+                                                warn!(
+                                                    "Conflicting currency proposal already staged at height {}",
+                                                    height
+                                                );
+                                                continue;
+                                            }
+                                        } else {
+                                            candidates.insert(
+                                                height,
+                                                (
+                                                    block_hash.clone(),
+                                                    candidate_state,
+                                                    tx_ids,
+                                                    block_hash_array,
+                                                ),
+                                            );
+                                        }
+                                    }
+
+                                    let our_validator_id =
+                                        validator_public_key_bytes_clone.to_vec();
+                                    let ack_signature_bytes = {
+                                        let mut acknowledgments =
+                                            currency_block_acks_net.lock().await;
+                                        let votes = acknowledgments.entry(height).or_default();
+                                        if let Some((voted_hash, signature)) =
+                                            votes.get(&our_validator_id)
+                                        {
+                                            if voted_hash != &block_hash {
+                                                warn!(
+                                                    "Refusing to double-vote on currency block height {}",
+                                                    height
+                                                );
+                                                continue;
+                                            }
+                                            signature.clone()
+                                        } else {
+                                            let signature = {
+                                                let validator_key =
+                                                    validator_key_arc_clone2.lock().await;
+                                                match validator_key.sign_async(&block_hash).await {
+                                                    Ok(signature) => {
+                                                        signature.to_bytes().to_vec()
+                                                    }
+                                                    Err(error) => {
+                                                        error!(
+                                                            "Failed to sign currency acknowledgment: {}",
+                                                            error
+                                                        );
+                                                        continue;
+                                                    }
+                                                }
+                                            };
+                                            votes.insert(
+                                                our_validator_id.clone(),
+                                                (block_hash.clone(), signature.clone()),
+                                            );
+                                            signature
+                                        }
+                                    };
+                                    let ack_message =
+                                        DchatMessage::CurrencyBlockAcknowledgment {
+                                            block_height: height,
+                                            block_hash: block_hash.clone(),
+                                            validator_id: our_validator_id.clone(),
+                                            signature: ack_signature_bytes,
+                                        };
+                                    let mut network = network_arc_clone.lock().await;
+                                    if let Err(error) =
+                                        network.broadcast_validator_block(&ack_message)
+                                    {
+                                        error!(
+                                            "Failed to broadcast currency acknowledgment: {}",
+                                            error
+                                        );
+                                        continue;
+                                    }
+                                    drop(network);
+                                    let ack_count = {
+                                        let acknowledgments =
+                                            currency_block_acks_net.lock().await;
+                                        acknowledgments
+                                            .get(&height)
+                                            .map(|votes| {
+                                                votes
+                                                    .values()
+                                                    .filter(|(hash, _)| hash == &block_hash)
+                                                    .count()
+                                            })
+                                            .unwrap_or_default()
+                                    };
+                                    if ack_count >= required_signatures_net {
+                                        if let Some((candidate_hash, candidate_state, included_ids, hash)) =
+                                            pending_currency_candidates_net
+                                                .lock()
+                                                .await
+                                                .remove(&height)
+                                        {
+                                            if candidate_hash == block_hash {
+                                                *currency_execution_state_net.lock().await =
+                                                    candidate_state;
+                                                *currency_last_hash_net.lock().await = hash;
+                                                currency_block_height_net
+                                                    .store(height, Ordering::SeqCst);
+                                                if let Err(error) = currency_mempool_net
+                                                    .remove_transactions(&included_ids)
+                                                {
+                                                    error!(
+                                                        "Currency block #{} finalized but mempool cleanup failed: {}",
+                                                        height, error
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                DchatMessage::CurrencyBlockAcknowledgment {
+                                    block_height,
+                                    block_hash,
+                                    validator_id,
+                                    signature,
+                                } => {
+                                    if block_hash.len() != 32
+                                        || validator_id.len() != 32
+                                        || signature.len() != 64
+                                    {
+                                        warn!("Rejected malformed currency acknowledgment");
+                                        continue;
+                                    }
+                                    let validator_key_bytes: [u8; 32] =
+                                        match validator_id.as_slice().try_into() {
+                                            Ok(bytes) => bytes,
+                                            Err(_) => continue,
+                                        };
+                                    if !authorized_validators_clone
+                                        .contains(&validator_key_bytes)
+                                    {
+                                        warn!("Rejected currency acknowledgment from unauthorized validator");
+                                        continue;
+                                    }
+                                    let verifying_key =
+                                        match ed25519_dalek::VerifyingKey::from_bytes(
+                                            &validator_key_bytes,
+                                        ) {
+                                            Ok(key) => key,
+                                            Err(_) => continue,
+                                        };
+                                    let signature_bytes: [u8; 64] =
+                                        match signature.as_slice().try_into() {
+                                            Ok(bytes) => bytes,
+                                            Err(_) => continue,
+                                        };
+                                    use ed25519_dalek::Verifier;
+                                    if verifying_key
+                                        .verify(
+                                            &block_hash,
+                                            &ed25519_dalek::Signature::from_bytes(
+                                                &signature_bytes,
+                                            ),
+                                        )
+                                        .is_err()
+                                    {
+                                        warn!("Invalid currency acknowledgment signature");
+                                        continue;
+                                    }
+                                    let ack_count = {
+                                        let mut acknowledgments =
+                                            currency_block_acks_net.lock().await;
+                                        let votes =
+                                            acknowledgments.entry(block_height).or_default();
+                                        if votes
+                                            .get(&validator_id)
+                                            .is_some_and(|(prior_hash, _)| {
+                                                prior_hash != &block_hash
+                                            })
+                                        {
+                                            warn!(
+                                                "Conflicting currency acknowledgment from validator at height {}",
+                                                block_height
+                                            );
+                                            continue;
+                                        }
+                                        votes.insert(
+                                            validator_id.clone(),
+                                            (block_hash.clone(), signature.clone()),
+                                        );
+                                        votes
+                                            .values()
+                                            .filter(|(hash, _)| hash == &block_hash)
+                                            .count()
+                                    };
+                                    if ack_count >= required_signatures_net {
+                                        if let Some((candidate_hash, candidate_state, included_ids, hash)) =
+                                            pending_currency_candidates_net
+                                                .lock()
+                                                .await
+                                                .remove(&block_height)
+                                        {
+                                            if candidate_hash == block_hash {
+                                                *currency_execution_state_net.lock().await =
+                                                    candidate_state;
+                                                *currency_last_hash_net.lock().await = hash;
+                                                currency_block_height_net
+                                                    .store(block_height, Ordering::SeqCst);
+                                                match currency_mempool_net
+                                                    .remove_transactions(&included_ids)
+                                                {
+                                                    Ok(removed) => info!(
+                                                        "Finalized currency block #{} and removed {} transfers",
+                                                        block_height, removed
+                                                    ),
+                                                    Err(error) => error!(
+                                                        "Currency block #{} finalized but mempool cleanup failed: {}",
+                                                        block_height, error
+                                                    ),
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
                                 DchatMessage::PeerHandshake { payload } => {
                                     // Deserialize the handshake payload and process it
                                     match serde_json::from_slice::<PeerHandshake>(&payload) {
@@ -11076,7 +11664,8 @@ fn start_metrics_server(
 
 fn chain_rpc_response(
     body: &[u8],
-    ingress: &dchat_chain::TransactionIngress,
+    chat_ingress: &dchat_chain::TransactionIngress,
+    currency_ingress: &dchat_chain::CurrencyTransactionIngress,
 ) -> Option<serde_json::Value> {
     fn error(id: serde_json::Value, code: i64, message: impl Into<String>) -> serde_json::Value {
         let message = message.into();
@@ -11144,14 +11733,35 @@ fn chain_rpc_response(
             }
         };
         match hex::decode(encoded) {
-            Ok(envelope_bytes) => match ingress.submit_envelope(&envelope_bytes) {
-                Ok(tx_hash) => serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "result": tx_hash,
-                    "id": id,
-                }),
-                Err(submit_error) => error(id, -32000, submit_error.to_string()),
-            },
+            Ok(envelope_bytes) => {
+                let submit_result = match dchat_chain::SignedTransactionEnvelope::from_bytes(
+                    &envelope_bytes,
+                ) {
+                    Ok(envelope) => match envelope.domain {
+                        dchat_chain::EnvelopeDomain::Chat => {
+                            chat_ingress.submit_envelope(&envelope_bytes)
+                        }
+                        dchat_chain::EnvelopeDomain::Currency => {
+                            currency_ingress.submit_envelope(&envelope_bytes)
+                        }
+                    },
+                    Err(decode_error) => {
+                        return Some(error(
+                            id,
+                            -32602,
+                            format!("Invalid signed envelope: {}", decode_error),
+                        ));
+                    }
+                };
+                match submit_result {
+                    Ok(tx_hash) => serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "result": tx_hash,
+                        "id": id,
+                    }),
+                    Err(submit_error) => error(id, -32000, submit_error.to_string()),
+                }
+            }
             Err(decode_error) => error(
                 id,
                 -32602,
@@ -11169,7 +11779,8 @@ fn chain_rpc_response(
 
 fn start_chain_rpc_server(
     addr: &str,
-    ingress: Arc<dchat_chain::TransactionIngress>,
+    chat_ingress: Arc<dchat_chain::TransactionIngress>,
+    currency_ingress: Arc<dchat_chain::CurrencyTransactionIngress>,
     mut shutdown: broadcast::Receiver<()>,
 ) -> Result<tokio::task::JoinHandle<()>> {
     use warp::{Filter, Reply};
@@ -11177,15 +11788,19 @@ fn start_chain_rpc_server(
     let addr: std::net::SocketAddr = addr
         .parse()
         .map_err(|error| Error::Config(format!("Invalid RPC address: {}", error)))?;
-    let ingress_filter = warp::any().map(move || Arc::clone(&ingress));
+    let chat_ingress_filter = warp::any().map(move || Arc::clone(&chat_ingress));
+    let currency_ingress_filter = warp::any().map(move || Arc::clone(&currency_ingress));
     let submit_route = warp::post()
         .and(warp::path::end())
         .and(warp::body::content_length_limit(2 * 1024 * 1024))
         .and(warp::body::bytes())
-        .and(ingress_filter)
+        .and(chat_ingress_filter)
+        .and(currency_ingress_filter)
         .map(
-            |body: bytes::Bytes, ingress: Arc<dchat_chain::TransactionIngress>| {
-                match chain_rpc_response(&body, &ingress) {
+            |body: bytes::Bytes,
+             chat_ingress: Arc<dchat_chain::TransactionIngress>,
+             currency_ingress: Arc<dchat_chain::CurrencyTransactionIngress>| {
+                match chain_rpc_response(&body, &chat_ingress, &currency_ingress) {
                     Some(response) => warp::reply::json(&response).into_response(),
                     None => warp::reply::with_status("", warp::http::StatusCode::NO_CONTENT)
                         .into_response(),

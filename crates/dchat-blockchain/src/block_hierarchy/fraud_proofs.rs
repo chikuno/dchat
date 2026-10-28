@@ -885,6 +885,7 @@ fn tx_type_id(tx_type: dchat_chain::TransactionType) -> u8 {
         dchat_chain::TransactionType::SmartContractExecution => 8,
         dchat_chain::TransactionType::GovernanceVote => 9,
         dchat_chain::TransactionType::GovernanceProposal => 10,
+        dchat_chain::TransactionType::CurrencyTransfer => 11,
     }
 }
 

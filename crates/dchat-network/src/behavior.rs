@@ -151,6 +151,21 @@ pub enum DchatMessage {
         /// JSON-serialized handshake data (for forward compatibility)
         payload: Vec<u8>,
     },
+    /// Full currency-chain block proposal, isolated from chat-chain heights and state.
+    CurrencyValidatorBlock {
+        height: u64,
+        validator_id: Vec<u8>,
+        block_hash: Vec<u8>,
+        signature: Vec<u8>,
+        block_data: Vec<u8>,
+    },
+    /// Currency-chain block acknowledgment, isolated from chat-chain votes.
+    CurrencyBlockAcknowledgment {
+        block_height: u64,
+        block_hash: Vec<u8>,
+        validator_id: Vec<u8>,
+        signature: Vec<u8>,
+    },
 }
 
 /// Handshake request/response for peer exchange

@@ -112,6 +112,13 @@ pub fn lane_for_transaction(tx: &Transaction) -> Result<LaneId, BlockError> {
             {
                 envelope.sender.to_vec()
             }
+            dchat_chain::UnifiedTransactionType::Currency(
+                dchat_chain::CurrencyTransactionType::Transfer,
+            ) if envelope.domain == dchat_chain::EnvelopeDomain::Currency
+                && tx.tx_type == TransactionType::CurrencyTransfer =>
+            {
+                envelope.sender.to_vec()
+            }
             _ => {
                 return Err(BlockError::InvalidTransaction(
                     "signed envelope domain or transaction type does not match".to_string(),
@@ -157,6 +164,7 @@ pub fn lane_for_transaction(tx: &Transaction) -> Result<LaneId, BlockError> {
         TransactionType::SmartContractExecution
         | TransactionType::GovernanceVote
         | TransactionType::GovernanceProposal => tx.tx_hash.as_bytes().to_vec(),
+        TransactionType::CurrencyTransfer => tx.tx_hash.as_bytes().to_vec(),
         }
     };
 
@@ -212,6 +220,7 @@ fn tx_type_id(tx_type: TransactionType) -> u8 {
         TransactionType::SmartContractExecution => 8,
         TransactionType::GovernanceVote => 9,
         TransactionType::GovernanceProposal => 10,
+        TransactionType::CurrencyTransfer => 11,
     }
 }
 
@@ -228,6 +237,7 @@ fn sigchecks_for_tx(tx: &Transaction) -> u16 {
         TransactionType::SmartContractExecution => 1,
         TransactionType::GovernanceVote => 1,
         TransactionType::GovernanceProposal => 1,
+        TransactionType::CurrencyTransfer => 1,
     }
 }
 
@@ -367,6 +377,7 @@ fn estimate_tx_gas(tx: &Transaction) -> u64 {
         | TransactionType::GovernanceProposal => {
             BASE_GAS + (tx.payload.len() as u64) / 100
         }
+        TransactionType::CurrencyTransfer => BASE_GAS + (tx.payload.len() as u64) / 100,
     }
 }
 

@@ -34,6 +34,8 @@ pub enum TransactionType {
     GovernanceVote,
     /// Create a governance proposal
     GovernanceProposal,
+    /// Transfer currency-chain tokens
+    CurrencyTransfer,
 }
 
 /// On-chain user registration transaction

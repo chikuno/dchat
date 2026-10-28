@@ -621,6 +621,7 @@ fn tx_type_id(tx_type: TransactionType) -> u8 {
         TransactionType::SmartContractExecution => 8,
         TransactionType::GovernanceVote => 9,
         TransactionType::GovernanceProposal => 10,
+        TransactionType::CurrencyTransfer => 11,
     }
 }
 
@@ -684,7 +685,8 @@ pub fn lane_for_transaction(tx: &Transaction) -> Result<LaneId, BlockError> {
         }
         TransactionType::SmartContractExecution
         | TransactionType::GovernanceVote
-        | TransactionType::GovernanceProposal => tx.tx_hash.as_bytes().to_vec(),
+        | TransactionType::GovernanceProposal
+        | TransactionType::CurrencyTransfer => tx.tx_hash.as_bytes().to_vec(),
     };
 
     let h = blake3::hash(&key_bytes);
@@ -1078,7 +1080,8 @@ impl WorldState {
 
             TransactionType::SmartContractExecution
             | TransactionType::GovernanceVote
-            | TransactionType::GovernanceProposal => {
+            | TransactionType::GovernanceProposal
+            | TransactionType::CurrencyTransfer => {
                 return Err(BlockError::InvalidTransaction(format!(
                     "Transaction type {:?} is not supported by the legacy executor",
                     tx.tx_type

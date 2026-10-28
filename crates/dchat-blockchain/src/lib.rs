@@ -8,6 +8,7 @@ pub mod chat_chain;
 pub mod client;
 pub mod consensus_types;
 pub mod cross_chain;
+pub mod currency_chain_consensus;
 pub mod currency_chain;
 pub mod currency_chain_block_sync;
 pub mod hardened_consensus;
@@ -42,8 +43,8 @@ pub mod solana_bridge;
 pub mod wallet;
 
 pub use block_hierarchy::{
-    Block, BlockError, ExecutionResult, FinalityProof, Miniblock, StateDelta, Subblock,
-    ValidatorSignature, WorldState,
+    Block, BlockError, CurrencyWorldState, ExecutionResult, FinalityProof, Miniblock, StateDelta,
+    Subblock, ValidatorSignature, WorldState,
 };
 pub use chain_synchronizer::{
     ChainSyncConfig, ChainSynchronizer, ChainThroughput, ChainType, CrossChainFinalityStatus,
@@ -56,6 +57,7 @@ pub use consensus_types::{
     BlockVotes, ConsensusError, DeliveryProof, GeographicRegion, RelayScore, RelayVote,
 };
 pub use cross_chain::{CrossChainBridge, CrossChainStatus, CrossChainTransaction};
+pub use currency_chain_consensus::CurrencyBlock;
 pub use currency_chain::{
     CreateStorageBondResult, CurrencyChainClient, CurrencyChainConfig, StorageBondRecord,
     StorageBondStatus, TransactionDirection, TransactionHistoryEntry, TransactionHistoryStatus,

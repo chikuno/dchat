@@ -4,6 +4,7 @@
 
 use dchat_core::error::{Error, Result};
 use dchat_core::motes::{DCHAT_DECIMALS, MOTES_PER_DCHAT};
+use dchat_core::types::UserId;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -38,10 +39,67 @@ pub struct CurrencyGenesisBlock {
     pub config: CurrencyGenesisConfig,
     /// Initial token supply
     pub initial_supply: u64,
+    /// Explicit account allocations; any remainder stays in the non-spendable reserve.
+    #[serde(default)]
+    pub initial_balances: Vec<GenesisBalance>,
     /// Block hash
     pub hash: String,
     /// Genesis signature
     pub signature: Vec<u8>,
+}
+
+impl CurrencyGenesisBlock {
+    /// Return explicit balances, deriving legacy validator stakes for older genesis files.
+    pub fn effective_initial_balances(&self) -> Result<Vec<GenesisBalance>> {
+        if !self.initial_balances.is_empty() {
+            return Ok(self.initial_balances.clone());
+        }
+
+        self.initial_validators
+            .iter()
+            .map(|validator| {
+                Ok(GenesisBalance {
+                    account: validator_account(validator)?,
+                    available: 0,
+                    staked: validator.stake_amount,
+                })
+            })
+            .collect()
+    }
+
+    /// Return the unallocated initial supply, which is not spendable by any account.
+    pub fn treasury_reserve(&self) -> Result<u64> {
+        let balances = self.effective_initial_balances()?;
+        GenesisBuilder::validate_currency_balances(
+            &self.initial_validators,
+            &balances,
+            self.initial_supply,
+        )?;
+        let allocated = balances.iter().try_fold(0u128, |total, balance| {
+            total
+                .checked_add(u128::from(balance.available))
+                .and_then(|total| total.checked_add(u128::from(balance.staked)))
+                .ok_or_else(|| Error::validation("Currency genesis allocation overflow"))
+        })?;
+        let reserve = u128::from(self.initial_supply)
+            .checked_sub(allocated)
+            .ok_or_else(|| {
+                Error::validation("Currency genesis allocations exceed initial supply")
+            })?;
+        u64::try_from(reserve)
+            .map_err(|_| Error::validation("Currency genesis reserve exceeds supported range"))
+    }
+}
+
+/// Spendable and staked genesis allocation for a currency-chain account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GenesisBalance {
+    /// Account receiving this allocation
+    pub account: UserId,
+    /// Immediately spendable units
+    pub available: u64,
+    /// Units locked as stake at genesis
+    pub staked: u64,
 }
 
 /// Genesis validator information
@@ -147,6 +205,36 @@ impl GenesisBuilder {
         config: CurrencyGenesisConfig,
         initial_supply: u64,
     ) -> Result<CurrencyGenesisBlock> {
+        let initial_balances = initial_validators
+            .iter()
+            .map(|validator| {
+                Ok(GenesisBalance {
+                    account: validator_account(validator)?,
+                    available: 0,
+                    staked: validator.stake_amount,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        self.create_currency_genesis_with_balances(
+            initial_validators,
+            config,
+            initial_supply,
+            initial_balances,
+        )
+    }
+
+    /// Create currency genesis with an explicit initial account distribution.
+    pub fn create_currency_genesis_with_balances(
+        &self,
+        initial_validators: Vec<GenesisValidator>,
+        config: CurrencyGenesisConfig,
+        initial_supply: u64,
+        mut initial_balances: Vec<GenesisBalance>,
+    ) -> Result<CurrencyGenesisBlock> {
+        Self::validate_currency_balances(&initial_validators, &initial_balances, initial_supply)?;
+        initial_balances.sort_by_key(|balance| *balance.account.0.as_bytes());
+
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -161,6 +249,7 @@ impl GenesisBuilder {
             initial_validators,
             config,
             initial_supply,
+            initial_balances,
             hash: String::new(),
             signature: Vec::new(),
         };
@@ -185,6 +274,68 @@ impl GenesisBuilder {
         );
 
         Ok(genesis)
+    }
+
+    fn validate_currency_balances(
+        validators: &[GenesisValidator],
+        balances: &[GenesisBalance],
+        initial_supply: u64,
+    ) -> Result<()> {
+        let mut accounts = std::collections::HashSet::new();
+        let mut allocated = 0u128;
+        for balance in balances {
+            if !accounts.insert(balance.account) {
+                return Err(Error::validation(format!(
+                    "Duplicate currency genesis allocation for {}",
+                    balance.account.0
+                )));
+            }
+            allocated = allocated
+                .checked_add(u128::from(balance.available))
+                .and_then(|total| total.checked_add(u128::from(balance.staked)))
+                .ok_or_else(|| Error::validation("Currency genesis allocation overflow"))?;
+        }
+        if allocated > u128::from(initial_supply) {
+            return Err(Error::validation(
+                "Currency genesis allocations exceed initial supply",
+            ));
+        }
+
+        let mut validator_stakes = std::collections::HashMap::new();
+        for validator in validators {
+            let account = validator_account(validator)?;
+            if validator_stakes
+                .insert(account.clone(), validator.stake_amount)
+                .is_some()
+            {
+                return Err(Error::validation(format!(
+                    "Duplicate currency genesis validator account {}",
+                    account.0
+                )));
+            }
+        }
+        for balance in balances {
+            let expected_stake = validator_stakes
+                .get(&balance.account)
+                .copied()
+                .unwrap_or_default();
+            if balance.staked != expected_stake {
+                return Err(Error::validation(format!(
+                    "Genesis stake allocation for account {} does not match validator set",
+                    balance.account.0
+                )));
+            }
+        }
+        for validator in validators {
+            let account = validator_account(validator)?;
+            if !balances.iter().any(|balance| balance.account == account) {
+                return Err(Error::validation(format!(
+                    "Missing currency genesis stake allocation for validator {}",
+                    validator.public_key
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Verify chat genesis block signature
@@ -214,6 +365,12 @@ impl GenesisBuilder {
         genesis: &CurrencyGenesisBlock,
         public_key: &VerifyingKey,
     ) -> Result<()> {
+        let initial_balances = genesis.effective_initial_balances()?;
+        Self::validate_currency_balances(
+            &genesis.initial_validators,
+            &initial_balances,
+            genesis.initial_supply,
+        )?;
         let hash_input = Self::compute_currency_genesis_hash_input(genesis);
 
         let signature_bytes: [u8; 64] = genesis
@@ -261,8 +418,31 @@ impl GenesisBuilder {
             input.extend_from_slice(&validator.stake_amount.to_be_bytes());
         }
 
+        if !genesis.initial_balances.is_empty() {
+            input.extend_from_slice(b"dchat/currency-genesis-balances/v1");
+            let mut balances = genesis.initial_balances.clone();
+            balances.sort_by_key(|balance| *balance.account.0.as_bytes());
+            input.extend_from_slice(&(balances.len() as u64).to_be_bytes());
+            for balance in balances {
+                input.extend_from_slice(balance.account.0.as_bytes());
+                input.extend_from_slice(&balance.available.to_be_bytes());
+                input.extend_from_slice(&balance.staked.to_be_bytes());
+            }
+        }
+
         input
     }
+}
+
+fn validator_account(validator: &GenesisValidator) -> Result<UserId> {
+    let public_key = hex::decode(&validator.public_key)
+        .map_err(|error| Error::validation(format!("Invalid validator public key: {}", error)))?;
+    let public_key: [u8; 32] = public_key
+        .try_into()
+        .map_err(|_| Error::validation("Validator public key must be 32 bytes"))?;
+    Ok(UserId(crate::signed_envelope::address_from_public_key(
+        &public_key,
+    )))
 }
 
 /// Genesis initialization coordinator
@@ -464,8 +644,95 @@ mod tests {
 
         assert_eq!(genesis.block_number, 0);
         assert_eq!(genesis.initial_supply, 1_000_000_000);
+        assert_eq!(genesis.initial_balances.len(), 1);
+        assert_eq!(genesis.initial_balances[0].available, 0);
+        assert_eq!(genesis.initial_balances[0].staked, 1_000_000);
+        assert_eq!(genesis.treasury_reserve().unwrap(), 999_000_000);
         assert!(!genesis.hash.is_empty());
         assert!(!genesis.signature.is_empty());
+        let mut legacy_genesis = genesis.clone();
+        legacy_genesis.initial_balances.clear();
+        assert_eq!(
+            legacy_genesis.effective_initial_balances().unwrap(),
+            genesis.initial_balances
+        );
+        assert_eq!(legacy_genesis.treasury_reserve().unwrap(), 999_000_000);
+        GenesisBuilder::verify_currency_genesis(&genesis, &builder.signing_key.verifying_key())
+            .unwrap();
+
+        let mut altered_genesis = genesis.clone();
+        altered_genesis.initial_balances[0].available += 1;
+        assert!(GenesisBuilder::verify_currency_genesis(
+            &altered_genesis,
+            &builder.signing_key.verifying_key(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_currency_genesis_rejects_allocations_above_supply() {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let builder = GenesisBuilder::new(signing_key);
+        let validator = GenesisValidator {
+            public_key: hex::encode(builder.signing_key.verifying_key().as_bytes()),
+            stake_amount: 1_000_000,
+            voting_power: 100,
+            address: "test-validator".to_string(),
+        };
+        let config = CurrencyGenesisConfig {
+            chain_id: "test-currency".to_string(),
+            block_time_secs: 5,
+            token_name: "Test Token".to_string(),
+            token_symbol: "TEST".to_string(),
+            token_decimals: DCHAT_DECIMALS,
+        };
+
+        assert!(builder
+            .create_currency_genesis(vec![validator], config, 500_000)
+            .is_err());
+    }
+
+    #[test]
+    fn test_currency_genesis_rejects_stake_for_non_validator() {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let builder = GenesisBuilder::new(signing_key);
+        let validator = GenesisValidator {
+            public_key: hex::encode(builder.signing_key.verifying_key().as_bytes()),
+            stake_amount: 1_000_000,
+            voting_power: 100,
+            address: "test-validator".to_string(),
+        };
+        let non_validator_key = SigningKey::generate(&mut OsRng);
+        let allocations = vec![
+            GenesisBalance {
+                account: validator_account(&validator).unwrap(),
+                available: 0,
+                staked: validator.stake_amount,
+            },
+            GenesisBalance {
+                account: UserId(crate::signed_envelope::address_from_public_key(
+                    non_validator_key.verifying_key().as_bytes(),
+                )),
+                available: 0,
+                staked: 1,
+            },
+        ];
+        let config = CurrencyGenesisConfig {
+            chain_id: "test-currency".to_string(),
+            block_time_secs: 5,
+            token_name: "Test Token".to_string(),
+            token_symbol: "TEST".to_string(),
+            token_decimals: DCHAT_DECIMALS,
+        };
+
+        assert!(builder
+            .create_currency_genesis_with_balances(
+                vec![validator],
+                config,
+                1_000_000_000,
+                allocations,
+            )
+            .is_err());
     }
 
     #[test]

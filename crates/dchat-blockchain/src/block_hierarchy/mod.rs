@@ -34,8 +34,9 @@ pub use data_availability::*;
 pub use erasure_coding::*;
 // Execution module exports
 pub use execution::{
-    AccountState, ExecutionContext, ExecutionEngine, StateTransition, Transaction, WorldState,
-    WorldStateSnapshot, BASE_TX_GAS, GAS_PER_BYTE, MAX_GAS_PER_MINIBLOCK,
+    AccountState, CurrencyAccountState, CurrencyWorldState, ExecutionContext, ExecutionEngine,
+    StateTransition, Transaction, WorldState, WorldStateSnapshot, BASE_TX_GAS, GAS_PER_BYTE,
+    MAX_GAS_PER_MINIBLOCK,
 };
 pub use fraud_proofs::*;
 pub use lane_sharding::*;

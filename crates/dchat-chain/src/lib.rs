@@ -80,7 +80,7 @@ pub use storage_backend::{
 pub use transaction_storage::{
     ServiceStatistics, TransactionStorageConfig, TransactionStorageService,
 };
-pub use transaction_ingress::TransactionIngress;
+pub use transaction_ingress::{CurrencyTransactionIngress, TransactionIngress};
 pub use transactions::{
     ChannelVisibility, CreateChannelTx, JoinChannelTx, OnChainDeliveryProofTx, PostToChannelTx,
     RegisterUserTx, SendDirectMessageTx, SubmitDeliveryProofTx, Transaction, TransactionReceipt,

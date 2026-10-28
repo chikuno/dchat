@@ -1,4 +1,4 @@
-//! Validates signed chat transactions before they enter the mempool.
+//! Validates signed chat and currency transactions before they enter their mempools.
 
 use crate::mempool::Mempool;
 use crate::signed_envelope::{
@@ -122,6 +122,111 @@ impl TransactionIngress {
     }
 
     /// Return a handle to the mempool populated by this ingress.
+    pub fn mempool(&self) -> Mempool {
+        self.mempool.clone()
+    }
+}
+
+/// Currency-chain signed-envelope ingress with an independent nonce domain and mempool.
+pub struct CurrencyTransactionIngress {
+    mempool: Mempool,
+    state: Mutex<IngressState>,
+}
+
+impl CurrencyTransactionIngress {
+    /// Create currency ingress for one chain ID.
+    pub fn new(chain_id: u32, mempool: Mempool) -> Self {
+        Self {
+            mempool,
+            state: Mutex::new(IngressState {
+                verifier: EnvelopeVerifier::new(chain_id),
+                accepted: HashMap::new(),
+                accepted_order: VecDeque::new(),
+            }),
+        }
+    }
+
+    /// Verify a signed currency transfer envelope and enqueue it once.
+    pub fn submit_envelope(&self, envelope_bytes: &[u8]) -> Result<String> {
+        let envelope: SignedTransactionEnvelope = deserialize_bounded(envelope_bytes)
+            .map_err(|error| Error::validation(format!("Invalid signed envelope: {}", error)))?;
+        if envelope.domain != EnvelopeDomain::Currency
+            || envelope.tx_type
+                != UnifiedTransactionType::Currency(crate::currency_transactions::CurrencyTransactionType::Transfer)
+        {
+            return Err(Error::validation(
+                "Only currency transfer envelopes are accepted",
+            ));
+        }
+        let transfer: crate::currency_transactions::TransferTx = decode_payload(&envelope)?;
+        let sender = UserId(Uuid::from_bytes(envelope.sender));
+        if transfer.from != sender || transfer.nonce != envelope.nonce || transfer.amount == 0 {
+            return Err(Error::validation(
+                "Currency transfer identity, nonce, or amount is invalid",
+            ));
+        }
+
+        let mut hash_input = envelope.signing_bytes();
+        hash_input.extend_from_slice(&envelope.signature);
+        let hash = *blake3::hash(&hash_input).as_bytes();
+        let tx_hash = format!("0x{}", hex::encode(hash));
+
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| Error::internal("Currency transaction ingress lock poisoned"))?;
+        if let Some(accepted_hash) = state.accepted.get(&hash) {
+            return Ok(accepted_hash.clone());
+        }
+        let sender = envelope.sender_uuid();
+        let expected_nonce = state.verifier.next_nonce(&sender);
+        if envelope.nonce != expected_nonce {
+            return Err(Error::validation(format!(
+                "Unexpected currency transaction nonce: expected {}, got {}",
+                expected_nonce, envelope.nonce
+            )));
+        }
+        state.verifier.verify(&envelope).map_err(|error| {
+            Error::validation(format!(
+                "Currency envelope verification failed: {}",
+                error
+            ))
+        })?;
+
+        let mut tx_id_bytes = [0; 16];
+        tx_id_bytes.copy_from_slice(&hash[..16]);
+        let tx = Transaction {
+            tx_id: Uuid::from_bytes(tx_id_bytes),
+            tx_type: TransactionType::CurrencyTransfer,
+            payload: envelope_bytes.to_vec(),
+            tx_hash: tx_hash.clone(),
+            status: TransactionStatus::Pending,
+            submitted_at: Utc::now(),
+            confirmed_at: None,
+            fee_paid: transfer.fee,
+        };
+        self.mempool.add_transaction(tx)?;
+
+        state
+            .verifier
+            .verify_and_accept(&envelope)
+            .map_err(|error| {
+                Error::internal(format!(
+                    "Currency envelope verification changed during acceptance: {}",
+                    error
+                ))
+            })?;
+        if state.accepted_order.len() == MAX_RECENTLY_ACCEPTED {
+            if let Some(expired_hash) = state.accepted_order.pop_front() {
+                state.accepted.remove(&expired_hash);
+            }
+        }
+        state.accepted_order.push_back(hash);
+        state.accepted.insert(hash, tx_hash.clone());
+        Ok(tx_hash)
+    }
+
+    /// Return the mempool populated by this ingress.
     pub fn mempool(&self) -> Mempool {
         self.mempool.clone()
     }
@@ -262,7 +367,9 @@ fn deserialize_bounded<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> bincode:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::signed_envelope::{address_from_public_key, chain_ids, EnvelopeBuilder};
+    use crate::signed_envelope::{
+        address_from_public_key, chain_ids, EnvelopeBuilder,
+    };
     use crate::transactions::RegisterUserTx;
     use ed25519_dalek::SigningKey;
 
@@ -326,6 +433,29 @@ mod tests {
         envelope.to_bytes().unwrap()
     }
 
+    fn signed_currency_transfer(signing_key: &SigningKey, nonce: u64) -> Vec<u8> {
+        let public_key = signing_key.verifying_key().to_bytes();
+        let transfer = crate::currency_transactions::TransferTx {
+            tx_id: Uuid::new_v4(),
+            from: UserId(address_from_public_key(&public_key)),
+            to: UserId::new(),
+            amount: 25,
+            memo: None,
+            fee: 2,
+            timestamp: Utc::now(),
+            nonce,
+            signature: Vec::new(),
+        };
+        EnvelopeBuilder::new(chain_ids::TESTNET_CURRENCY, public_key)
+            .nonce(nonce)
+            .currency_tx(crate::currency_transactions::CurrencyTransactionType::Transfer)
+            .payload(bincode::serialize(&transfer).unwrap())
+            .build_and_sign(signing_key)
+            .unwrap()
+            .to_bytes()
+            .unwrap()
+    }
+
     #[test]
     fn accepts_and_deduplicates_a_valid_signed_envelope() {
         let ingress = TransactionIngress::new(chain_ids::TESTNET_CHAT, Mempool::default());
@@ -337,6 +467,38 @@ mod tests {
         assert_eq!(first_hash, retry_hash);
         assert!(first_hash.starts_with("0x"));
         assert_eq!(ingress.mempool().len().unwrap(), 1);
+    }
+
+    #[test]
+    fn accepts_and_deduplicates_a_currency_transfer_envelope() {
+        let mempool = Mempool::default();
+        let ingress =
+            CurrencyTransactionIngress::new(chain_ids::TESTNET_CURRENCY, mempool.clone());
+        let signing_key = SigningKey::from_bytes(&[9; 32]);
+        let envelope = signed_currency_transfer(&signing_key, 1);
+
+        let first = ingress.submit_envelope(&envelope).unwrap();
+        let second = ingress.submit_envelope(&envelope).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(mempool.len().unwrap(), 1);
+        assert_eq!(
+            mempool.pending_transactions().unwrap()[0].tx_type,
+            TransactionType::CurrencyTransfer
+        );
+    }
+
+    #[test]
+    fn rejects_currency_nonce_gaps_without_queueing() {
+        let mempool = Mempool::default();
+        let ingress =
+            CurrencyTransactionIngress::new(chain_ids::TESTNET_CURRENCY, mempool.clone());
+        let signing_key = SigningKey::from_bytes(&[10; 32]);
+
+        assert!(ingress
+            .submit_envelope(&signed_currency_transfer(&signing_key, 2))
+            .is_err());
+        assert!(mempool.is_empty().unwrap());
     }
 
     #[test]
