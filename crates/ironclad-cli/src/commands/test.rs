@@ -10,7 +10,7 @@ pub async fn run(filter: Option<&str>, verbose: bool) -> IroncladResult<()> {
     let start = Instant::now();
     let project = Project::find()?;
 
-    println!(
+    dchat_log::out!(
         "{} {} {}",
         "🧪".bold(),
         "Testing".cyan().bold(),
@@ -35,8 +35,8 @@ pub async fn run(filter: Option<&str>, verbose: bool) -> IroncladResult<()> {
     let elapsed = start.elapsed();
 
     if status.success() {
-        println!();
-        println!(
+        dchat_log::out!();
+        dchat_log::out!(
             "{}",
             format!("✅ Tests passed in {:.2}s", elapsed.as_secs_f64())
                 .green()

@@ -27,7 +27,7 @@ fn format_tokens(amount: u64) -> String {
 
 /// Handle `dchat wallet create` command
 pub async fn handle_wallet_create(name: String, output: PathBuf) -> Result<()> {
-    println!("💰 Creating new wallet: {}", name);
+    dchat_log::out!("💰 Creating new wallet: {}", name);
 
     // Create proper production wallet with BIP-39 mnemonic
     let config = WalletConfig {
@@ -66,27 +66,27 @@ pub async fn handle_wallet_create(name: String, output: PathBuf) -> Result<()> {
 
     std::fs::write(&output, serde_json::to_string_pretty(&wallet_data)?)?;
 
-    println!("\n✅ Wallet created successfully!");
-    println!("Name: {}", name);
-    println!("Wallet ID: {}", user_id.0);
-    println!("DCHAT Address: {}", dchat_address);
-    println!("Solana Address: {}", solana_address);
-    println!("Public Key: {}", public_key_hex);
-    println!("Saved to: {:?}", output);
-    println!();
-    println!("⚠️  CRITICAL: Write down your recovery phrase and store it safely!");
-    println!("╔══════════════════════════════════════════════════════════════════╗");
-    println!("║                     RECOVERY PHRASE (24 words)                    ║");
-    println!("╠══════════════════════════════════════════════════════════════════╣");
+    dchat_log::out!("\n✅ Wallet created successfully!");
+    dchat_log::out!("Name: {}", name);
+    dchat_log::out!("Wallet ID: {}", user_id.0);
+    dchat_log::out!("DCHAT Address: {}", dchat_address);
+    dchat_log::out!("Solana Address: {}", solana_address);
+    dchat_log::out!("Public Key: {}", public_key_hex);
+    dchat_log::out!("Saved to: {:?}", output);
+    dchat_log::out!();
+    dchat_log::out!("⚠️  CRITICAL: Write down your recovery phrase and store it safely!");
+    dchat_log::out!("╔══════════════════════════════════════════════════════════════════╗");
+    dchat_log::out!("║                     RECOVERY PHRASE (24 words)                    ║");
+    dchat_log::out!("╠══════════════════════════════════════════════════════════════════╣");
     for (i, word) in mnemonic_phrase.split_whitespace().enumerate() {
-        print!("  {:2}. {:<12}", i + 1, word);
+        dchat_log::prompt!("  {:2}. {:<12}", i + 1, word);
         if (i + 1) % 4 == 0 {
-            println!();
+            dchat_log::out!();
         }
     }
-    println!("╚══════════════════════════════════════════════════════════════════╝");
-    println!();
-    println!("⚠️  Never share this phrase. Anyone with it can access your funds!");
+    dchat_log::out!("╚══════════════════════════════════════════════════════════════════╝");
+    dchat_log::out!();
+    dchat_log::out!("⚠️  Never share this phrase. Anyone with it can access your funds!");
 
     Ok(())
 }
@@ -95,10 +95,10 @@ pub async fn handle_wallet_create(name: String, output: PathBuf) -> Result<()> {
 pub async fn handle_wallet_balance(user_id: String) -> Result<()> {
     let uid = UserId(Uuid::parse_str(&user_id).map_err(|_| Error::validation("Invalid user ID"))?);
 
-    println!("\n💰 Wallet Balance:");
-    println!("══════════════════════════════════════════════════════════");
-    println!("User ID: {}", user_id);
-    println!();
+    dchat_log::out!("\n💰 Wallet Balance:");
+    dchat_log::out!("══════════════════════════════════════════════════════════");
+    dchat_log::out!("User ID: {}", user_id);
+    dchat_log::out!();
 
     // Query blockchain for wallet balance
     let rpc_url = std::env::var("DCHAT_CURRENCY_RPC_URL")
@@ -114,43 +114,43 @@ pub async fn handle_wallet_balance(user_id: String) -> Result<()> {
             // Query wallet from blockchain
             match currency_chain.get_wallet(&uid) {
                 Ok(Some(wallet)) => {
-                    println!("Available Balance: {} DCHAT", format_tokens(wallet.balance));
-                    println!("Staked Balance:    {} DCHAT", format_tokens(wallet.staked));
-                    println!(
+                    dchat_log::out!("Available Balance: {} DCHAT", format_tokens(wallet.balance));
+                    dchat_log::out!("Staked Balance:    {} DCHAT", format_tokens(wallet.staked));
+                    dchat_log::out!(
                         "Pending Rewards:   {} DCHAT",
                         format_tokens(wallet.rewards_pending)
                     );
-                    println!("──────────────────────────");
+                    dchat_log::out!("──────────────────────────");
                     let total = wallet.balance + wallet.staked + wallet.rewards_pending;
-                    println!("Total Assets:      {} DCHAT", format_tokens(total));
+                    dchat_log::out!("Total Assets:      {} DCHAT", format_tokens(total));
                 }
                 Ok(None) => {
-                    println!("Available Balance: 0 DCHAT");
-                    println!("Staked Balance:    0 DCHAT");
-                    println!("Pending Rewards:   0 DCHAT");
-                    println!("──────────────────────────");
-                    println!("Total Assets:      0 DCHAT");
-                    println!();
-                    println!("💡 Wallet not found. Create one with: dchat wallet create");
+                    dchat_log::out!("Available Balance: 0 DCHAT");
+                    dchat_log::out!("Staked Balance:    0 DCHAT");
+                    dchat_log::out!("Pending Rewards:   0 DCHAT");
+                    dchat_log::out!("──────────────────────────");
+                    dchat_log::out!("Total Assets:      0 DCHAT");
+                    dchat_log::out!();
+                    dchat_log::out!("💡 Wallet not found. Create one with: dchat wallet create");
                 }
                 Err(e) => {
                     tracing::warn!("Failed to query wallet from chain: {}", e);
-                    println!("⚠️  Unable to query blockchain: {}", e);
-                    println!();
-                    println!("Check that DCHAT_CURRENCY_RPC_URL is set correctly.");
+                    dchat_log::out!("⚠️  Unable to query blockchain: {}", e);
+                    dchat_log::out!();
+                    dchat_log::out!("Check that DCHAT_CURRENCY_RPC_URL is set correctly.");
                 }
             }
         }
         Err(e) => {
             tracing::warn!("Failed to connect to currency chain: {}", e);
-            println!("⚠️  Cannot connect to currency chain: {}", e);
-            println!();
-            println!("Set DCHAT_CURRENCY_RPC_URL environment variable to configure.");
+            dchat_log::out!("⚠️  Cannot connect to currency chain: {}", e);
+            dchat_log::out!();
+            dchat_log::out!("Set DCHAT_CURRENCY_RPC_URL environment variable to configure.");
         }
     }
 
-    println!();
-    println!("💡 Earn tokens by running a relay node or staking!");
+    dchat_log::out!();
+    dchat_log::out!("💡 Earn tokens by running a relay node or staking!");
 
     Ok(())
 }
@@ -167,7 +167,7 @@ pub async fn handle_wallet_export(
     let pass = match password {
         Some(p) => p,
         None => {
-            print!("Enter encryption password: ");
+            dchat_log::prompt!("Enter encryption password: ");
             io::stdout().flush()?;
             let mut pass = String::new();
             io::stdin().read_line(&mut pass)?;
@@ -179,7 +179,7 @@ pub async fn handle_wallet_export(
         return Err(Error::validation("Password must be at least 8 characters"));
     }
 
-    println!("\n📤 Exporting wallet: {}", user_id);
+    dchat_log::out!("\n📤 Exporting wallet: {}", user_id);
 
     // Query wallet data from blockchain
     let rpc_url = std::env::var("DCHAT_CURRENCY_RPC_URL")
@@ -224,9 +224,9 @@ pub async fn handle_wallet_export(
 
     std::fs::write(&output, serde_json::to_string_pretty(&export_data)?)?;
 
-    println!("✅ Wallet exported to: {:?}", output);
-    println!();
-    println!("⚠️  Store this backup securely and remember your password!");
+    dchat_log::out!("✅ Wallet exported to: {:?}", output);
+    dchat_log::out!();
+    dchat_log::out!("⚠️  Store this backup securely and remember your password!");
 
     Ok(())
 }
@@ -241,7 +241,7 @@ pub async fn handle_wallet_import(file: PathBuf, password: Option<String>) -> Re
     let pass = match password {
         Some(p) => p,
         None => {
-            print!("Enter decryption password: ");
+            dchat_log::prompt!("Enter decryption password: ");
             io::stdout().flush()?;
             let mut pass = String::new();
             io::stdin().read_line(&mut pass)?;
@@ -249,7 +249,7 @@ pub async fn handle_wallet_import(file: PathBuf, password: Option<String>) -> Re
         }
     };
 
-    println!("\n📥 Importing wallet from: {:?}", file);
+    dchat_log::out!("\n📥 Importing wallet from: {:?}", file);
 
     let contents = std::fs::read_to_string(&file)?;
     let data: serde_json::Value = serde_json::from_str(&contents)?;
@@ -307,18 +307,18 @@ pub async fn handle_wallet_import(file: PathBuf, password: Option<String>) -> Re
             .and_then(|v| v.as_str())
             .ok_or_else(|| Error::validation("Missing user_id in decrypted data"))?;
 
-        println!("✅ Wallet imported successfully!");
-        println!("User ID: {}", user_id);
+        dchat_log::out!("✅ Wallet imported successfully!");
+        dchat_log::out!("User ID: {}", user_id);
 
         if let Some(balance) = wallet_data.get("balance").and_then(|v| v.as_u64()) {
-            println!("Last known balance: {} DCHAT", format_tokens(balance));
+            dchat_log::out!("Last known balance: {} DCHAT", format_tokens(balance));
         }
     } else {
         // Legacy v1.0 format (unencrypted)
         if let Some(user_id) = data.get("user_id") {
-            println!("✅ Wallet imported successfully!");
-            println!("User ID: {}", user_id);
-            println!(
+            dchat_log::out!("✅ Wallet imported successfully!");
+            dchat_log::out!("User ID: {}", user_id);
+            dchat_log::out!(
                 "⚠️  This is a legacy v1.0 wallet file. Consider re-exporting with encryption."
             );
         } else {
@@ -333,13 +333,13 @@ pub async fn handle_wallet_import(file: PathBuf, password: Option<String>) -> Re
 pub async fn handle_wallet_history(user_id: String, limit: usize) -> Result<()> {
     let uid = UserId(Uuid::parse_str(&user_id).map_err(|_| Error::validation("Invalid user ID"))?);
 
-    println!("\n📜 Transaction History (last {}):", limit);
-    println!("══════════════════════════════════════════════════════════");
-    println!(
+    dchat_log::out!("\n📜 Transaction History (last {}):", limit);
+    dchat_log::out!("══════════════════════════════════════════════════════════");
+    dchat_log::out!(
         "{:<24} {:<12} {:>15} {:<20}",
         "Date", "Type", "Amount", "Status"
     );
-    println!("{}", "-".repeat(75));
+    dchat_log::out!("{}", "-".repeat(75));
 
     // Query blockchain for transaction history
     let rpc_url = std::env::var("DCHAT_CURRENCY_RPC_URL")
@@ -358,24 +358,24 @@ pub async fn handle_wallet_history(user_id: String, limit: usize) -> Result<()> 
                     let tx_type = format!("{:?}", tx.tx_type);
                     let amount = format_tokens(tx.amount);
                     let status = format!("{:?}", tx.status);
-                    println!("{:<24} {:<12} {:>15} {:<20}", date, tx_type, amount, status);
+                    dchat_log::out!("{:<24} {:<12} {:>15} {:<20}", date, tx_type, amount, status);
                 }
             }
             Ok(_) => {
-                println!("No transactions found.");
-                println!();
-                println!("💡 Transactions will appear here after your first activity.");
+                dchat_log::out!("No transactions found.");
+                dchat_log::out!();
+                dchat_log::out!("💡 Transactions will appear here after your first activity.");
             }
             Err(e) => {
                 tracing::warn!("Failed to fetch transaction history: {}", e);
-                println!("⚠️  Unable to fetch transaction history: {}", e);
+                dchat_log::out!("⚠️  Unable to fetch transaction history: {}", e);
             }
         },
         Err(e) => {
             tracing::warn!("Failed to connect to currency chain: {}", e);
-            println!("⚠️  Cannot connect to currency chain: {}", e);
-            println!();
-            println!("Set DCHAT_CURRENCY_RPC_URL environment variable to configure.");
+            dchat_log::out!("⚠️  Cannot connect to currency chain: {}", e);
+            dchat_log::out!();
+            dchat_log::out!("Set DCHAT_CURRENCY_RPC_URL environment variable to configure.");
         }
     }
 
@@ -411,13 +411,13 @@ pub async fn handle_wallet_new_address(user_id: String) -> Result<()> {
     let address_bytes = &hash.as_bytes()[..20];
     let address = format!("dchat1{}", hex::encode(address_bytes));
 
-    println!("\n📫 New Receiving Address:");
-    println!("══════════════════════════════════════════════════════════");
-    println!("{}", address);
-    println!("Address Index: {}", next_index);
-    println!();
-    println!("Share this address to receive DCHAT tokens.");
-    println!("💡 Each new address is derived from your wallet for privacy.");
+    dchat_log::out!("\n📫 New Receiving Address:");
+    dchat_log::out!("══════════════════════════════════════════════════════════");
+    dchat_log::out!("{}", address);
+    dchat_log::out!("Address Index: {}", next_index);
+    dchat_log::out!();
+    dchat_log::out!("Share this address to receive DCHAT tokens.");
+    dchat_log::out!("💡 Each new address is derived from your wallet for privacy.");
 
     Ok(())
 }

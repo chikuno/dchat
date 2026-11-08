@@ -6,6 +6,7 @@ publish = false
 description = "Blockchain client for parallel chain architecture (Chat Chain + Currency Chain)"
 
 [dependencies]
+dchat-log = { path = "../dchat-log" }
 async-trait = "0.1"
 base64 = "0.22"
 blake3 = "1.5"

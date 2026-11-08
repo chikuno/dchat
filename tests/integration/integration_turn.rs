@@ -24,5 +24,5 @@ async fn test_turn_allocation() {
     assert!(allocation.is_ok(), "TURN allocation failed: {:?}", allocation);
     
     let relay_addr = allocation.unwrap();
-    println!("Allocated relay: {:?}", relay_addr);
+    dchat_log::out!("Allocated relay: {:?}", relay_addr);
 }

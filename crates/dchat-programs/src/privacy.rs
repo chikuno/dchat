@@ -196,9 +196,7 @@ impl RangeProof {
         // It only performs structural validation for testing purposes.
         // Production MUST use the bulletproofs-enabled verify() function.
         #[cfg(debug_assertions)]
-        eprintln!(
-            "WARNING: Using non-bulletproofs range proof verification. NOT SECURE FOR PRODUCTION."
-        );
+        dchat_log::warn!("WARNING: Using non-bulletproofs range proof verification. NOT SECURE FOR PRODUCTION.");
 
         // Validate parameters
         if self.bit_size > Self::MAX_BIT_SIZE {

@@ -304,3 +304,28 @@ fn escape_json(s: &str) -> String {
     out.push('"');
     out
 }
+
+
+/// Emit an interactive prompt without trailing newline and flush stdout (replaces `print!`)
+pub fn cli_prompt(msg: &str) {
+    #[cfg(feature = "std")]
+    {
+        use std::io::Write;
+        let entry = crate::entry::LogEntry::new_cli(LogKind::CliOut, msg.to_string());
+        if crate::collector::record_host_test_capture(&entry) {
+            return;
+        }
+
+        if is_quiet() {
+            return;
+        }
+
+        print!("{}", msg);
+        let _ = std::io::stdout().flush();
+    }
+
+    #[cfg(not(feature = "std"))]
+    {
+        crate::syscalls::log(msg);
+    }
+}

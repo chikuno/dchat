@@ -90,9 +90,9 @@ fn test_three_hop_encryption() {
         min_expected_size
     );
 
-    println!("Plaintext size: {} bytes", plaintext.len());
-    println!("Onion size: {} bytes", onion.len());
-    println!(
+    dchat_log::out!("Plaintext size: {} bytes", plaintext.len());
+    dchat_log::out!("Onion size: {} bytes", onion.len());
+    dchat_log::out!(
         "Overhead per layer: ~{} bytes",
         (onion.len() - plaintext.len()) / relays.len()
     );
@@ -353,7 +353,7 @@ mod security_tests {
         }
 
         // Note: This is a simplified test. Full verification requires layer-by-layer decryption
-        println!(
+        dchat_log::out!(
             "Extracted {} nonce positions from onion packet",
             nonces.len()
         );
@@ -427,7 +427,7 @@ mod performance_tests {
         let elapsed = start.elapsed();
         let avg_time = elapsed / iterations;
 
-        println!("Average encryption time (3 hops, 1KB): {:?}", avg_time);
+        dchat_log::out!("Average encryption time (3 hops, 1KB): {:?}", avg_time);
 
         // Should complete in reasonable time (< 10ms per encryption)
         assert!(

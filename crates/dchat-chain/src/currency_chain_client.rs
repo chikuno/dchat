@@ -222,8 +222,8 @@ mod tests {
 
         // Should either succeed or fail with network error (not panic)
         match result {
-            Ok(stake) => println!("Stake: {}", stake),
-            Err(e) => println!("Expected error: {:?}", e),
+            Ok(stake) => dchat_log::debug!("Stake: {}", stake),
+            Err(e) => dchat_log::debug!("Expected error: {:?}", e),
         }
     }
 
@@ -238,8 +238,8 @@ mod tests {
             .await;
 
         match result {
-            Ok(tx_id) => println!("Slash TX: {}", tx_id),
-            Err(e) => println!("Expected error: {:?}", e),
+            Ok(tx_id) => dchat_log::debug!("Slash TX: {}", tx_id),
+            Err(e) => dchat_log::debug!("Expected error: {:?}", e),
         }
     }
 

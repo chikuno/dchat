@@ -35,14 +35,14 @@ mod tests {
     #[test]
     fn integration_suite_loads() {
         // Verify all integration test modules are accessible
-        println!("✓ Integration test suite loaded");
-        println!("  - blockchain_integration module");
-        println!("  - cross_sdk_compatibility module");
-        println!("  - user_management_flows module");
-        println!("  - messaging_flows module");
-        println!("  - performance_benchmarks module");
-        println!("  - mock_blockchain module");
-        println!("  - node_startup_tests module");
+        dchat_log::out!("✓ Integration test suite loaded");
+        dchat_log::out!("  - blockchain_integration module");
+        dchat_log::out!("  - cross_sdk_compatibility module");
+        dchat_log::out!("  - user_management_flows module");
+        dchat_log::out!("  - messaging_flows module");
+        dchat_log::out!("  - performance_benchmarks module");
+        dchat_log::out!("  - mock_blockchain module");
+        dchat_log::out!("  - node_startup_tests module");
     }
 
     #[test]

@@ -24,7 +24,7 @@ pub async fn run(
         ))
     })?;
 
-    println!(
+    dchat_log::out!(
         "{} {} {} to {}",
         "🚀".bold(),
         "Deploying".cyan().bold(),
@@ -49,7 +49,7 @@ pub async fn run(
 
     // Step 1: Pre-deployment verification
     if !skip_verify {
-        println!("  {} Pre-deployment verification...", "→".dimmed());
+        dchat_log::out!("  {} Pre-deployment verification...", "→".dimmed());
 
         // Verify manifest exists
         let wasm_bytes = std::fs::read(&wasm_path)?;
@@ -61,7 +61,7 @@ pub async fn run(
             ));
         }
 
-        println!("  {} WASM verified", "✓".green());
+        dchat_log::out!("  {} WASM verified", "✓".green());
     }
 
     // Step 2: Load keypair
@@ -80,12 +80,12 @@ pub async fn run(
     }
 
     if verbose {
-        println!(
+        dchat_log::out!(
             "  {} Using keypair: {}",
             "→".dimmed(),
             keypair_path.dimmed()
         );
-        println!("  {} RPC: {}", "→".dimmed(), network_config.url.dimmed());
+        dchat_log::out!("  {} RPC: {}", "→".dimmed(), network_config.url.dimmed());
     }
 
     // Step 3: Deploy
@@ -112,26 +112,26 @@ pub async fn run(
 
     let elapsed = start.elapsed();
 
-    println!();
-    println!("{}", "✅ Deployment successful!".green().bold());
-    println!();
-    println!("  {}", "Program details:".cyan());
-    println!("    Program ID: {}", program_id.green().bold());
-    println!("    Network: {}", network);
-    println!("    Size: {} bytes", wasm_size);
-    println!("    Time: {:.2}s", elapsed.as_secs_f64());
+    dchat_log::out!();
+    dchat_log::out!("{}", "✅ Deployment successful!".green().bold());
+    dchat_log::out!();
+    dchat_log::out!("  {}", "Program details:".cyan());
+    dchat_log::out!("    Program ID: {}", program_id.green().bold());
+    dchat_log::out!("    Network: {}", network);
+    dchat_log::out!("    Size: {} bytes", wasm_size);
+    dchat_log::out!("    Time: {:.2}s", elapsed.as_secs_f64());
 
     if network_config.confirm {
-        println!();
-        println!("  {} Waiting for confirmation...", "→".dimmed());
+        dchat_log::out!();
+        dchat_log::out!("  {} Waiting for confirmation...", "→".dimmed());
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        println!("  {} Confirmed in 1 block", "✓".green());
+        dchat_log::out!("  {} Confirmed in 1 block", "✓".green());
     }
 
-    println!();
-    println!("  {}", "Next steps:".cyan());
-    println!("    ironclad info --program {}", program_id);
-    println!("    ironclad verify --program target/wasm32-wasip1/release/*.wasm");
+    dchat_log::out!();
+    dchat_log::out!("  {}", "Next steps:".cyan());
+    dchat_log::out!("    ironclad info --program {}", program_id);
+    dchat_log::out!("    ironclad verify --program target/wasm32-wasip1/release/*.wasm");
 
     Ok(())
 }

@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 pub async fn run_extract(program: Option<&str>, output: Option<&str>) -> IroncladResult<()> {
     let project = Project::find()?;
 
-    println!("{} {}", "📄".bold(), "Extracting IDL...".cyan().bold());
+    dchat_log::out!("{} {}", "📄".bold(), "Extracting IDL...".cyan().bold());
 
     let wasm_path = if let Some(p) = program {
         std::path::PathBuf::from(p)
@@ -34,7 +34,7 @@ pub async fn run_extract(program: Option<&str>, output: Option<&str>) -> Ironcla
     std::fs::create_dir_all(output_path.parent().unwrap())?;
     std::fs::write(&output_path, &idl)?;
 
-    println!(
+    dchat_log::out!(
         "  {} IDL written to: {}",
         "✓".green(),
         output_path.display()
@@ -64,10 +64,10 @@ pub async fn run_hash(idl_file: Option<&str>) -> IroncladResult<()> {
     hasher.update(&idl_content);
     let hash = hasher.finalize();
 
-    println!("{} {}", "🔐".bold(), "IDL Hash".cyan().bold());
-    println!();
-    println!("  File: {}", idl_path.display().to_string().dimmed());
-    println!("  SHA256: {}", hex::encode(hash).green());
+    dchat_log::out!("{} {}", "🔐".bold(), "IDL Hash".cyan().bold());
+    dchat_log::out!();
+    dchat_log::out!("  File: {}", idl_path.display().to_string().dimmed());
+    dchat_log::out!("  SHA256: {}", hex::encode(hash).green());
 
     Ok(())
 }
@@ -75,7 +75,7 @@ pub async fn run_hash(idl_file: Option<&str>) -> IroncladResult<()> {
 pub async fn run_validate(idl_file: Option<&str>) -> IroncladResult<()> {
     let project = Project::find()?;
 
-    println!("{} {}", "✅".bold(), "Validating IDL...".cyan().bold());
+    dchat_log::out!("{} {}", "✅".bold(), "Validating IDL...".cyan().bold());
 
     let idl_path = if let Some(f) = idl_file {
         std::path::PathBuf::from(f)
@@ -107,27 +107,27 @@ pub async fn run_validate(idl_file: Option<&str>) -> IroncladResult<()> {
         }
     }
 
-    println!("  {} IDL is valid", "✓".green());
-    println!(
+    dchat_log::out!("  {} IDL is valid", "✓".green());
+    dchat_log::out!(
         "    Version: {}",
         idl["version"].as_str().unwrap_or("unknown")
     );
-    println!("    Name: {}", idl["name"].as_str().unwrap_or("unknown"));
+    dchat_log::out!("    Name: {}", idl["name"].as_str().unwrap_or("unknown"));
 
     if let Some(instructions) = idl.get("instructions").and_then(|v| v.as_array()) {
-        println!("    Instructions: {}", instructions.len());
+        dchat_log::out!("    Instructions: {}", instructions.len());
     }
 
     if let Some(accounts) = idl.get("accounts").and_then(|v| v.as_array()) {
-        println!("    Accounts: {}", accounts.len());
+        dchat_log::out!("    Accounts: {}", accounts.len());
     }
 
     if let Some(events) = idl.get("events").and_then(|v| v.as_array()) {
-        println!("    Events: {}", events.len());
+        dchat_log::out!("    Events: {}", events.len());
     }
 
     if let Some(errors) = idl.get("errors").and_then(|v| v.as_array()) {
-        println!("    Errors: {}", errors.len());
+        dchat_log::out!("    Errors: {}", errors.len());
     }
 
     Ok(())
@@ -138,7 +138,7 @@ pub async fn run_generate(
     language: &str,
     output: Option<&str>,
 ) -> IroncladResult<()> {
-    println!(
+    dchat_log::out!(
         "{} {} client...",
         "🔧".bold(),
         format!("Generating {}", language).cyan().bold()
@@ -199,7 +199,7 @@ pub async fn run_generate(
         }
     };
 
-    println!("  {} Generated: {}", "✓".green(), output_file);
+    dchat_log::out!("  {} Generated: {}", "✓".green(), output_file);
 
     Ok(())
 }

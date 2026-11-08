@@ -275,7 +275,7 @@ fn test_validator_rejects_floats() {
             // If validator passes, it means float operations are allowed at bytecode level
             // but will be rejected at runtime by wasmi config with floats disabled.
             // This is acceptable - the important check is at module instantiation with Config.
-            eprintln!(
+            dchat_log::out!(
                 "⚠️  Note: Float operations passed bytecode validation but will be \
                 rejected at runtime by wasmi Config with floats=false"
             );
@@ -313,7 +313,7 @@ fn test_validator_rejects_f64_operations() {
             );
         }
         Ok(_) => {
-            eprintln!(
+            dchat_log::out!(
                 "⚠️  Note: Float operations passed bytecode validation but will be \
                 rejected at runtime by wasmi Config with floats=false"
             );

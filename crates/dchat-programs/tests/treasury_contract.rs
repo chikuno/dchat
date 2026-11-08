@@ -66,15 +66,15 @@ fn test_treasury_wasm_exists_and_validates() {
     let wasm_path = get_wasm_path();
 
     if !wasm_path.exists() {
-        eprintln!("Treasury WASM not found at {:?}", wasm_path);
-        eprintln!("Please compile the treasury contract first:");
-        eprintln!("  cd examples/contracts/treasury");
-        eprintln!("  cargo build --target wasm32-unknown-unknown --release");
+        dchat_log::out!("Treasury WASM not found at {:?}", wasm_path);
+        dchat_log::out!("Please compile the treasury contract first:");
+        dchat_log::out!("  cd examples/contracts/treasury");
+        dchat_log::out!("  cargo build --target wasm32-unknown-unknown --release");
         panic!("Treasury contract WASM not found");
     }
 
     let wasm_bytes = std::fs::read(&wasm_path).expect("Failed to read WASM file");
-    eprintln!(
+    dchat_log::out!(
         "Loaded Treasury WASM: {} bytes ({:.2} KB)",
         wasm_bytes.len(),
         wasm_bytes.len() as f64 / 1024.0
@@ -83,11 +83,11 @@ fn test_treasury_wasm_exists_and_validates() {
     let validator = BytecodeValidator::new();
     match validator.validate(&wasm_bytes) {
         Ok(validated) => {
-            eprintln!("✅ WASM validation passed!");
-            eprintln!("   Code hash: {}", hex::encode(&validated.code_hash[..8]));
+            dchat_log::out!("✅ WASM validation passed!");
+            dchat_log::out!("   Code hash: {}", hex::encode(&validated.code_hash[..8]));
         }
         Err(e) => {
-            eprintln!("⚠️  Validation notes: {:?}", e);
+            dchat_log::out!("⚠️  Validation notes: {:?}", e);
         }
     }
 }
@@ -96,7 +96,7 @@ fn test_treasury_wasm_exists_and_validates() {
 fn test_treasury_module_loads() {
     let wasm_path = get_wasm_path();
     if !wasm_path.exists() {
-        eprintln!("Skipping: WASM not found");
+        dchat_log::out!("Skipping: WASM not found");
         return;
     }
 
@@ -104,11 +104,11 @@ fn test_treasury_module_loads() {
     let engine = wasmi::Engine::default();
     let module = wasmi::Module::new(&engine, &wasm_bytes).expect("Failed to parse module");
 
-    eprintln!("✅ Treasury WASM module loaded!");
+    dchat_log::out!("✅ Treasury WASM module loaded!");
     let exports: Vec<_> = module.exports().collect();
-    eprintln!("   Exports ({}):", exports.len());
+    dchat_log::out!("   Exports ({}):", exports.len());
     for export in &exports {
-        eprintln!("     - {}", export.name());
+        dchat_log::out!("     - {}", export.name());
     }
 
     assert!(
@@ -129,7 +129,7 @@ fn test_treasury_module_loads() {
 fn test_treasury_full_lifecycle() {
     let wasm_path = get_wasm_path();
     if !wasm_path.exists() {
-        eprintln!("Skipping: WASM not found");
+        dchat_log::out!("Skipping: WASM not found");
         return;
     }
 
@@ -157,14 +157,14 @@ fn test_treasury_full_lifecycle() {
     let account_ptr = alloc.call(&mut store, total_size as u32).expect("alloc");
     let ix_ptr = alloc.call(&mut store, 128).expect("alloc ix");
 
-    eprintln!("\n═══════════════════════════════════════════════════════════════════");
-    eprintln!("TREASURY CONTRACT LIFECYCLE TEST");
-    eprintln!("═══════════════════════════════════════════════════════════════════\n");
+    dchat_log::out!("\n═══════════════════════════════════════════════════════════════════");
+    dchat_log::out!("TREASURY CONTRACT LIFECYCLE TEST");
+    dchat_log::out!("═══════════════════════════════════════════════════════════════════\n");
 
     // ─────────────────────────────────────────────────────────────────────────────
     // TEST 1: Initialize Treasury
     // ─────────────────────────────────────────────────────────────────────────────
-    eprintln!("📋 Test 1: Initialize Treasury");
+    dchat_log::out!("📋 Test 1: Initialize Treasury");
 
     let authority = [0xAA_u8; 32]; // Authority pubkey
     let fee_bp = 100u64; // 1% fee
@@ -198,9 +198,9 @@ fn test_treasury_full_lifecycle() {
     let stored_fee = read_u64_le(&state[88..96]);
     assert_eq!(stored_fee, fee_bp, "Fee should match");
 
-    eprintln!("   ✅ Treasury initialized with:");
-    eprintln!("      Authority: 0x{}", hex::encode(&authority[..8]));
-    eprintln!(
+    dchat_log::out!("   ✅ Treasury initialized with:");
+    dchat_log::out!("      Authority: 0x{}", hex::encode(&authority[..8]));
+    dchat_log::out!(
         "      Fee: {} basis points ({}%)",
         fee_bp,
         fee_bp as f64 / 100.0
@@ -209,7 +209,7 @@ fn test_treasury_full_lifecycle() {
     // ─────────────────────────────────────────────────────────────────────────────
     // TEST 2: Try double initialization (should fail)
     // ─────────────────────────────────────────────────────────────────────────────
-    eprintln!("\n📋 Test 2: Double Initialization");
+    dchat_log::out!("\n📋 Test 2: Double Initialization");
 
     let result = entrypoint
         .call(
@@ -218,12 +218,12 @@ fn test_treasury_full_lifecycle() {
         )
         .expect("call");
     assert_eq!(result, ERR_ALREADY_INITIALIZED, "Double init should fail");
-    eprintln!("   ✅ Double init correctly rejected");
+    dchat_log::out!("   ✅ Double init correctly rejected");
 
     // ─────────────────────────────────────────────────────────────────────────────
     // TEST 3: Create User Vault for Alice
     // ─────────────────────────────────────────────────────────────────────────────
-    eprintln!("\n📋 Test 3: Create User Vault (Alice)");
+    dchat_log::out!("\n📋 Test 3: Create User Vault (Alice)");
 
     let alice_pubkey = [0x11_u8; 32];
     let mut ix_data = vec![IX_CREATE_USER_VAULT];
@@ -263,15 +263,15 @@ fn test_treasury_full_lifecycle() {
     let user_count = read_u32_le(&state[104..108]);
     assert_eq!(user_count, 1, "User count should be 1");
 
-    eprintln!("   ✅ Alice's vault created");
-    eprintln!("      Owner: 0x{}", hex::encode(&alice_pubkey[..8]));
-    eprintln!("      Balance: 0 motes");
-    eprintln!("      Treasury user count: {}", user_count);
+    dchat_log::out!("   ✅ Alice's vault created");
+    dchat_log::out!("      Owner: 0x{}", hex::encode(&alice_pubkey[..8]));
+    dchat_log::out!("      Balance: 0 motes");
+    dchat_log::out!("      Treasury user count: {}", user_count);
 
     // ─────────────────────────────────────────────────────────────────────────────
     // TEST 4: Deposit to Treasury
     // ─────────────────────────────────────────────────────────────────────────────
-    eprintln!("\n📋 Test 4: Deposit to Treasury");
+    dchat_log::out!("\n📋 Test 4: Deposit to Treasury");
 
     let deposit_amount = 1_000_000u64;
     let mut ix_data = vec![IX_DEPOSIT];
@@ -302,14 +302,14 @@ fn test_treasury_full_lifecycle() {
     let tx_count = read_u32_le(&state[108..112]);
     assert_eq!(tx_count, 1, "Tx count should be 1");
 
-    eprintln!("   ✅ Deposited {} motes", deposit_amount);
-    eprintln!("      Total deposits: {}", total_deposits);
-    eprintln!("      Transaction count: {}", tx_count);
+    dchat_log::out!("   ✅ Deposited {} motes", deposit_amount);
+    dchat_log::out!("      Total deposits: {}", total_deposits);
+    dchat_log::out!("      Transaction count: {}", tx_count);
 
     // ─────────────────────────────────────────────────────────────────────────────
     // TEST 5: Zero deposit (should fail)
     // ─────────────────────────────────────────────────────────────────────────────
-    eprintln!("\n📋 Test 5: Zero Deposit");
+    dchat_log::out!("\n📋 Test 5: Zero Deposit");
 
     let mut ix_data = vec![IX_DEPOSIT];
     ix_data.extend_from_slice(&0u64.to_le_bytes());
@@ -324,12 +324,12 @@ fn test_treasury_full_lifecycle() {
         )
         .expect("call");
     assert_eq!(result, ERR_ZERO_AMOUNT, "Zero deposit should fail");
-    eprintln!("   ✅ Zero deposit correctly rejected");
+    dchat_log::out!("   ✅ Zero deposit correctly rejected");
 
     // ─────────────────────────────────────────────────────────────────────────────
     // TEST 6: Withdraw (Authority Only)
     // ─────────────────────────────────────────────────────────────────────────────
-    eprintln!("\n📋 Test 6: Withdraw (Authority Only)");
+    dchat_log::out!("\n📋 Test 6: Withdraw (Authority Only)");
 
     let withdraw_amount = 500_000u64;
     let mut ix_data = vec![IX_WITHDRAW];
@@ -354,14 +354,14 @@ fn test_treasury_full_lifecycle() {
     let total_withdrawals = read_u64_le(&state[80..88]);
     let available = total_deposits - total_withdrawals;
 
-    eprintln!("   ✅ Withdrew {} motes", withdraw_amount);
-    eprintln!("      Total withdrawals: {}", total_withdrawals);
-    eprintln!("      Available balance: {}", available);
+    dchat_log::out!("   ✅ Withdrew {} motes", withdraw_amount);
+    dchat_log::out!("      Total withdrawals: {}", total_withdrawals);
+    dchat_log::out!("      Available balance: {}", available);
 
     // ─────────────────────────────────────────────────────────────────────────────
     // TEST 7: Unauthorized Withdraw (should fail)
     // ─────────────────────────────────────────────────────────────────────────────
-    eprintln!("\n📋 Test 7: Unauthorized Withdraw");
+    dchat_log::out!("\n📋 Test 7: Unauthorized Withdraw");
 
     let wrong_authority = [0xBB_u8; 32];
     let mut ix_data = vec![IX_WITHDRAW];
@@ -379,12 +379,12 @@ fn test_treasury_full_lifecycle() {
         )
         .expect("call");
     assert_eq!(result, ERR_UNAUTHORIZED, "Wrong authority should fail");
-    eprintln!("   ✅ Unauthorized withdraw correctly rejected");
+    dchat_log::out!("   ✅ Unauthorized withdraw correctly rejected");
 
     // ─────────────────────────────────────────────────────────────────────────────
     // TEST 8: Overdraft Withdraw (should fail)
     // ─────────────────────────────────────────────────────────────────────────────
-    eprintln!("\n📋 Test 8: Overdraft Withdraw");
+    dchat_log::out!("\n📋 Test 8: Overdraft Withdraw");
 
     let mut ix_data = vec![IX_WITHDRAW];
     ix_data.extend_from_slice(&10_000_000u64.to_le_bytes()); // More than available
@@ -401,12 +401,12 @@ fn test_treasury_full_lifecycle() {
         )
         .expect("call");
     assert_eq!(result, ERR_INSUFFICIENT_FUNDS, "Overdraft should fail");
-    eprintln!("   ✅ Overdraft correctly rejected");
+    dchat_log::out!("   ✅ Overdraft correctly rejected");
 
     // ─────────────────────────────────────────────────────────────────────────────
     // TEST 9: Update Authority
     // ─────────────────────────────────────────────────────────────────────────────
-    eprintln!("\n📋 Test 9: Update Authority");
+    dchat_log::out!("\n📋 Test 9: Update Authority");
 
     let new_authority = [0xCC_u8; 32];
     let mut ix_data = vec![IX_UPDATE_AUTHORITY];
@@ -430,14 +430,14 @@ fn test_treasury_full_lifecycle() {
         .expect("read");
     assert_eq!(&state[8..40], &new_authority, "Authority should be updated");
 
-    eprintln!("   ✅ Authority updated");
-    eprintln!("      Old: 0x{}", hex::encode(&authority[..8]));
-    eprintln!("      New: 0x{}", hex::encode(&new_authority[..8]));
+    dchat_log::out!("   ✅ Authority updated");
+    dchat_log::out!("      Old: 0x{}", hex::encode(&authority[..8]));
+    dchat_log::out!("      New: 0x{}", hex::encode(&new_authority[..8]));
 
     // ─────────────────────────────────────────────────────────────────────────────
     // TEST 10: Old authority can't withdraw anymore
     // ─────────────────────────────────────────────────────────────────────────────
-    eprintln!("\n📋 Test 10: Old Authority Revoked");
+    dchat_log::out!("\n📋 Test 10: Old Authority Revoked");
 
     let mut ix_data = vec![IX_WITHDRAW];
     ix_data.extend_from_slice(&1000u64.to_le_bytes());
@@ -454,12 +454,12 @@ fn test_treasury_full_lifecycle() {
         )
         .expect("call");
     assert_eq!(result, ERR_UNAUTHORIZED, "Old authority should be rejected");
-    eprintln!("   ✅ Old authority correctly rejected");
+    dchat_log::out!("   ✅ Old authority correctly rejected");
 
     // ─────────────────────────────────────────────────────────────────────────────
     // TEST 11: Invalid instruction
     // ─────────────────────────────────────────────────────────────────────────────
-    eprintln!("\n📋 Test 11: Invalid Instruction");
+    dchat_log::out!("\n📋 Test 11: Invalid Instruction");
 
     memory
         .write(&mut store, ix_ptr as usize, &[255u8])
@@ -472,38 +472,38 @@ fn test_treasury_full_lifecycle() {
         result, ERR_INVALID_INSTRUCTION,
         "Invalid instruction should fail"
     );
-    eprintln!("   ✅ Invalid instruction correctly rejected");
+    dchat_log::out!("   ✅ Invalid instruction correctly rejected");
 
     // ─────────────────────────────────────────────────────────────────────────────
     // SUMMARY
     // ─────────────────────────────────────────────────────────────────────────────
-    eprintln!("\n═══════════════════════════════════════════════════════════════════");
-    eprintln!("✅ ALL TREASURY CONTRACT LIFECYCLE TESTS PASSED!");
-    eprintln!("═══════════════════════════════════════════════════════════════════\n");
+    dchat_log::out!("\n═══════════════════════════════════════════════════════════════════");
+    dchat_log::out!("✅ ALL TREASURY CONTRACT LIFECYCLE TESTS PASSED!");
+    dchat_log::out!("═══════════════════════════════════════════════════════════════════\n");
 
     // Final state summary
     memory
         .read(&store, account_ptr as usize, &mut state)
         .expect("read");
-    eprintln!("Final Treasury State:");
-    eprintln!(
+    dchat_log::out!("Final Treasury State:");
+    dchat_log::out!(
         "   Total Deposits:    {} motes",
         read_u64_le(&state[72..80])
     );
-    eprintln!(
+    dchat_log::out!(
         "   Total Withdrawals: {} motes",
         read_u64_le(&state[80..88])
     );
-    eprintln!("   Fee (basis points):{}", read_u64_le(&state[88..96]));
-    eprintln!("   User Count:        {}", read_u32_le(&state[104..108]));
-    eprintln!("   Transaction Count: {}", read_u32_le(&state[108..112]));
+    dchat_log::out!("   Fee (basis points):{}", read_u64_le(&state[88..96]));
+    dchat_log::out!("   User Count:        {}", read_u32_le(&state[104..108]));
+    dchat_log::out!("   Transaction Count: {}", read_u32_le(&state[108..112]));
 }
 
 #[test]
 fn test_treasury_user_vault_operations() {
     let wasm_path = get_wasm_path();
     if !wasm_path.exists() {
-        eprintln!("Skipping: WASM not found");
+        dchat_log::out!("Skipping: WASM not found");
         return;
     }
 
@@ -531,9 +531,9 @@ fn test_treasury_user_vault_operations() {
     let account_ptr = alloc.call(&mut store, total_size as u32).expect("alloc");
     let ix_ptr = alloc.call(&mut store, 128).expect("alloc ix");
 
-    eprintln!("\n═══════════════════════════════════════════════════════════════════");
-    eprintln!("TREASURY USER VAULT OPERATIONS TEST");
-    eprintln!("═══════════════════════════════════════════════════════════════════\n");
+    dchat_log::out!("\n═══════════════════════════════════════════════════════════════════");
+    dchat_log::out!("TREASURY USER VAULT OPERATIONS TEST");
+    dchat_log::out!("═══════════════════════════════════════════════════════════════════\n");
 
     let authority = [0xAA_u8; 32];
     let alice = [0x11_u8; 32];
@@ -553,7 +553,7 @@ fn test_treasury_user_vault_operations() {
         )
         .expect("call");
     assert_eq!(result, SUCCESS);
-    eprintln!("✅ Treasury initialized with 2% fee");
+    dchat_log::out!("✅ Treasury initialized with 2% fee");
 
     // Create Alice's vault
     let mut ix_data = vec![IX_CREATE_USER_VAULT];
@@ -568,80 +568,80 @@ fn test_treasury_user_vault_operations() {
         )
         .expect("call");
     assert_eq!(result, SUCCESS);
-    eprintln!("✅ Alice's vault created");
+    dchat_log::out!("✅ Alice's vault created");
 
     // We can't create Bob's vault in the same accounts area without more complex logic,
     // since we only have space for one vault after treasury.
     // For a full test, we'd need a larger account area or multiple calls.
 
-    eprintln!("\n═══════════════════════════════════════════════════════════════════");
-    eprintln!("✅ USER VAULT TESTS PASSED");
-    eprintln!("═══════════════════════════════════════════════════════════════════\n");
+    dchat_log::out!("\n═══════════════════════════════════════════════════════════════════");
+    dchat_log::out!("✅ USER VAULT TESTS PASSED");
+    dchat_log::out!("═══════════════════════════════════════════════════════════════════\n");
 }
 
 #[test]
 fn test_treasury_components_coverage() {
-    eprintln!("\n═══════════════════════════════════════════════════════════════════");
-    eprintln!("DCHAT PROGRAM COMPONENTS COVERAGE");
-    eprintln!("═══════════════════════════════════════════════════════════════════\n");
+    dchat_log::out!("\n═══════════════════════════════════════════════════════════════════");
+    dchat_log::out!("DCHAT PROGRAM COMPONENTS COVERAGE");
+    dchat_log::out!("═══════════════════════════════════════════════════════════════════\n");
 
-    eprintln!("The Treasury Contract demonstrates the following dchat program components:\n");
+    dchat_log::out!("The Treasury Contract demonstrates the following dchat program components:\n");
 
-    eprintln!("✅ 1.  Account Types");
-    eprintln!("       - Treasury account (main state)");
-    eprintln!("       - User vault accounts (PDAs)");
-    eprintln!("       - Authority (signer simulation)");
+    dchat_log::out!("✅ 1.  Account Types");
+    dchat_log::out!("       - Treasury account (main state)");
+    dchat_log::out!("       - User vault accounts (PDAs)");
+    dchat_log::out!("       - Authority (signer simulation)");
 
-    eprintln!("\n✅ 2.  Instruction Routing");
-    eprintln!("       - IX_INITIALIZE (0)");
-    eprintln!("       - IX_DEPOSIT (1)");
-    eprintln!("       - IX_WITHDRAW (2)");
-    eprintln!("       - IX_TRANSFER (3)");
-    eprintln!("       - IX_QUERY (4)");
-    eprintln!("       - IX_UPDATE_AUTHORITY (5)");
-    eprintln!("       - IX_CREATE_USER_VAULT (6)");
-    eprintln!("       - IX_GET_USER_BALANCE (7)");
+    dchat_log::out!("\n✅ 2.  Instruction Routing");
+    dchat_log::out!("       - IX_INITIALIZE (0)");
+    dchat_log::out!("       - IX_DEPOSIT (1)");
+    dchat_log::out!("       - IX_WITHDRAW (2)");
+    dchat_log::out!("       - IX_TRANSFER (3)");
+    dchat_log::out!("       - IX_QUERY (4)");
+    dchat_log::out!("       - IX_UPDATE_AUTHORITY (5)");
+    dchat_log::out!("       - IX_CREATE_USER_VAULT (6)");
+    dchat_log::out!("       - IX_GET_USER_BALANCE (7)");
 
-    eprintln!("\n✅ 3.  State Management");
-    eprintln!("       - Treasury state (128 bytes)");
-    eprintln!("       - User vault state (80 bytes)");
-    eprintln!("       - Magic bytes validation");
-    eprintln!("       - Version tracking");
+    dchat_log::out!("\n✅ 3.  State Management");
+    dchat_log::out!("       - Treasury state (128 bytes)");
+    dchat_log::out!("       - User vault state (80 bytes)");
+    dchat_log::out!("       - Magic bytes validation");
+    dchat_log::out!("       - Version tracking");
 
-    eprintln!("\n✅ 4.  Access Control");
-    eprintln!("       - Authority-only withdrawals");
-    eprintln!("       - Owner-only vault operations");
-    eprintln!("       - Authority transfer");
+    dchat_log::out!("\n✅ 4.  Access Control");
+    dchat_log::out!("       - Authority-only withdrawals");
+    dchat_log::out!("       - Owner-only vault operations");
+    dchat_log::out!("       - Authority transfer");
 
-    eprintln!("\n✅ 5.  Lamport Transfers");
-    eprintln!("       - Deposits to treasury");
-    eprintln!("       - Withdrawals from treasury");
-    eprintln!("       - User-to-user transfers");
+    dchat_log::out!("\n✅ 5.  Lamport Transfers");
+    dchat_log::out!("       - Deposits to treasury");
+    dchat_log::out!("       - Withdrawals from treasury");
+    dchat_log::out!("       - User-to-user transfers");
 
-    eprintln!("\n✅ 6.  Fee Mechanism");
-    eprintln!("       - Configurable basis points");
-    eprintln!("       - Fee collection on transfers");
+    dchat_log::out!("\n✅ 6.  Fee Mechanism");
+    dchat_log::out!("       - Configurable basis points");
+    dchat_log::out!("       - Fee collection on transfers");
 
-    eprintln!("\n✅ 7.  Error Handling");
-    eprintln!("       - 15+ error codes");
-    eprintln!("       - Overflow/underflow protection");
-    eprintln!("       - Authorization checks");
-    eprintln!("       - Initialization guards");
+    dchat_log::out!("\n✅ 7.  Error Handling");
+    dchat_log::out!("       - 15+ error codes");
+    dchat_log::out!("       - Overflow/underflow protection");
+    dchat_log::out!("       - Authorization checks");
+    dchat_log::out!("       - Initialization guards");
 
-    eprintln!("\n✅ 8.  Return Data");
-    eprintln!("       - Query returns treasury stats");
-    eprintln!("       - Get user balance returns balance");
+    dchat_log::out!("\n✅ 8.  Return Data");
+    dchat_log::out!("       - Query returns treasury stats");
+    dchat_log::out!("       - Get user balance returns balance");
 
-    eprintln!("\n✅ 9.  Pause/Unpause");
-    eprintln!("       - Treasury can be paused");
-    eprintln!("       - Operations blocked when paused");
+    dchat_log::out!("\n✅ 9.  Pause/Unpause");
+    dchat_log::out!("       - Treasury can be paused");
+    dchat_log::out!("       - Operations blocked when paused");
 
-    eprintln!("\n✅ 10. Counters/Metrics");
-    eprintln!("       - Transaction count");
-    eprintln!("       - User count");
-    eprintln!("       - Per-vault transaction count");
+    dchat_log::out!("\n✅ 10. Counters/Metrics");
+    dchat_log::out!("       - Transaction count");
+    dchat_log::out!("       - User count");
+    dchat_log::out!("       - Per-vault transaction count");
 
-    eprintln!("\n═══════════════════════════════════════════════════════════════════");
-    eprintln!("Contract Size: ~5.25 KB (optimized WASM)");
-    eprintln!("═══════════════════════════════════════════════════════════════════\n");
+    dchat_log::out!("\n═══════════════════════════════════════════════════════════════════");
+    dchat_log::out!("Contract Size: ~5.25 KB (optimized WASM)");
+    dchat_log::out!("═══════════════════════════════════════════════════════════════════\n");
 }

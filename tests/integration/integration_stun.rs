@@ -19,12 +19,12 @@ async fn test_stun_against_google_servers() {
     assert!(result.is_ok(), "STUN detection failed: {:?}", result);
     
     let nat_type = result.unwrap();
-    println!("Detected NAT type: {:?}", nat_type);
+    dchat_log::out!("Detected NAT type: {:?}", nat_type);
     
     let external_ip = nat.get_external_address().await;
     assert!(external_ip.is_ok(), "Failed to get external IP");
     
-    println!("External IP: {:?}", external_ip.unwrap());
+    dchat_log::out!("External IP: {:?}", external_ip.unwrap());
 }
 
 #[tokio::test]

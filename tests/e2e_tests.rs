@@ -340,13 +340,13 @@ async fn test_simple_message_send() {
     );
     assert!(tracker.is_delivered(&message.id));
 
-    println!("✅ Message sent successfully:");
-    println!("  From: {}", sender_id);
-    println!("  To: {}", recipient_id);
-    println!("  ID: {}", message.id);
-    println!("  Content: Hello, World!");
-    println!("  Encrypted: {:?}", &message.encrypted_payload[..8]);
-    println!("  On-chain: {:?}", proof.chain_tx_hash);
+    dchat_log::out!("✅ Message sent successfully:");
+    dchat_log::out!("  From: {}", sender_id);
+    dchat_log::out!("  To: {}", recipient_id);
+    dchat_log::out!("  ID: {}", message.id);
+    dchat_log::out!("  Content: Hello, World!");
+    dchat_log::out!("  Encrypted: {:?}", &message.encrypted_payload[..8]);
+    dchat_log::out!("  On-chain: {:?}", proof.chain_tx_hash);
 }
 
 #[tokio::test]
@@ -370,7 +370,7 @@ async fn test_storage_and_persistence() {
         .await
         .expect("Failed to create database");
 
-    println!("✅ Database initialized");
+    dchat_log::out!("✅ Database initialized");
 
     // Create a user
     let user_id = UserId::new();
@@ -381,7 +381,7 @@ async fn test_storage_and_persistence() {
         .await
         .expect("Failed to insert user");
 
-    println!("✅ User created: {} ({})", username, user_id);
+    dchat_log::out!("✅ User created: {} ({})", username, user_id);
 
     // Retrieve the user
     let retrieved_user = db
@@ -392,7 +392,7 @@ async fn test_storage_and_persistence() {
 
     assert_eq!(retrieved_user.username, username);
     assert_eq!(retrieved_user.public_key, public_key);
-    println!(
+    dchat_log::out!(
         "✅ User retrieved: {} ({})",
         retrieved_user.username, retrieved_user.id
     );
@@ -405,10 +405,10 @@ async fn test_storage_and_persistence() {
     let (msg2_hash, _) = dedup_store.store(b"Message 2 content", None).unwrap();
     let (msg3_hash, _) = dedup_store.store(b"Message 1 content", None).unwrap(); // Duplicate
 
-    println!("✅ Content stored with deduplication");
-    println!("  Message 1 hash: {:?}", &msg1_hash.as_bytes()[..8]);
-    println!("  Message 2 hash: {:?}", &msg2_hash.as_bytes()[..8]);
-    println!("  Message 3 hash: {:?}", &msg3_hash.as_bytes()[..8]);
+    dchat_log::out!("✅ Content stored with deduplication");
+    dchat_log::out!("  Message 1 hash: {:?}", &msg1_hash.as_bytes()[..8]);
+    dchat_log::out!("  Message 2 hash: {:?}", &msg2_hash.as_bytes()[..8]);
+    dchat_log::out!("  Message 3 hash: {:?}", &msg3_hash.as_bytes()[..8]);
 
     // Check deduplication
     assert_eq!(
@@ -430,7 +430,7 @@ async fn test_storage_and_persistence() {
         "Message 2 should have 1 reference"
     );
 
-    println!("✅ Deduplication verified");
+    dchat_log::out!("✅ Deduplication verified");
 
     // Test lifecycle manager
     let mut lifecycle = LifecycleManager::new(TtlConfig::default());
@@ -448,20 +448,20 @@ async fn test_storage_and_persistence() {
     }
     lifecycle.set_ttl(key2.clone(), std::time::Duration::from_secs(7200));
 
-    println!("✅ Lifecycle manager: 2 keys with TTL configured");
+    dchat_log::out!("✅ Lifecycle manager: 2 keys with TTL configured");
 
     // Get statistics
     let stats = lifecycle.stats();
     assert!(stats.total_tracked > 0, "Should have tracked items");
-    println!("✅ Storage stats: {} items tracked", stats.total_tracked);
-    println!("  Hot count: {}", stats.hot_count);
-    println!("  Warm count: {}", stats.warm_count);
-    println!("  Cold count: {}", stats.cold_count);
-    println!("  Expired count: {}", stats.expired_count);
+    dchat_log::out!("✅ Storage stats: {} items tracked", stats.total_tracked);
+    dchat_log::out!("  Hot count: {}", stats.hot_count);
+    dchat_log::out!("  Warm count: {}", stats.warm_count);
+    dchat_log::out!("  Cold count: {}", stats.cold_count);
+    dchat_log::out!("  Expired count: {}", stats.expired_count);
 
-    println!("\n✅ Storage and Persistence Test Complete!");
-    println!("  Database: In-memory SQLite");
-    println!("  Users: 1 stored and retrieved");
-    println!("  Content hashes: 2 unique, 1 duplicate detected");
-    println!("  Lifecycle records: 2 tracked with TTL");
+    dchat_log::out!("\n✅ Storage and Persistence Test Complete!");
+    dchat_log::out!("  Database: In-memory SQLite");
+    dchat_log::out!("  Users: 1 stored and retrieved");
+    dchat_log::out!("  Content hashes: 2 unique, 1 duplicate detected");
+    dchat_log::out!("  Lifecycle records: 2 tracked with TTL");
 }

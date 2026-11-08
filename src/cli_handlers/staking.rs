@@ -65,11 +65,11 @@ pub async fn handle_stake(
 
     let (_, staking_manager, currency_rpc_url) = init_staking_context(config).await?;
 
-    println!("\n💎 Staking Tokens:");
-    println!("══════════════════════════════════════════════════════════");
-    println!("User ID: {}", user_id);
-    println!("Amount: {} DCHAT", format_tokens(amount));
-    println!("Lock Period: {} days", duration_days);
+    dchat_log::out!("\n💎 Staking Tokens:");
+    dchat_log::out!("══════════════════════════════════════════════════════════");
+    dchat_log::out!("User ID: {}", user_id);
+    dchat_log::out!("Amount: {} DCHAT", format_tokens(amount));
+    dchat_log::out!("Lock Period: {} days", duration_days);
 
     // Validate minimum requirements
     if amount < 1000 {
@@ -108,24 +108,24 @@ pub async fn handle_stake(
         )));
     };
 
-    println!("\n⏳ Submitting stake transaction to currency chain...");
-    println!("   RPC: {}", currency_rpc_url);
+    dchat_log::out!("\n⏳ Submitting stake transaction to currency chain...");
+    dchat_log::out!("   RPC: {}", currency_rpc_url);
 
     // Submit stake via StakingManager (on-chain)
     let tx_id = staking_manager
         .submit_validator_stake(uid.clone(), amount, validator_pubkey)
         .await?;
 
-    println!();
-    println!("✅ Stake submitted successfully!");
-    println!("   Transaction ID: {}", tx_id);
-    println!("   Expected APY: ~12%");
-    println!(
+    dchat_log::out!();
+    dchat_log::out!("✅ Stake submitted successfully!");
+    dchat_log::out!("   Transaction ID: {}", tx_id);
+    dchat_log::out!("   Expected APY: ~12%");
+    dchat_log::out!(
         "   Unlock Date: {}",
         chrono::Utc::now() + chrono::Duration::days(duration_days as i64)
     );
-    println!();
-    println!(
+    dchat_log::out!();
+    dchat_log::out!(
         "Check status with: dchat staking status --user-id {}",
         user_id
     );
@@ -150,24 +150,24 @@ pub async fn handle_unstake(config: &Config, user_id: String, amount: u64) -> Re
         amount
     };
 
-    println!("\n🔓 Unstaking Tokens:");
-    println!("══════════════════════════════════════════════════════════");
-    println!("User ID: {}", user_id);
-    println!("Amount: {} DCHAT", format_tokens(unstake_amount));
-    println!();
-    println!("⏳ Submitting unstake transaction...");
-    println!("   RPC: {}", currency_rpc_url);
+    dchat_log::out!("\n🔓 Unstaking Tokens:");
+    dchat_log::out!("══════════════════════════════════════════════════════════");
+    dchat_log::out!("User ID: {}", user_id);
+    dchat_log::out!("Amount: {} DCHAT", format_tokens(unstake_amount));
+    dchat_log::out!();
+    dchat_log::out!("⏳ Submitting unstake transaction...");
+    dchat_log::out!("   RPC: {}", currency_rpc_url);
 
     // Submit unstake via StakingManager (on-chain)
     let tx_id = staking_manager
         .submit_validator_unstake(&uid, unstake_amount)
         .await?;
 
-    println!();
-    println!("⏳ Unbonding period: 21 days");
-    println!("✅ Unstake request submitted!");
-    println!("   Transaction ID: {}", tx_id);
-    println!(
+    dchat_log::out!();
+    dchat_log::out!("⏳ Unbonding period: 21 days");
+    dchat_log::out!("✅ Unstake request submitted!");
+    dchat_log::out!("   Transaction ID: {}", tx_id);
+    dchat_log::out!(
         "   Funds will be available: {}",
         (chrono::Utc::now() + chrono::Duration::days(21)).format("%Y-%m-%d")
     );
@@ -181,65 +181,65 @@ pub async fn handle_status(config: &Config, user_id: String) -> Result<()> {
 
     let (currency_chain, _, currency_rpc_url) = init_staking_context(config).await?;
 
-    println!("\n📊 Staking Status:");
-    println!("══════════════════════════════════════════════════════════");
-    println!("User ID: {}", user_id);
-    println!("RPC: {}", currency_rpc_url);
-    println!();
+    dchat_log::out!("\n📊 Staking Status:");
+    dchat_log::out!("══════════════════════════════════════════════════════════");
+    dchat_log::out!("User ID: {}", user_id);
+    dchat_log::out!("RPC: {}", currency_rpc_url);
+    dchat_log::out!();
 
     // Query wallet for staking info
     match currency_chain.get_wallet(&uid) {
         Ok(Some(wallet)) => {
-            println!("Active Stakes:");
+            dchat_log::out!("Active Stakes:");
             if wallet.staked > 0 {
-                println!("  💎 {} DCHAT staked", format_tokens(wallet.staked));
+                dchat_log::out!("  💎 {} DCHAT staked", format_tokens(wallet.staked));
             } else {
-                println!("  (none)");
+                dchat_log::out!("  (none)");
             }
-            println!();
+            dchat_log::out!();
 
             // Query unbonding queue
             let unbonding_records = currency_chain.get_unbonding_records(&uid);
-            println!("Unbonding:");
+            dchat_log::out!("Unbonding:");
             if unbonding_records.is_empty() {
-                println!("  (none)");
+                dchat_log::out!("  (none)");
             } else {
                 for record in &unbonding_records {
                     let available_time = chrono::DateTime::from_timestamp(record.available_at, 0)
                         .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
                         .unwrap_or_else(|| "unknown".to_string());
-                    println!(
+                    dchat_log::out!(
                         "  ⏳ {} DCHAT (available {})",
                         format_tokens(record.amount),
                         available_time
                     );
                 }
             }
-            println!();
-            println!("Total Staked: {} DCHAT", format_tokens(wallet.staked));
-            println!(
+            dchat_log::out!();
+            dchat_log::out!("Total Staked: {} DCHAT", format_tokens(wallet.staked));
+            dchat_log::out!(
                 "Pending Rewards: {} DCHAT",
                 format_tokens(wallet.rewards_pending)
             );
         }
         Ok(None) => {
-            println!("Active Stakes:");
-            println!("  (none)");
-            println!();
-            println!("Unbonding:");
-            println!("  (none)");
-            println!();
-            println!("Total Staked: 0 DCHAT");
-            println!("Pending Rewards: 0 DCHAT");
+            dchat_log::out!("Active Stakes:");
+            dchat_log::out!("  (none)");
+            dchat_log::out!();
+            dchat_log::out!("Unbonding:");
+            dchat_log::out!("  (none)");
+            dchat_log::out!();
+            dchat_log::out!("Total Staked: 0 DCHAT");
+            dchat_log::out!("Pending Rewards: 0 DCHAT");
         }
         Err(e) => {
             tracing::warn!("Failed to query staking from chain: {}", e);
-            println!("⚠️  Unable to query blockchain: {}", e);
+            dchat_log::out!("⚠️  Unable to query blockchain: {}", e);
         }
     }
 
-    println!();
-    println!(
+    dchat_log::out!();
+    dchat_log::out!(
         "💡 Stake tokens with: dchat staking stake --user-id {} --amount <AMOUNT>",
         user_id
     );
@@ -251,14 +251,14 @@ pub async fn handle_status(config: &Config, user_id: String) -> Result<()> {
 pub async fn handle_validators(config: &Config) -> Result<()> {
     let (currency_chain, _, currency_rpc_url) = init_staking_context(config).await?;
 
-    println!("\n✅ Active Validators:");
-    println!("══════════════════════════════════════════════════════════");
-    println!(
+    dchat_log::out!("\n✅ Active Validators:");
+    dchat_log::out!("══════════════════════════════════════════════════════════");
+    dchat_log::out!(
         "{:<20} {:>15} {:>10} {:>15}",
         "Validator", "Stake", "APY", "Commission"
     );
-    println!("{}", "-".repeat(65));
-    println!("RPC: {}", currency_rpc_url);
+    dchat_log::out!("{}", "-".repeat(65));
+    dchat_log::out!("RPC: {}", currency_rpc_url);
 
     // Query validator set from blockchain
     match currency_chain.get_validators().await {
@@ -267,7 +267,7 @@ pub async fn handle_validators(config: &Config) -> Result<()> {
             for validator in &validators {
                 let apy_display = format!("{:.1}%", validator.apy_estimate);
                 let commission_display = format!("{:.1}%", validator.commission_rate);
-                println!(
+                dchat_log::out!(
                     "{:<20} {:>12} DCHAT {:>10} {:>15}",
                     truncate_str(&validator.name, 18),
                     format_tokens(validator.total_stake),
@@ -276,13 +276,13 @@ pub async fn handle_validators(config: &Config) -> Result<()> {
                 );
                 total_stake += validator.total_stake;
             }
-            println!();
-            println!("Total validators: {}", validators.len());
-            println!("Total staked: {} DCHAT", format_tokens(total_stake));
+            dchat_log::out!();
+            dchat_log::out!("Total validators: {}", validators.len());
+            dchat_log::out!("Total staked: {} DCHAT", format_tokens(total_stake));
         }
         Err(e) => {
             tracing::warn!("Failed to query validators: {}", e);
-            println!("⚠️  Unable to query validators: {}", e);
+            dchat_log::out!("⚠️  Unable to query validators: {}", e);
         }
     }
 
@@ -300,12 +300,12 @@ pub async fn handle_delegate(
 
     let (currency_chain, _, currency_rpc_url) = init_staking_context(config).await?;
 
-    println!("\n🤝 Delegating Stake:");
-    println!("══════════════════════════════════════════════════════════");
-    println!("Delegator: {}", user_id);
-    println!("Validator: {}", validator_id);
-    println!("Amount: {} DCHAT", format_tokens(amount));
-    println!("RPC: {}", currency_rpc_url);
+    dchat_log::out!("\n🤝 Delegating Stake:");
+    dchat_log::out!("══════════════════════════════════════════════════════════");
+    dchat_log::out!("Delegator: {}", user_id);
+    dchat_log::out!("Validator: {}", validator_id);
+    dchat_log::out!("Amount: {} DCHAT", format_tokens(amount));
+    dchat_log::out!("RPC: {}", currency_rpc_url);
 
     // Execute delegation via blockchain
     match currency_chain
@@ -313,14 +313,14 @@ pub async fn handle_delegate(
         .await
     {
         Ok(tx_hash) => {
-            println!();
-            println!("✅ Delegation successful!");
-            println!("   Transaction: {}", tx_hash);
-            println!("   Your rewards will be distributed based on validator performance.");
+            dchat_log::out!();
+            dchat_log::out!("✅ Delegation successful!");
+            dchat_log::out!("   Transaction: {}", tx_hash);
+            dchat_log::out!("   Your rewards will be distributed based on validator performance.");
         }
         Err(e) => {
-            println!();
-            println!("❌ Delegation failed: {}", e);
+            dchat_log::out!();
+            dchat_log::out!("❌ Delegation failed: {}", e);
         }
     }
 
@@ -344,12 +344,12 @@ pub async fn handle_undelegate(
         format!("{} DCHAT", format_tokens(amount))
     };
 
-    println!("\n🔄 Undelegating Stake:");
-    println!("══════════════════════════════════════════════════════════");
-    println!("Delegator: {}", user_id);
-    println!("Validator: {}", validator_id);
-    println!("Amount: {}", amount_str);
-    println!("RPC: {}", currency_rpc_url);
+    dchat_log::out!("\n🔄 Undelegating Stake:");
+    dchat_log::out!("══════════════════════════════════════════════════════════");
+    dchat_log::out!("Delegator: {}", user_id);
+    dchat_log::out!("Validator: {}", validator_id);
+    dchat_log::out!("Amount: {}", amount_str);
+    dchat_log::out!("RPC: {}", currency_rpc_url);
 
     // Execute undelegation via blockchain
     let actual_amount = if amount == 0 {
@@ -367,19 +367,19 @@ pub async fn handle_undelegate(
             let cooldown_seconds =
                 (unbonding_record.available_at - unbonding_record.initiated_at) as u64;
             let cooldown_days = cooldown_seconds / 86400;
-            println!();
-            println!("⏳ Unbonding period: {} days", cooldown_days);
-            println!();
-            println!("✅ Undelegation submitted!");
-            println!("   Unbonding ID: {}", unbonding_record.id);
+            dchat_log::out!();
+            dchat_log::out!("⏳ Unbonding period: {} days", cooldown_days);
+            dchat_log::out!();
+            dchat_log::out!("✅ Undelegation submitted!");
+            dchat_log::out!("   Unbonding ID: {}", unbonding_record.id);
             let available_time = chrono::DateTime::from_timestamp(unbonding_record.available_at, 0)
                 .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
                 .unwrap_or_else(|| "unknown".to_string());
-            println!("   Available: {}", available_time);
+            dchat_log::out!("   Available: {}", available_time);
         }
         Err(e) => {
-            println!();
-            println!("❌ Undelegation failed: {}", e);
+            dchat_log::out!();
+            dchat_log::out!("❌ Undelegation failed: {}", e);
         }
     }
 

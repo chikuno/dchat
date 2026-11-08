@@ -165,7 +165,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn generate_config(output: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🔧 Generating monitoring configuration...");
+    dchat_log::out!("🔧 Generating monitoring configuration...");
 
     // Create output directory
     fs::create_dir_all(output)?;
@@ -177,7 +177,7 @@ fn generate_config(output: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     // Save JSON config
     let config_path = output.join("monitoring-config.json");
     fs::write(&config_path, &json)?;
-    println!("✓ Saved config to: {}", config_path.display());
+    dchat_log::out!("✓ Saved config to: {}", config_path.display());
 
     // Generate shell scripts
     generate_prometheus_config(output)?;
@@ -185,13 +185,13 @@ fn generate_config(output: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
     generate_health_check_scripts(output)?;
     generate_alert_rules(output)?;
 
-    println!("✓ Configuration generated successfully!");
-    println!("\nNext steps:");
-    println!("  1. Review monitoring-config.json");
-    println!("  2. Run: deploy-monitoring setup-prometheus");
-    println!("  3. Run: deploy-monitoring setup-grafana --api-key <key>");
-    println!("  4. Run: deploy-monitoring setup-alerts");
-    println!("  5. Run: deploy-monitoring deploy-all");
+    dchat_log::out!("✓ Configuration generated successfully!");
+    dchat_log::out!("\nNext steps:");
+    dchat_log::out!("  1. Review monitoring-config.json");
+    dchat_log::out!("  2. Run: deploy-monitoring setup-prometheus");
+    dchat_log::out!("  3. Run: deploy-monitoring setup-grafana --api-key <key>");
+    dchat_log::out!("  4. Run: deploy-monitoring setup-alerts");
+    dchat_log::out!("  5. Run: deploy-monitoring deploy-all");
 
     Ok(())
 }
@@ -349,7 +349,7 @@ alerting_rules:
 
     let prometheus_path = output.join("prometheus.yml");
     fs::write(&prometheus_path, prometheus_config)?;
-    println!(
+    dchat_log::out!(
         "✓ Generated Prometheus config: {}",
         prometheus_path.display()
     );
@@ -450,7 +450,7 @@ fn generate_grafana_dashboards(output: &PathBuf) -> Result<(), Box<dyn std::erro
 
     let dashboard_path = output.join("grafana-dashboard.json");
     fs::write(&dashboard_path, dashboard)?;
-    println!(
+    dchat_log::out!(
         "✓ Generated Grafana dashboard: {}",
         dashboard_path.display()
     );
@@ -550,7 +550,7 @@ main "$@"
 
     let script_path = output.join("health-check.sh");
     fs::write(&script_path, health_check_script)?;
-    println!("✓ Generated health check script: {}", script_path.display());
+    dchat_log::out!("✓ Generated health check script: {}", script_path.display());
 
     Ok(())
 }
@@ -609,7 +609,7 @@ inhibit_rules:
 
     let alert_path = output.join("alertmanager.yml");
     fs::write(&alert_path, alert_config)?;
-    println!("✓ Generated alert rules: {}", alert_path.display());
+    dchat_log::out!("✓ Generated alert rules: {}", alert_path.display());
 
     Ok(())
 }
@@ -617,8 +617,8 @@ inhibit_rules:
 fn setup_prometheus(endpoint: &str, interval: u64) -> Result<(), Box<dyn std::error::Error>> {
     use std::process::Command;
     
-    println!("🔧 Setting up Prometheus at {}...", endpoint);
-    println!("  Scrape interval: {}s", interval);
+    dchat_log::out!("🔧 Setting up Prometheus at {}...", endpoint);
+    dchat_log::out!("  Scrape interval: {}s", interval);
 
     // Step 1: Generate Prometheus configuration
     let prometheus_config = format!(
@@ -773,18 +773,18 @@ scrape_configs:
 
     match deploy_result {
         Ok(output) if output.status.success() => {
-            println!("✓ Prometheus container deployed");
+            dchat_log::out!("✓ Prometheus container deployed");
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("already in use") {
                 // Container exists, reload config instead
-                println!("  Prometheus already running, reloading configuration...");
+                dchat_log::out!("  Prometheus already running, reloading configuration...");
                 let reload = Command::new("curl")
                     .args(["-X", "POST", &format!("{}/-/reload", endpoint)])
                     .output()?;
                 if reload.status.success() {
-                    println!("✓ Prometheus configuration reloaded");
+                    dchat_log::out!("✓ Prometheus configuration reloaded");
                 }
             } else {
                 return Err(format!("Failed to deploy Prometheus: {}", stderr).into());
@@ -792,7 +792,7 @@ scrape_configs:
         }
         Err(_e) => {
             // Try systemd deployment as fallback
-            println!("  Docker not available, trying systemd...");
+            dchat_log::out!("  Docker not available, trying systemd...");
             let systemd_unit = format!(
                 r#"[Unit]
 Description=Prometheus Server
@@ -832,7 +832,7 @@ WantedBy=multi-user.target
                 .args(["systemctl", "enable", "--now", "prometheus"])
                 .output()?;
             
-            println!("✓ Prometheus deployed via systemd");
+            dchat_log::out!("✓ Prometheus deployed via systemd");
         }
     }
 
@@ -846,20 +846,20 @@ WantedBy=multi-user.target
         Ok(output) => {
             let status = String::from_utf8_lossy(&output.stdout);
             if status == "200" {
-                println!("✓ Prometheus health check passed");
+                dchat_log::out!("✓ Prometheus health check passed");
             } else {
-                println!("⚠ Prometheus health check returned: {}", status);
+                dchat_log::out!("⚠ Prometheus health check returned: {}", status);
             }
         }
-        Err(_) => println!("⚠ Could not verify Prometheus health (may still be starting)")
+        Err(_) => dchat_log::out!("⚠ Could not verify Prometheus health (may still be starting)")
     }
 
-    println!("✓ Prometheus setup complete!");
-    println!("\nPrometheus is now:");
-    println!("  - Scraping metrics every {}s", interval);
-    println!("  - Recording health metrics");
-    println!("  - Evaluating alert rules");
-    println!("  - Available at: {}", endpoint);
+    dchat_log::out!("✓ Prometheus setup complete!");
+    dchat_log::out!("\nPrometheus is now:");
+    dchat_log::out!("  - Scraping metrics every {}s", interval);
+    dchat_log::out!("  - Recording health metrics");
+    dchat_log::out!("  - Evaluating alert rules");
+    dchat_log::out!("  - Available at: {}", endpoint);
 
     Ok(())
 }
@@ -872,17 +872,17 @@ fn setup_grafana(endpoint: &str, api_key: &str) -> Result<(), Box<dyn std::error
         return Err("API key cannot be empty".into());
     }
     if api_key.len() < 16 {
-        eprintln!("⚠️  Warning: API key appears to be too short for production use");
+        edchat_log::out!("⚠️  Warning: API key appears to be too short for production use");
     }
     
-    println!("🔧 Setting up Grafana at {}...", endpoint);
+    dchat_log::out!("🔧 Setting up Grafana at {}...", endpoint);
     // Security: Don't log API keys, even partially
-    println!("  API Key: [REDACTED]");
+    dchat_log::out!("  API Key: [REDACTED]");
     
     // Security: Get admin password from environment, not hardcoded
     let admin_password = std::env::var("GRAFANA_ADMIN_PASSWORD")
         .unwrap_or_else(|_| {
-            eprintln!("⚠️  Warning: GRAFANA_ADMIN_PASSWORD not set. Using secure random password.");
+            edchat_log::out!("⚠️  Warning: GRAFANA_ADMIN_PASSWORD not set. Using secure random password.");
             // Generate a secure random password if not provided
             use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
@@ -915,18 +915,18 @@ fn setup_grafana(endpoint: &str, api_key: &str) -> Result<(), Box<dyn std::error
 
     match deploy_result {
         Ok(output) if output.status.success() => {
-            println!("✓ Grafana container deployed");
+            dchat_log::out!("✓ Grafana container deployed");
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if stderr.contains("already in use") {
-                println!("  Grafana already running");
+                dchat_log::out!("  Grafana already running");
             } else {
-                println!("  Docker deployment failed, trying systemd...");
+                dchat_log::out!("  Docker deployment failed, trying systemd...");
             }
         }
         Err(_) => {
-            println!("  Docker not available, trying systemd...");
+            dchat_log::out!("  Docker not available, trying systemd...");
         }
     }
 
@@ -957,15 +957,15 @@ fn setup_grafana(endpoint: &str, api_key: &str) -> Result<(), Box<dyn std::error
 
     match datasource_result {
         Ok(output) if output.status.success() => {
-            println!("✓ Prometheus data source configured");
+            dchat_log::out!("✓ Prometheus data source configured");
         }
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if stdout.contains("Data source with the same name already exists") {
-                println!("  Prometheus data source already exists");
+                dchat_log::out!("  Prometheus data source already exists");
             }
         }
-        Err(e) => println!("⚠ Could not configure data source: {}", e)
+        Err(e) => dchat_log::out!("⚠ Could not configure data source: {}", e)
     }
 
     // Step 3: Import dchat dashboards
@@ -1020,9 +1020,9 @@ fn setup_grafana(endpoint: &str, api_key: &str) -> Result<(), Box<dyn std::error
 
     match dashboard_result {
         Ok(output) if output.status.success() => {
-            println!("✓ Validator Health Matrix dashboard imported");
+            dchat_log::out!("✓ Validator Health Matrix dashboard imported");
         }
-        Err(e) => println!("⚠ Could not import dashboard: {}", e),
+        Err(e) => dchat_log::out!("⚠ Could not import dashboard: {}", e),
         _ => {}
     }
 
@@ -1079,13 +1079,13 @@ fn setup_grafana(endpoint: &str, api_key: &str) -> Result<(), Box<dyn std::error
             &format!("{}/api/dashboards/db", endpoint)
         ])
         .output();
-    println!("✓ Infrastructure Overview dashboard imported");
+    dchat_log::out!("✓ Infrastructure Overview dashboard imported");
 
     // Import Storage Backend Metrics dashboard
-    println!("✓ Storage Backend Metrics dashboard imported");
+    dchat_log::out!("✓ Storage Backend Metrics dashboard imported");
     
     // Import Backup System Status dashboard
-    println!("✓ Backup System Status dashboard imported");
+    dchat_log::out!("✓ Backup System Status dashboard imported");
 
     // Step 4: Configure alert notification channels
     let slack_channel = format!(r#"{{
@@ -1107,15 +1107,15 @@ fn setup_grafana(endpoint: &str, api_key: &str) -> Result<(), Box<dyn std::error
             &format!("{}/api/alert-notifications", endpoint)
         ])
         .output();
-    println!("✓ Alert notification channels configured");
+    dchat_log::out!("✓ Alert notification channels configured");
 
-    println!("✓ Grafana setup complete!");
-    println!("\nDashboards created:");
-    println!("  - Infrastructure Overview");
-    println!("  - Validator Health Matrix");
-    println!("  - Storage Backend Metrics");
-    println!("  - Backup System Status");
-    println!("\nAccess at: {}", endpoint);
+    dchat_log::out!("✓ Grafana setup complete!");
+    dchat_log::out!("\nDashboards created:");
+    dchat_log::out!("  - Infrastructure Overview");
+    dchat_log::out!("  - Validator Health Matrix");
+    dchat_log::out!("  - Storage Backend Metrics");
+    dchat_log::out!("  - Backup System Status");
+    dchat_log::out!("\nAccess at: {}", endpoint);
 
     Ok(())
 }
@@ -1123,9 +1123,9 @@ fn setup_grafana(endpoint: &str, api_key: &str) -> Result<(), Box<dyn std::error
 fn setup_dns(provider: &str, domain: &str) -> Result<(), Box<dyn std::error::Error>> {
     use std::process::Command;
     
-    println!("🔧 Setting up DNS failover...");
-    println!("  Provider: {}", provider);
-    println!("  Domain: {}", domain);
+    dchat_log::out!("🔧 Setting up DNS failover...");
+    dchat_log::out!("  Provider: {}", provider);
+    dchat_log::out!("  Domain: {}", domain);
 
     match provider {
         "route53" => {
@@ -1164,10 +1164,10 @@ fn setup_dns(provider: &str, domain: &str) -> Result<(), Box<dyn std::error::Err
 
                 match health_check_result {
                     Ok(output) if output.status.success() => {
-                        println!("  ✓ Health check created for {}", hostname);
+                        dchat_log::out!("  ✓ Health check created for {}", hostname);
                     }
                     _ => {
-                        println!("  ⚠ Health check may already exist for {}", hostname);
+                        dchat_log::out!("  ⚠ Health check may already exist for {}", hostname);
                     }
                 }
             }
@@ -1208,7 +1208,7 @@ fn setup_dns(provider: &str, domain: &str) -> Result<(), Box<dyn std::error::Err
                     .unwrap_or_default()
             };
 
-            println!("  ✓ Hosted zone: {}", hosted_zone_id);
+            dchat_log::out!("  ✓ Hosted zone: {}", hosted_zone_id);
 
             // Step 3: Create latency-based routing records
             for (region, hostname) in &validators {
@@ -1251,7 +1251,7 @@ fn setup_dns(provider: &str, domain: &str) -> Result<(), Box<dyn std::error::Err
                     .output();
             }
             
-            println!("  ✓ Latency-based routing configured");
+            dchat_log::out!("  ✓ Latency-based routing configured");
         }
         "cloudflare" => {
             // CloudFlare DNS failover setup
@@ -1278,9 +1278,9 @@ fn setup_dns(provider: &str, domain: &str) -> Result<(), Box<dyn std::error::Err
                 .unwrap_or("");
 
             if zone_id.is_empty() {
-                println!("  ⚠ Could not find CloudFlare zone for {}", domain);
+                dchat_log::out!("  ⚠ Could not find CloudFlare zone for {}", domain);
             } else {
-                println!("  ✓ Found zone: {}", zone_id);
+                dchat_log::out!("  ✓ Found zone: {}", zone_id);
 
                 // Step 2: Create Load Balancer pool
                 let pool_config = format!(
@@ -1312,21 +1312,21 @@ fn setup_dns(provider: &str, domain: &str) -> Result<(), Box<dyn std::error::Err
                     ])
                     .output();
                 
-                println!("  ✓ Load balancer pool created");
+                dchat_log::out!("  ✓ Load balancer pool created");
             }
         }
         _ => {
-            println!("  ⚠ Unsupported DNS provider: {}", provider);
-            println!("  Supported providers: route53, cloudflare");
+            dchat_log::out!("  ⚠ Unsupported DNS provider: {}", provider);
+            dchat_log::out!("  Supported providers: route53, cloudflare");
         }
     }
 
-    println!("✓ DNS failover configured!");
-    println!("\nFailover configuration:");
-    println!("  - Policy: Latency-based routing");
-    println!("  - Health check: /health endpoint");
-    println!("  - TTL: 60 seconds");
-    println!("  - Automatic failover enabled");
+    dchat_log::out!("✓ DNS failover configured!");
+    dchat_log::out!("\nFailover configuration:");
+    dchat_log::out!("  - Policy: Latency-based routing");
+    dchat_log::out!("  - Health check: /health endpoint");
+    dchat_log::out!("  - TTL: 60 seconds");
+    dchat_log::out!("  - Automatic failover enabled");
 
     Ok(())
 }
@@ -1336,38 +1336,38 @@ fn setup_alerts(
     pagerduty_key: Option<String>,
     email_smtp: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🔧 Setting up alert channels...");
+    dchat_log::out!("🔧 Setting up alert channels...");
 
     let mut channels = Vec::new();
 
     if let Some(webhook) = slack_webhook {
-        println!("  ✓ Slack webhook configured");
+        dchat_log::out!("  ✓ Slack webhook configured");
         channels.push(AlertChannel::new_slack(webhook));
     }
 
     if let Some(key) = pagerduty_key {
-        println!("  ✓ PagerDuty integration configured");
+        dchat_log::out!("  ✓ PagerDuty integration configured");
         channels.push(AlertChannel::new_pagerduty(key));
     }
 
     if let Some(smtp) = email_smtp {
-        println!("  ✓ Email alerts configured");
+        dchat_log::out!("  ✓ Email alerts configured");
         channels.push(AlertChannel::new_email(smtp));
     }
 
     if channels.is_empty() {
-        println!("  ⚠ No alert channels configured!");
-        println!("\nConfigure at least one channel:");
-        println!("  --slack-webhook <url>");
-        println!("  --pagerduty-key <key>");
-        println!("  --email-smtp <endpoint>");
+        dchat_log::out!("  ⚠ No alert channels configured!");
+        dchat_log::out!("\nConfigure at least one channel:");
+        dchat_log::out!("  --slack-webhook <url>");
+        dchat_log::out!("  --pagerduty-key <key>");
+        dchat_log::out!("  --email-smtp <endpoint>");
         return Ok(());
     }
 
-    println!("✓ Alert channels configured: {}", channels.len());
-    println!("\nAlerts will be sent to:");
+    dchat_log::out!("✓ Alert channels configured: {}", channels.len());
+    dchat_log::out!("\nAlerts will be sent to:");
     for channel in &channels {
-        println!("  - {} ({})", channel.name, channel.channel_type);
+        dchat_log::out!("  - {} ({})", channel.name, channel.channel_type);
     }
 
     Ok(())
@@ -1376,10 +1376,10 @@ fn setup_alerts(
 fn setup_autoscaling(min: u32, max: u32, cpu: f64) -> Result<(), Box<dyn std::error::Error>> {
     use std::process::Command;
     
-    println!("🔧 Setting up auto-scaling...");
-    println!("  Min instances: {}", min);
-    println!("  Max instances: {}", max);
-    println!("  Target CPU: {}%", cpu);
+    dchat_log::out!("🔧 Setting up auto-scaling...");
+    dchat_log::out!("  Min instances: {}", min);
+    dchat_log::out!("  Max instances: {}", max);
+    dchat_log::out!("  Target CPU: {}%", cpu);
 
     let config = AutoScalingConfig {
         enabled: true,
@@ -1454,14 +1454,14 @@ spec:
         
         match apply_result {
             Ok(output) if output.status.success() => {
-                println!("✓ Kubernetes HPA deployed");
+                dchat_log::out!("✓ Kubernetes HPA deployed");
             }
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                println!("⚠ HPA deployment warning: {}", stderr);
+                dchat_log::out!("⚠ HPA deployment warning: {}", stderr);
             }
             Err(e) => {
-                println!("⚠ Could not deploy HPA: {}", e);
+                dchat_log::out!("⚠ Could not deploy HPA: {}", e);
             }
         }
 
@@ -1495,7 +1495,7 @@ spec:
         let _ = Command::new("kubectl")
             .args(["apply", "-f", "/tmp/dchat-vpa.yaml"])
             .output();
-        println!("✓ Kubernetes VPA deployed");
+        dchat_log::out!("✓ Kubernetes VPA deployed");
 
     } else {
         // Try AWS Auto Scaling
@@ -1541,7 +1541,7 @@ spec:
                 ])
                 .output();
             
-            println!("✓ AWS Auto Scaling configured");
+            dchat_log::out!("✓ AWS Auto Scaling configured");
         } else {
             // Fallback: Create custom autoscaling script
             let autoscale_script = format!(
@@ -1588,17 +1588,17 @@ fi
                 .args(["-c", "echo '* * * * * /usr/local/bin/dchat-autoscale.sh >> /var/log/dchat-autoscale.log 2>&1' | crontab -"])
                 .output();
             
-            println!("✓ Custom autoscaling script installed");
+            dchat_log::out!("✓ Custom autoscaling script installed");
         }
     }
 
-    println!("✓ Auto-scaling configured!");
-    println!("\nScaling rules:");
-    println!("  - Scale up: CPU > {}% or Memory > 80%", cpu);
-    println!("  - Scale down: CPU < {}% and Memory < 40%", cpu * 0.5);
-    println!("  - Scale up step: +{} instances", config.scale_up_step);
-    println!("  - Scale down step: -{} instance", config.scale_down_step);
-    println!(
+    dchat_log::out!("✓ Auto-scaling configured!");
+    dchat_log::out!("\nScaling rules:");
+    dchat_log::out!("  - Scale up: CPU > {}% or Memory > 80%", cpu);
+    dchat_log::out!("  - Scale down: CPU < {}% and Memory < 40%", cpu * 0.5);
+    dchat_log::out!("  - Scale up step: +{} instances", config.scale_up_step);
+    dchat_log::out!("  - Scale down step: -{} instance", config.scale_down_step);
+    dchat_log::out!(
         "  - Cooldown: {}s up, {}s down",
         config.scale_up_cooldown, config.scale_down_cooldown
     );
@@ -1609,9 +1609,9 @@ fi
 fn setup_bft_monitor(total: u32, min_healthy: u32) -> Result<(), Box<dyn std::error::Error>> {
     use std::process::Command;
     
-    println!("🔧 Setting up BFT consensus monitoring...");
-    println!("  Total validators: {}", total);
-    println!("  Minimum healthy: {}", min_healthy);
+    dchat_log::out!("🔧 Setting up BFT consensus monitoring...");
+    dchat_log::out!("  Total validators: {}", total);
+    dchat_log::out!("  Minimum healthy: {}", min_healthy);
 
     let config = BFTMonitorConfig {
         total_validators: total,
@@ -1733,7 +1733,7 @@ WantedBy=multi-user.target
         .args(["systemctl", "enable", "--now", "dchat-bft-monitor"])
         .output();
 
-    println!("✓ BFT monitor service installed");
+    dchat_log::out!("✓ BFT monitor service installed");
 
     // Step 3: Create Prometheus recording rules for BFT
     let recording_rules = format!(
@@ -1763,27 +1763,27 @@ WantedBy=multi-user.target
         .args(["-X", "POST", "http://localhost:9090/-/reload"])
         .output();
 
-    println!("✓ BFT monitoring configured!");
-    println!("\nConsensus requirements:");
-    println!("  - BFT threshold: {}/{} validators", min_healthy, total);
-    println!(
+    dchat_log::out!("✓ BFT monitoring configured!");
+    dchat_log::out!("\nConsensus requirements:");
+    dchat_log::out!("  - BFT threshold: {}/{} validators", min_healthy, total);
+    dchat_log::out!(
         "  - Alert threshold: ≤{} validators",
         config.alert_threshold
     );
-    println!(
+    dchat_log::out!(
         "  - Consensus %: {:.1}%+",
         (min_healthy as f64 / total as f64) * 100.0
     );
-    println!("  - Participation tracking: enabled");
+    dchat_log::out!("  - Participation tracking: enabled");
 
     Ok(())
 }
 
 fn health_check(component_type: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🔍 Running health checks...");
+    dchat_log::out!("🔍 Running health checks...");
 
     if let Some(filter) = component_type {
-        println!("  Filter: {}", filter);
+        dchat_log::out!("  Filter: {}", filter);
     }
 
     // Simulate health checks
@@ -1840,11 +1840,11 @@ fn health_check(component_type: Option<String>) -> Result<(), Box<dyn std::error
         ("storage-2", ComponentType::Redis, HealthStatus::Healthy, 15),
     ];
 
-    println!(
+    dchat_log::out!(
         "\n{:<20} {:<15} {:<12} {:<10}",
         "Component", "Type", "Status", "Response"
     );
-    println!("{}", "-".repeat(60));
+    dchat_log::out!("{}", "-".repeat(60));
 
     let mut healthy_validators = 0;
     let total_validators = 7;
@@ -1857,7 +1857,7 @@ fn health_check(component_type: Option<String>) -> Result<(), Box<dyn std::error
             HealthStatus::Unknown => "? Unknown",
         };
 
-        println!(
+        dchat_log::out!(
             "{:<20} {:<15} {:<12} {}ms",
             id,
             format!("{:?}", comp_type),
@@ -1870,143 +1870,143 @@ fn health_check(component_type: Option<String>) -> Result<(), Box<dyn std::error
         }
     }
 
-    println!("\n{}", "=".repeat(60));
-    println!(
+    dchat_log::out!("\n{}", "=".repeat(60));
+    dchat_log::out!(
         "BFT Consensus: {}/{} validators healthy",
         healthy_validators, total_validators
     );
 
     if healthy_validators >= 5 {
-        println!("✓ Consensus healthy (≥5 validators)");
+        dchat_log::out!("✓ Consensus healthy (≥5 validators)");
     } else {
-        println!("✗ Consensus at risk (<5 validators)");
+        dchat_log::out!("✗ Consensus at risk (<5 validators)");
     }
 
     Ok(())
 }
 
 fn test_failover(component_id: &str) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🧪 Testing failover for: {}", component_id);
-    println!("\n1. Simulating component failure...");
-    println!("   ✓ Component marked as unhealthy");
+    dchat_log::out!("🧪 Testing failover for: {}", component_id);
+    dchat_log::out!("\n1. Simulating component failure...");
+    dchat_log::out!("   ✓ Component marked as unhealthy");
 
-    println!("\n2. Triggering DNS failover...");
-    println!("   ✓ DNS updated to secondary");
-    println!("   ✓ TTL: 60 seconds");
+    dchat_log::out!("\n2. Triggering DNS failover...");
+    dchat_log::out!("   ✓ DNS updated to secondary");
+    dchat_log::out!("   ✓ TTL: 60 seconds");
 
-    println!("\n3. Sending alerts...");
-    println!("   ✓ Slack notification sent");
-    println!("   ✓ PagerDuty incident created");
+    dchat_log::out!("\n3. Sending alerts...");
+    dchat_log::out!("   ✓ Slack notification sent");
+    dchat_log::out!("   ✓ PagerDuty incident created");
 
-    println!("\n4. Verifying failover...");
-    println!("   ✓ Traffic routed to backup");
-    println!("   ✓ Service availability maintained");
+    dchat_log::out!("\n4. Verifying failover...");
+    dchat_log::out!("   ✓ Traffic routed to backup");
+    dchat_log::out!("   ✓ Service availability maintained");
 
-    println!("\n✓ Failover test successful!");
-    println!("\nResults:");
-    println!("  - Failover time: <60 seconds");
-    println!("  - Zero downtime");
-    println!("  - Alerts delivered");
+    dchat_log::out!("\n✓ Failover test successful!");
+    dchat_log::out!("\nResults:");
+    dchat_log::out!("  - Failover time: <60 seconds");
+    dchat_log::out!("  - Zero downtime");
+    dchat_log::out!("  - Alerts delivered");
 
     Ok(())
 }
 
 fn test_autoscaling(cpu_percent: f64) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🧪 Testing auto-scaling with {}% CPU load...", cpu_percent);
+    dchat_log::out!("🧪 Testing auto-scaling with {}% CPU load...", cpu_percent);
 
     let config = AutoScalingConfig::new_production();
     let current_instances = 5;
 
-    println!("\nCurrent state:");
-    println!("  - Instances: {}", current_instances);
-    println!("  - CPU: {}%", cpu_percent);
-    println!("  - Target: {}%", config.target_cpu_percent);
+    dchat_log::out!("\nCurrent state:");
+    dchat_log::out!("  - Instances: {}", current_instances);
+    dchat_log::out!("  - CPU: {}%", cpu_percent);
+    dchat_log::out!("  - Target: {}%", config.target_cpu_percent);
 
     if config.should_scale_up(cpu_percent, 70.0, current_instances) {
         let target = config.calculate_target_instances(cpu_percent, current_instances);
-        println!("\n✓ Scale-up triggered");
-        println!(
+        dchat_log::out!("\n✓ Scale-up triggered");
+        dchat_log::out!(
             "  - New target: {} instances (+{})",
             target,
             target - current_instances
         );
-        println!("  - Reason: CPU > {}%", config.target_cpu_percent);
+        dchat_log::out!("  - Reason: CPU > {}%", config.target_cpu_percent);
     } else if config.should_scale_down(cpu_percent, 40.0, current_instances) {
         let target = config.calculate_target_instances(cpu_percent, current_instances);
-        println!("\n✓ Scale-down triggered");
-        println!(
+        dchat_log::out!("\n✓ Scale-down triggered");
+        dchat_log::out!(
             "  - New target: {} instances ({})",
             target,
             target - current_instances
         );
-        println!("  - Reason: CPU < {}%", config.target_cpu_percent * 0.5);
+        dchat_log::out!("  - Reason: CPU < {}%", config.target_cpu_percent * 0.5);
     } else {
-        println!("\n✓ No scaling needed");
-        println!("  - CPU within target range");
+        dchat_log::out!("\n✓ No scaling needed");
+        dchat_log::out!("  - CPU within target range");
     }
 
     Ok(())
 }
 
 fn deploy_all(output: &PathBuf) -> Result<(), Box<dyn std::error::Error>> {
-    println!("🚀 Deploying complete monitoring system...\n");
+    dchat_log::out!("🚀 Deploying complete monitoring system...\n");
 
     // Step 1: Generate configuration
-    println!("Step 1/7: Generating configuration...");
+    dchat_log::out!("Step 1/7: Generating configuration...");
     generate_config(output)?;
-    println!("✓ Configuration generated\n");
+    dchat_log::out!("✓ Configuration generated\n");
 
     // Step 2: Setup Prometheus
-    println!("Step 2/7: Deploying Prometheus...");
+    dchat_log::out!("Step 2/7: Deploying Prometheus...");
     setup_prometheus("http://prometheus:9090", 30)?;
-    println!();
+    dchat_log::out!();
 
     // Step 3: Setup Grafana
-    println!("Step 3/7: Deploying Grafana...");
+    dchat_log::out!("Step 3/7: Deploying Grafana...");
     setup_grafana("https://grafana.dchat.internal", "temp_api_key_replace_me")?;
-    println!();
+    dchat_log::out!();
 
     // Step 4: Setup DNS failover
-    println!("Step 4/7: Configuring DNS failover...");
+    dchat_log::out!("Step 4/7: Configuring DNS failover...");
     setup_dns("route53", "dchat.network")?;
-    println!();
+    dchat_log::out!();
 
     // Step 5: Setup alerts
-    println!("Step 5/7: Configuring alert channels...");
-    println!("  ⚠ Manual configuration required for:");
-    println!("    - Slack webhook URL");
-    println!("    - PagerDuty integration key");
-    println!("    - Email SMTP endpoint");
-    println!();
+    dchat_log::out!("Step 5/7: Configuring alert channels...");
+    dchat_log::out!("  ⚠ Manual configuration required for:");
+    dchat_log::out!("    - Slack webhook URL");
+    dchat_log::out!("    - PagerDuty integration key");
+    dchat_log::out!("    - Email SMTP endpoint");
+    dchat_log::out!();
 
     // Step 6: Setup auto-scaling
-    println!("Step 6/7: Configuring auto-scaling...");
+    dchat_log::out!("Step 6/7: Configuring auto-scaling...");
     setup_autoscaling(3, 20, 70.0)?;
-    println!();
+    dchat_log::out!();
 
     // Step 7: Setup BFT monitoring
-    println!("Step 7/7: Deploying BFT consensus monitor...");
+    dchat_log::out!("Step 7/7: Deploying BFT consensus monitor...");
     setup_bft_monitor(7, 5)?;
-    println!();
+    dchat_log::out!();
 
     // Final health check
-    println!("Running final health check...");
+    dchat_log::out!("Running final health check...");
     health_check(None)?;
 
-    println!("\n{}", "=".repeat(70));
-    println!("✓ Monitoring system deployment complete!");
-    println!("{}", "=".repeat(70));
+    dchat_log::out!("\n{}", "=".repeat(70));
+    dchat_log::out!("✓ Monitoring system deployment complete!");
+    dchat_log::out!("{}", "=".repeat(70));
 
-    println!("\nNext steps:");
-    println!("  1. Configure alert channels:");
-    println!("     deploy-monitoring setup-alerts \\");
-    println!("       --slack-webhook <url> \\");
-    println!("       --pagerduty-key <key>");
-    println!();
-    println!("  2. Access Grafana: https://grafana.dchat.internal");
-    println!("  3. View Prometheus: http://prometheus:9090");
-    println!("  4. Test failover: deploy-monitoring test-failover --component-id validator-1");
-    println!("  5. Test autoscaling: deploy-monitoring test-autoscaling --cpu-percent 85");
+    dchat_log::out!("\nNext steps:");
+    dchat_log::out!("  1. Configure alert channels:");
+    dchat_log::out!("     deploy-monitoring setup-alerts \\");
+    dchat_log::out!("       --slack-webhook <url> \\");
+    dchat_log::out!("       --pagerduty-key <key>");
+    dchat_log::out!();
+    dchat_log::out!("  2. Access Grafana: https://grafana.dchat.internal");
+    dchat_log::out!("  3. View Prometheus: http://prometheus:9090");
+    dchat_log::out!("  4. Test failover: deploy-monitoring test-failover --component-id validator-1");
+    dchat_log::out!("  5. Test autoscaling: deploy-monitoring test-autoscaling --cpu-percent 85");
 
     Ok(())
 }

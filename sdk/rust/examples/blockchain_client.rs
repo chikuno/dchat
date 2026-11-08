@@ -8,7 +8,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let blockchain = BlockchainClient::local();
 
     // Register user
-    println!("Registering user...");
+    dchat_log::out!("Registering user...");
     let tx_id = blockchain
         .register_user(
             "user-123".to_string(),
@@ -16,27 +16,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "ed25519-public-key-hex".to_string(),
         )
         .await?;
-    println!("Transaction submitted: {}", tx_id);
+    dchat_log::out!("Transaction submitted: {}", tx_id);
 
     // Wait for confirmation
-    println!("Waiting for confirmation...");
+    dchat_log::out!("Waiting for confirmation...");
     let receipt = blockchain.wait_for_confirmation(&tx_id).await?;
 
     if receipt.success {
-        println!("Transaction confirmed!");
-        println!("  Block Height: {:?}", receipt.block_height);
-        println!("  Block Hash: {:?}", receipt.block_hash);
+        dchat_log::out!("Transaction confirmed!");
+        dchat_log::out!("  Block Height: {:?}", receipt.block_height);
+        dchat_log::out!("  Block Hash: {:?}", receipt.block_hash);
     } else {
-        println!("Transaction failed: {:?}", receipt.error);
+        dchat_log::out!("Transaction failed: {:?}", receipt.error);
     }
 
     // Check transaction status
     let is_confirmed = blockchain.is_transaction_confirmed(&tx_id).await;
-    println!("\nTransaction confirmed: {}", is_confirmed);
+    dchat_log::out!("\nTransaction confirmed: {}", is_confirmed);
 
     // Get current block number
     let block_number = blockchain.get_block_number().await?;
-    println!("Current block: {}", block_number);
+    dchat_log::out!("Current block: {}", block_number);
 
     Ok(())
 }

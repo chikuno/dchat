@@ -23,8 +23,8 @@ pub async fn handle_launch(
     height: u32,
     debug: bool,
 ) -> Result<()> {
-    println!("\n🚀 DCHAT MINI-APP LAUNCHER");
-    println!("══════════════════════════════════════════════════════════════════");
+    dchat_log::out!("\n🚀 DCHAT MINI-APP LAUNCHER");
+    dchat_log::out!("══════════════════════════════════════════════════════════════════");
 
     // Load manifest from file or fetch from registry
     let app_manifest = if let Some(manifest_path) = manifest {
@@ -41,14 +41,14 @@ pub async fn handle_launch(
             )));
         }
 
-        println!("📦 Loading manifest from: {:?}", manifest_file);
+        dchat_log::out!("📦 Loading manifest from: {:?}", manifest_file);
         let manifest_json = std::fs::read_to_string(&manifest_file)
             .map_err(|e| Error::storage(format!("Failed to read manifest: {}", e)))?;
 
         serde_json::from_str::<AppManifest>(&manifest_json)
             .map_err(|e| Error::validation(format!("Invalid manifest JSON: {}", e)))?
     } else if let Some(app_id_hex) = app_id {
-        println!("📦 Fetching app {} from registry...", app_id_hex);
+        dchat_log::out!("📦 Fetching app {} from registry...", app_id_hex);
         return Err(Error::validation(
             "Registry lookup not yet implemented. Use --manifest to launch local apps.".to_string(),
         ));
@@ -59,30 +59,30 @@ pub async fn handle_launch(
     };
 
     // Validate manifest
-    println!("🔍 Validating manifest...");
+    dchat_log::out!("🔍 Validating manifest...");
     app_manifest
         .validate()
         .map_err(|e| Error::validation(format!("Manifest validation failed: {:?}", e)))?;
-    println!("   ✅ Manifest valid");
+    dchat_log::out!("   ✅ Manifest valid");
 
     // Display app info
-    println!();
-    println!("📱 App Information:");
-    println!("   Name:        {}", app_manifest.metadata.name);
-    println!("   Version:     {}", app_manifest.version);
-    println!(
+    dchat_log::out!();
+    dchat_log::out!("📱 App Information:");
+    dchat_log::out!("   Name:        {}", app_manifest.metadata.name);
+    dchat_log::out!("   Version:     {}", app_manifest.version);
+    dchat_log::out!(
         "   Description: {}",
         app_manifest.metadata.short_description
     );
-    println!("   Category:    {:?}", app_manifest.metadata.category);
-    println!("   Entry Point: {}", app_manifest.resources.entry_point);
+    dchat_log::out!("   Category:    {:?}", app_manifest.metadata.category);
+    dchat_log::out!("   Entry Point: {}", app_manifest.resources.entry_point);
 
     // Display requested permissions
     if !app_manifest.permissions.is_empty() {
-        println!();
-        println!("🔐 Requested Permissions:");
+        dchat_log::out!();
+        dchat_log::out!("🔐 Requested Permissions:");
         for perm in app_manifest.permissions.iter() {
-            println!("   • {:?}", perm);
+            dchat_log::out!("   • {:?}", perm);
         }
     }
 
@@ -90,15 +90,15 @@ pub async fn handle_launch(
     let mut sandbox_config = SandboxConfig::from_manifest(&app_manifest);
     sandbox_config.debug_mode = debug;
 
-    println!();
-    println!("🔧 Sandbox Configuration:");
-    println!(
+    dchat_log::out!();
+    dchat_log::out!("🔧 Sandbox Configuration:");
+    dchat_log::out!(
         "   Max Memory:  {} MB",
         sandbox_config.max_memory / 1024 / 1024
     );
-    println!("   CPU Timeout: {} ms", sandbox_config.max_cpu_time_ms);
-    println!("   Network:     {}", sandbox_config.allow_network);
-    println!("   Debug Mode:  {}", sandbox_config.debug_mode);
+    dchat_log::out!("   CPU Timeout: {} ms", sandbox_config.max_cpu_time_ms);
+    dchat_log::out!("   Network:     {}", sandbox_config.allow_network);
+    dchat_log::out!("   Debug Mode:  {}", sandbox_config.debug_mode);
 
     // Generate session context
     let sandbox_id = SandboxId::new();
@@ -136,7 +136,7 @@ pub async fn handle_launch(
     } else {
         // For local development without a key, derive deterministic ID from app name
         // WARNING: This should only be used for local testing
-        println!(
+        dchat_log::out!(
             "⚠️  No --developer-key provided. Using deterministic dev ID for local testing only."
         );
         let dev_hash = blake3::hash(format!("dev::{}", app_manifest.metadata.name).as_bytes());
@@ -144,16 +144,16 @@ pub async fn handle_launch(
     };
     let derived_app_id = AppId::derive(&developer_id, &app_manifest.metadata.name);
 
-    println!();
-    println!("🆔 Session Details:");
-    println!("   Sandbox ID:  {}", sandbox_id);
-    println!("   App ID:      {}", derived_app_id);
-    println!(
+    dchat_log::out!();
+    dchat_log::out!("🆔 Session Details:");
+    dchat_log::out!("   Sandbox ID:  {}", sandbox_id);
+    dchat_log::out!("   App ID:      {}", derived_app_id);
+    dchat_log::out!(
         "   User ID:     0x{}...",
         hex::encode(&session_user_id[..8])
     );
-    println!("   Viewport:    {}x{}", width, height);
-    println!("   Theme:       {}", theme);
+    dchat_log::out!("   Viewport:    {}x{}", width, height);
+    dchat_log::out!("   Theme:       {}", theme);
 
     // Initialize sandbox messages
     let init_message = SandboxMessage::Init {
@@ -165,19 +165,19 @@ pub async fn handle_launch(
         }),
     };
 
-    println!();
-    println!("══════════════════════════════════════════════════════════════════");
-    println!("✅ MINI-APP READY TO LAUNCH");
-    println!("══════════════════════════════════════════════════════════════════");
-    println!();
-    println!("Entry point: {}", app_manifest.resources.entry_point);
-    println!(
+    dchat_log::out!();
+    dchat_log::out!("══════════════════════════════════════════════════════════════════");
+    dchat_log::out!("✅ MINI-APP READY TO LAUNCH");
+    dchat_log::out!("══════════════════════════════════════════════════════════════════");
+    dchat_log::out!();
+    dchat_log::out!("Entry point: {}", app_manifest.resources.entry_point);
+    dchat_log::out!(
         "Init message: {}",
         init_message.to_json().unwrap_or_default()
     );
-    println!();
-    println!("💡 In a full client, this would open a WebView/iframe sandbox.");
-    println!("   Use the dchat-miniapps crate to integrate into your application.");
+    dchat_log::out!();
+    dchat_log::out!("💡 In a full client, this would open a WebView/iframe sandbox.");
+    dchat_log::out!("   Use the dchat-miniapps crate to integrate into your application.");
 
     Ok(())
 }
@@ -189,8 +189,8 @@ pub async fn handle_register_developer(
     website: Option<String>,
     email: Option<String>,
 ) -> Result<()> {
-    println!("\n👤 REGISTER MINI-APP DEVELOPER");
-    println!("══════════════════════════════════════════════════════════════════");
+    dchat_log::out!("\n👤 REGISTER MINI-APP DEVELOPER");
+    dchat_log::out!("══════════════════════════════════════════════════════════════════");
 
     if !keypair.exists() {
         return Err(Error::validation(format!(
@@ -225,20 +225,20 @@ pub async fn handle_register_developer(
     developer.website = website;
     developer.email = email;
 
-    println!("📝 Developer Registration:");
-    println!("   Name:      {}", developer.name);
-    println!("   ID:        {}", developer.id);
-    println!("   Public Key: 0x{}...", &pubkey_hex[..16]);
+    dchat_log::out!("📝 Developer Registration:");
+    dchat_log::out!("   Name:      {}", developer.name);
+    dchat_log::out!("   ID:        {}", developer.id);
+    dchat_log::out!("   Public Key: 0x{}...", &pubkey_hex[..16]);
     if let Some(ref w) = developer.website {
-        println!("   Website:   {}", w);
+        dchat_log::out!("   Website:   {}", w);
     }
     if let Some(ref e) = developer.email {
-        println!("   Email:     {}", e);
+        dchat_log::out!("   Email:     {}", e);
     }
-    println!("   Status:    {:?}", developer.status);
-    println!();
-    println!("💡 In production, this would submit a registration transaction");
-    println!("   to the chat chain for verification.");
+    dchat_log::out!("   Status:    {:?}", developer.status);
+    dchat_log::out!();
+    dchat_log::out!("💡 In production, this would submit a registration transaction");
+    dchat_log::out!("   to the chat chain for verification.");
 
     Ok(())
 }
@@ -249,8 +249,8 @@ pub async fn handle_register(
     keypair: PathBuf,
     bundle: Option<PathBuf>,
 ) -> Result<()> {
-    println!("\n📦 REGISTER MINI-APP");
-    println!("══════════════════════════════════════════════════════════════════");
+    dchat_log::out!("\n📦 REGISTER MINI-APP");
+    dchat_log::out!("══════════════════════════════════════════════════════════════════");
 
     if !manifest.exists() {
         return Err(Error::validation(format!(
@@ -276,8 +276,8 @@ pub async fn handle_register(
         .validate()
         .map_err(|e| Error::validation(format!("Manifest validation failed: {:?}", e)))?;
 
-    println!("📱 App: {}", app_manifest.metadata.name);
-    println!("   Version: {}", app_manifest.version);
+    dchat_log::out!("📱 App: {}", app_manifest.metadata.name);
+    dchat_log::out!("   Version: {}", app_manifest.version);
 
     if let Some(bundle_path) = bundle {
         if !bundle_path.exists() {
@@ -289,53 +289,53 @@ pub async fn handle_register(
         let bundle_size = std::fs::metadata(&bundle_path)
             .map(|m| m.len())
             .unwrap_or(0);
-        println!("   Bundle: {:?} ({} KB)", bundle_path, bundle_size / 1024);
+        dchat_log::out!("   Bundle: {:?} ({} KB)", bundle_path, bundle_size / 1024);
     }
 
-    println!();
-    println!("💡 In production, this would:");
-    println!("   1. Upload bundle to IPFS/decentralized storage");
-    println!("   2. Submit registration transaction to chat chain");
-    println!("   3. Await verification from network");
+    dchat_log::out!();
+    dchat_log::out!("💡 In production, this would:");
+    dchat_log::out!("   1. Upload bundle to IPFS/decentralized storage");
+    dchat_log::out!("   2. Submit registration transaction to chat chain");
+    dchat_log::out!("   3. Await verification from network");
 
     Ok(())
 }
 
 /// Handle `dchat miniapp info` command
 pub async fn handle_info(app_id: String) -> Result<()> {
-    println!("\n📱 MINI-APP INFORMATION");
-    println!("══════════════════════════════════════════════════════════════════");
-    println!("App ID: {}", app_id);
-    println!();
-    println!("💡 In production, this would query the on-chain registry");
-    println!("   for app metadata, developer info, and download stats.");
+    dchat_log::out!("\n📱 MINI-APP INFORMATION");
+    dchat_log::out!("══════════════════════════════════════════════════════════════════");
+    dchat_log::out!("App ID: {}", app_id);
+    dchat_log::out!();
+    dchat_log::out!("💡 In production, this would query the on-chain registry");
+    dchat_log::out!("   for app metadata, developer info, and download stats.");
 
     Ok(())
 }
 
 /// Handle `dchat miniapp list` command
 pub async fn handle_list(category: Option<String>, installed: bool) -> Result<()> {
-    println!("\n📋 MINI-APP LIST");
-    println!("══════════════════════════════════════════════════════════════════");
+    dchat_log::out!("\n📋 MINI-APP LIST");
+    dchat_log::out!("══════════════════════════════════════════════════════════════════");
 
     if let Some(cat) = category {
-        println!("Filter: category = {}", cat);
+        dchat_log::out!("Filter: category = {}", cat);
     }
     if installed {
-        println!("Filter: installed only");
+        dchat_log::out!("Filter: installed only");
     }
 
-    println!();
-    println!("💡 In production, this would query the on-chain registry");
-    println!("   and list available/installed mini-apps.");
+    dchat_log::out!();
+    dchat_log::out!("💡 In production, this would query the on-chain registry");
+    dchat_log::out!("   and list available/installed mini-apps.");
 
     Ok(())
 }
 
 /// Handle `dchat miniapp init` command
 pub async fn handle_init(name: String, path: PathBuf, category: String) -> Result<()> {
-    println!("\n🆕 CREATE NEW MINI-APP PROJECT");
-    println!("══════════════════════════════════════════════════════════════════");
+    dchat_log::out!("\n🆕 CREATE NEW MINI-APP PROJECT");
+    dchat_log::out!("══════════════════════════════════════════════════════════════════");
 
     let project_dir = path.join(&name);
     std::fs::create_dir_all(&project_dir)
@@ -488,22 +488,22 @@ button:hover {
     std::fs::write(project_dir.join("style.css"), style_css)
         .map_err(|e| Error::storage(format!("Failed to write style.css: {}", e)))?;
 
-    println!("✅ Created mini-app project: {:?}", project_dir);
-    println!();
-    println!("📁 Project structure:");
-    println!("   {:?}/", project_dir);
-    println!("   ├── manifest.json");
-    println!("   ├── index.html");
-    println!("   ├── app.js");
-    println!("   └── style.css");
-    println!();
-    println!("💡 Next steps:");
-    println!("   1. Edit the files to build your app");
-    println!(
+    dchat_log::out!("✅ Created mini-app project: {:?}", project_dir);
+    dchat_log::out!();
+    dchat_log::out!("📁 Project structure:");
+    dchat_log::out!("   {:?}/", project_dir);
+    dchat_log::out!("   ├── manifest.json");
+    dchat_log::out!("   ├── index.html");
+    dchat_log::out!("   ├── app.js");
+    dchat_log::out!("   └── style.css");
+    dchat_log::out!();
+    dchat_log::out!("💡 Next steps:");
+    dchat_log::out!("   1. Edit the files to build your app");
+    dchat_log::out!(
         "   2. Validate: dchat miniapp validate --manifest {:?}",
         manifest_path
     );
-    println!(
+    dchat_log::out!(
         "   3. Launch:   dchat miniapp launch --manifest {:?}",
         project_dir
     );
@@ -513,8 +513,8 @@ button:hover {
 
 /// Handle `dchat miniapp validate` command
 pub async fn handle_validate(manifest: PathBuf, verbose: bool) -> Result<()> {
-    println!("\n🔍 VALIDATE MINI-APP MANIFEST");
-    println!("══════════════════════════════════════════════════════════════════");
+    dchat_log::out!("\n🔍 VALIDATE MINI-APP MANIFEST");
+    dchat_log::out!("══════════════════════════════════════════════════════════════════");
 
     if !manifest.exists() {
         return Err(Error::validation(format!(
@@ -526,16 +526,16 @@ pub async fn handle_validate(manifest: PathBuf, verbose: bool) -> Result<()> {
     let manifest_json = std::fs::read_to_string(&manifest)
         .map_err(|e| Error::storage(format!("Failed to read manifest: {}", e)))?;
 
-    println!("📄 File: {:?}", manifest);
-    println!("   Size: {} bytes", manifest_json.len());
-    println!();
+    dchat_log::out!("📄 File: {:?}", manifest);
+    dchat_log::out!("   Size: {} bytes", manifest_json.len());
+    dchat_log::out!();
 
     // Parse JSON
     let app_manifest: AppManifest = match serde_json::from_str(&manifest_json) {
         Ok(m) => m,
         Err(e) => {
-            println!("❌ JSON PARSE ERROR");
-            println!("   {}", e);
+            dchat_log::out!("❌ JSON PARSE ERROR");
+            dchat_log::out!("   {}", e);
             return Err(Error::validation(format!("JSON parse error: {}", e)));
         }
     };
@@ -543,29 +543,29 @@ pub async fn handle_validate(manifest: PathBuf, verbose: bool) -> Result<()> {
     // Validate manifest
     match app_manifest.validate() {
         Ok(()) => {
-            println!("✅ MANIFEST VALID");
-            println!();
-            println!("📱 App: {}", app_manifest.metadata.name);
-            println!("   Version:     {}", app_manifest.version);
-            println!("   Category:    {:?}", app_manifest.metadata.category);
-            println!("   Entry Point: {}", app_manifest.resources.entry_point);
-            println!(
+            dchat_log::out!("✅ MANIFEST VALID");
+            dchat_log::out!();
+            dchat_log::out!("📱 App: {}", app_manifest.metadata.name);
+            dchat_log::out!("   Version:     {}", app_manifest.version);
+            dchat_log::out!("   Category:    {:?}", app_manifest.metadata.category);
+            dchat_log::out!("   Entry Point: {}", app_manifest.resources.entry_point);
+            dchat_log::out!(
                 "   Permissions: {} requested",
                 app_manifest.permissions.len()
             );
 
             if verbose {
-                println!();
-                println!("📋 Full Manifest:");
-                println!(
+                dchat_log::out!();
+                dchat_log::out!("📋 Full Manifest:");
+                dchat_log::out!(
                     "{}",
                     serde_json::to_string_pretty(&app_manifest).unwrap_or_default()
                 );
             }
         }
         Err(e) => {
-            println!("❌ VALIDATION FAILED");
-            println!("   {:?}", e);
+            dchat_log::out!("❌ VALIDATION FAILED");
+            dchat_log::out!("   {:?}", e);
             return Err(Error::validation(format!("Validation failed: {:?}", e)));
         }
     }

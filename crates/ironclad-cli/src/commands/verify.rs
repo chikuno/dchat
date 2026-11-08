@@ -12,7 +12,7 @@ pub async fn run(
 ) -> IroncladResult<()> {
     let project = Project::find()?;
 
-    println!(
+    dchat_log::out!(
         "{} {} {}",
         "🔍".bold(),
         "Verifying".cyan().bold(),
@@ -33,7 +33,7 @@ pub async fn run(
     }
 
     // Step 1: Validate WASM bytecode
-    println!("  {} Validating WASM bytecode...", "→".dimmed());
+    dchat_log::out!("  {} Validating WASM bytecode...", "→".dimmed());
 
     let validate_output = Command::new("dchat")
         .arg("program")
@@ -52,17 +52,17 @@ pub async fn run(
         )));
     }
 
-    println!("  {} WASM bytecode valid", "✓".green());
+    dchat_log::out!("  {} WASM bytecode valid", "✓".green());
 
     if verbose {
         let stdout = String::from_utf8_lossy(&validate_output.stdout);
         for line in stdout.lines() {
-            println!("    {}", line.dimmed());
+            dchat_log::out!("    {}", line.dimmed());
         }
     }
 
     // Step 2: Extract and display manifest
-    println!("  {} Checking manifest...", "→".dimmed());
+    dchat_log::out!("  {} Checking manifest...", "→".dimmed());
 
     let manifest_output = Command::new("dchat")
         .arg("program")
@@ -79,17 +79,17 @@ pub async fn run(
     }
 
     let manifest_info = String::from_utf8_lossy(&manifest_output.stdout);
-    println!("  {} Manifest found", "✓".green());
+    dchat_log::out!("  {} Manifest found", "✓".green());
 
     if verbose {
         for line in manifest_info.lines() {
-            println!("    {}", line.dimmed());
+            dchat_log::out!("    {}", line.dimmed());
         }
     }
 
     // Step 3: Verify schema hash if provided
     if let Some(expected_hash) = schema_hash {
-        println!("  {} Verifying schema hash...", "→".dimmed());
+        dchat_log::out!("  {} Verifying schema hash...", "→".dimmed());
 
         let verify_output = Command::new("dchat")
             .arg("program")
@@ -109,7 +109,7 @@ pub async fn run(
             )));
         }
 
-        println!(
+        dchat_log::out!(
             "  {} Schema hash verified: {}",
             "✓".green(),
             &expected_hash[..16.min(expected_hash.len())]
@@ -120,13 +120,13 @@ pub async fn run(
 
     // Step 4: Check build reproducibility
     if project.config.build.verify_schema {
-        println!("  {} Checking reproducibility...", "→".dimmed());
+        dchat_log::out!("  {} Checking reproducibility...", "→".dimmed());
         // In production, would rebuild and compare hashes
-        println!("  {} Build reproducibility check skipped", "⚠".yellow());
+        dchat_log::out!("  {} Build reproducibility check skipped", "⚠".yellow());
     }
 
-    println!();
-    println!("{}", "✅ Verification passed".green().bold());
+    dchat_log::out!();
+    dchat_log::out!("{}", "✅ Verification passed".green().bold());
 
     Ok(())
 }

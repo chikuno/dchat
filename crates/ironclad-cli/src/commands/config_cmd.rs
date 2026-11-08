@@ -8,47 +8,47 @@ use colored::*;
 pub async fn run_show() -> IroncladResult<()> {
     let project = Project::find()?;
 
-    println!("{} {}", "⚙️".bold(), "Configuration".cyan().bold());
-    println!();
+    dchat_log::out!("{} {}", "⚙️".bold(), "Configuration".cyan().bold());
+    dchat_log::out!();
 
     let config_path = project.root.join("Ironclad.toml");
-    println!("  File: {}", config_path.display().to_string().dimmed());
-    println!();
+    dchat_log::out!("  File: {}", config_path.display().to_string().dimmed());
+    dchat_log::out!();
 
-    println!("  {}", "[project]".yellow());
-    println!("    name = \"{}\"", project.config.project.name);
-    println!("    version = \"{}\"", project.config.project.version);
+    dchat_log::out!("  {}", "[project]".yellow());
+    dchat_log::out!("    name = \"{}\"", project.config.project.name);
+    dchat_log::out!("    version = \"{}\"", project.config.project.version);
 
     if let Some(id) = &project.config.project.program_id {
-        println!("    program_id = \"{}\"", id);
+        dchat_log::out!("    program_id = \"{}\"", id);
     }
 
     if let Some(desc) = &project.config.project.description {
-        println!("    description = \"{}\"", desc);
+        dchat_log::out!("    description = \"{}\"", desc);
     }
 
-    println!();
-    println!("  {}", "[build]".yellow());
-    println!("    target = \"{}\"", project.config.build.target);
-    println!("    generate_idl = {}", project.config.build.generate_idl);
-    println!("    verify_schema = {}", project.config.build.verify_schema);
+    dchat_log::out!();
+    dchat_log::out!("  {}", "[build]".yellow());
+    dchat_log::out!("    target = \"{}\"", project.config.build.target);
+    dchat_log::out!("    generate_idl = {}", project.config.build.generate_idl);
+    dchat_log::out!("    verify_schema = {}", project.config.build.verify_schema);
 
     if !project.config.build.rustflags.is_empty() {
-        println!("    rustflags = {:?}", project.config.build.rustflags);
+        dchat_log::out!("    rustflags = {:?}", project.config.build.rustflags);
     }
 
-    println!();
-    println!("  {}", "[networks]".yellow());
+    dchat_log::out!();
+    dchat_log::out!("  {}", "[networks]".yellow());
     for (name, config) in &project.config.networks {
-        println!("    [networks.{}]", name);
-        println!("      url = \"{}\"", config.url);
+        dchat_log::out!("    [networks.{}]", name);
+        dchat_log::out!("      url = \"{}\"", config.url);
 
         if let Some(ws) = &config.ws_url {
-            println!("      ws_url = \"{}\"", ws);
+            dchat_log::out!("      ws_url = \"{}\"", ws);
         }
 
         if let Some(kp) = &config.keypair {
-            println!("      keypair = \"{}\"", kp);
+            dchat_log::out!("      keypair = \"{}\"", kp);
         }
     }
 
@@ -88,7 +88,7 @@ pub async fn run_set(key: &str, value: &str) -> IroncladResult<()> {
     let config_path = project.root.join("Ironclad.toml");
     config.save(&config_path)?;
 
-    println!("  {} Set {} = {}", "✓".green(), key.cyan(), value.green());
+    dchat_log::out!("  {} Set {} = {}", "✓".green(), key.cyan(), value.green());
 
     Ok(())
 }
@@ -124,7 +124,7 @@ pub async fn run_get(key: &str) -> IroncladResult<()> {
         }
     };
 
-    println!("{}", value);
+    dchat_log::out!("{}", value);
 
     Ok(())
 }
@@ -154,7 +154,7 @@ pub async fn run_init() -> IroncladResult<()> {
     let config = IroncladConfig::default_with_name(&project_name);
     config.save(&config_path)?;
 
-    println!("{} {}", "✓".green(), "Created Ironclad.toml".cyan());
+    dchat_log::out!("{} {}", "✓".green(), "Created Ironclad.toml".cyan());
 
     Ok(())
 }

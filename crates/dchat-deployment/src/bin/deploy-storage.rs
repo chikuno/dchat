@@ -256,7 +256,7 @@ async fn main() -> Result<()> {
 }
 
 async fn generate_config(output: &Path, network: &str) -> Result<()> {
-    println!(
+    dchat_log::out!(
         "🔧 Generating distributed storage configuration for '{}'...",
         network
     );
@@ -274,25 +274,25 @@ async fn generate_config(output: &Path, network: &str) -> Result<()> {
     let cockroach_file = output.join("cockroachdb-config.json");
     let cockroach_json = serde_json::to_string_pretty(&config.cockroachdb)?;
     fs::write(&cockroach_file, cockroach_json).context("Failed to write CockroachDB config")?;
-    println!("✅ CockroachDB config: {}", cockroach_file.display());
+    dchat_log::out!("✅ CockroachDB config: {}", cockroach_file.display());
 
     // Save Redis config
     let redis_file = output.join("redis-config.json");
     let redis_json = serde_json::to_string_pretty(&config.redis)?;
     fs::write(&redis_file, redis_json).context("Failed to write Redis config")?;
-    println!("✅ Redis config: {}", redis_file.display());
+    dchat_log::out!("✅ Redis config: {}", redis_file.display());
 
     // Save MinIO config
     let minio_file = output.join("minio-config.json");
     let minio_json = serde_json::to_string_pretty(&config.minio)?;
     fs::write(&minio_file, minio_json).context("Failed to write MinIO config")?;
-    println!("✅ MinIO config: {}", minio_file.display());
+    dchat_log::out!("✅ MinIO config: {}", minio_file.display());
 
     // Save TiKV config
     let tikv_file = output.join("tikv-config.json");
     let tikv_json = serde_json::to_string_pretty(&config.tikv)?;
     fs::write(&tikv_file, tikv_json).context("Failed to write TiKV config")?;
-    println!("✅ TiKV config: {}", tikv_file.display());
+    dchat_log::out!("✅ TiKV config: {}", tikv_file.display());
 
     // Create deployment summary
     let summary = DeploymentSummary {
@@ -309,13 +309,13 @@ async fn generate_config(output: &Path, network: &str) -> Result<()> {
     let summary_json = serde_json::to_string_pretty(&summary)?;
     fs::write(&summary_file, summary_json).context("Failed to write summary")?;
 
-    println!("\n📊 Deployment Summary:");
-    println!("  Total nodes: {}", summary.total_nodes);
-    println!("  - CockroachDB: {} nodes", summary.cockroachdb_nodes);
-    println!("  - Redis: {} nodes", summary.redis_nodes);
-    println!("  - MinIO: {} nodes", summary.minio_nodes);
-    println!("  - TiKV: {} nodes (PD + storage)", summary.tikv_nodes);
-    println!(
+    dchat_log::out!("\n📊 Deployment Summary:");
+    dchat_log::out!("  Total nodes: {}", summary.total_nodes);
+    dchat_log::out!("  - CockroachDB: {} nodes", summary.cockroachdb_nodes);
+    dchat_log::out!("  - Redis: {} nodes", summary.redis_nodes);
+    dchat_log::out!("  - MinIO: {} nodes", summary.minio_nodes);
+    dchat_log::out!("  - TiKV: {} nodes (PD + storage)", summary.tikv_nodes);
+    dchat_log::out!(
         "  Estimated cost: ${:.2}/month",
         summary.estimated_monthly_cost_usd
     );
@@ -324,7 +324,7 @@ async fn generate_config(output: &Path, network: &str) -> Result<()> {
 }
 
 async fn deploy_cockroachdb(config_path: &Path, node: &str, key: Option<&Path>) -> Result<()> {
-    println!("🚀 Deploying CockroachDB cluster...");
+    dchat_log::out!("🚀 Deploying CockroachDB cluster...");
 
     let config_json = fs::read_to_string(config_path)?;
     let config: CockroachDBConfig = serde_json::from_str(&config_json)?;
@@ -337,7 +337,7 @@ async fn deploy_cockroachdb(config_path: &Path, node: &str, key: Option<&Path>) 
     };
 
     for (i, node) in nodes_to_deploy.iter().enumerate() {
-        println!(
+        dchat_log::out!(
             "\n[{}/{}] Deploying CockroachDB node: {}",
             i + 1,
             nodes_to_deploy.len(),
@@ -347,17 +347,17 @@ async fn deploy_cockroachdb(config_path: &Path, node: &str, key: Option<&Path>) 
         deploy_cockroachdb_node(&config, node, key).await?;
 
         if i < nodes_to_deploy.len() - 1 {
-            println!("⏱️  Waiting 10s before next node...");
+            dchat_log::out!("⏱️  Waiting 10s before next node...");
             sleep(Duration::from_secs(10)).await;
         }
     }
 
-    println!("\n✅ CockroachDB cluster deployment complete!");
-    println!(
+    dchat_log::out!("\n✅ CockroachDB cluster deployment complete!");
+    dchat_log::out!(
         "🔗 Admin UI: http://{}:{}",
         config.nodes[0].host, config.http_port
     );
-    println!(
+    dchat_log::out!(
         "🔗 Connection: {}",
         config.connection_string("dchat_user", "<password>")
     );
@@ -371,51 +371,51 @@ async fn deploy_cockroachdb_node(
     key: Option<&Path>,
 ) -> Result<()> {
     // Step 1: Check SSH connectivity
-    println!("  [1/8] Checking SSH connectivity to {}...", node.host);
+    dchat_log::out!("  [1/8] Checking SSH connectivity to {}...", node.host);
     check_ssh(&node.host, key).await?;
 
     // Step 2: Install dependencies
-    println!("  [2/8] Installing CockroachDB...");
+    dchat_log::out!("  [2/8] Installing CockroachDB...");
     install_cockroachdb(&node.host, key).await?;
 
     // Step 3: Create directories
-    println!("  [3/8] Creating data directories...");
+    dchat_log::out!("  [3/8] Creating data directories...");
     create_directories(&node.host, &[&node.store_path], key).await?;
 
     // Step 4: Generate TLS certificates (for production)
     if cluster.encryption_at_rest {
-        println!("  [4/8] Generating TLS certificates...");
+        dchat_log::out!("  [4/8] Generating TLS certificates...");
         generate_cockroachdb_certs(cluster, node, key).await?;
     } else {
-        println!("  [4/8] Skipping TLS (insecure mode)");
+        dchat_log::out!("  [4/8] Skipping TLS (insecure mode)");
     }
 
     // Step 5: Start CockroachDB node
-    println!("  [5/8] Starting CockroachDB node...");
+    dchat_log::out!("  [5/8] Starting CockroachDB node...");
     start_cockroachdb_node(cluster, node, key).await?;
 
     // Step 6: Wait for node to be ready
-    println!("  [6/8] Waiting for node to be ready...");
+    dchat_log::out!("  [6/8] Waiting for node to be ready...");
     sleep(Duration::from_secs(10)).await;
 
     // Step 7: Initialize cluster (first node only)
     if node.node_id.ends_with("-1") {
-        println!("  [7/8] Initializing cluster...");
+        dchat_log::out!("  [7/8] Initializing cluster...");
         initialize_cockroachdb(&node.host, cluster.sql_port, key).await?;
     } else {
-        println!("  [7/8] Joining existing cluster...");
+        dchat_log::out!("  [7/8] Joining existing cluster...");
     }
 
     // Step 8: Health check
-    println!("  [8/8] Health check...");
+    dchat_log::out!("  [8/8] Health check...");
     check_cockroachdb_health(&node.host, cluster.http_port).await?;
 
-    println!("  ✅ Node {} deployed successfully", node.node_id);
+    dchat_log::out!("  ✅ Node {} deployed successfully", node.node_id);
     Ok(())
 }
 
 async fn deploy_redis(config_path: &Path, node_type: &str, key: Option<&Path>) -> Result<()> {
-    println!("🚀 Deploying Redis cluster ({})...", node_type);
+    dchat_log::out!("🚀 Deploying Redis cluster ({})...", node_type);
 
     let config_json = fs::read_to_string(config_path)?;
     let config: RedisConfig = serde_json::from_str(&config_json)?;
@@ -439,7 +439,7 @@ async fn deploy_redis(config_path: &Path, node_type: &str, key: Option<&Path>) -
         .collect();
 
     for (i, node) in masters_to_deploy.iter().enumerate() {
-        println!(
+        dchat_log::out!(
             "\n[{}/{}] Deploying Redis master: {}",
             i + 1,
             masters_to_deploy.len(),
@@ -457,7 +457,7 @@ async fn deploy_redis(config_path: &Path, node_type: &str, key: Option<&Path>) -
         .collect();
 
     for (i, node) in replicas_to_deploy.iter().enumerate() {
-        println!(
+        dchat_log::out!(
             "\n[{}/{}] Deploying Redis replica: {}",
             i + 1,
             replicas_to_deploy.len(),
@@ -469,12 +469,12 @@ async fn deploy_redis(config_path: &Path, node_type: &str, key: Option<&Path>) -
 
     // Create cluster
     if node_type == "all" && nodes_to_deploy.len() >= 6 {
-        println!("\n📡 Creating Redis cluster...");
+        dchat_log::out!("\n📡 Creating Redis cluster...");
         create_redis_cluster(&config, key).await?;
     }
 
-    println!("\n✅ Redis cluster deployment complete!");
-    println!("🔗 Connection: {}", config.connection_string(None));
+    dchat_log::out!("\n✅ Redis cluster deployment complete!");
+    dchat_log::out!("🔗 Connection: {}", config.connection_string(None));
 
     Ok(())
 }
@@ -484,30 +484,30 @@ async fn deploy_redis_node(
     node: &RedisNode,
     key: Option<&Path>,
 ) -> Result<()> {
-    println!("  [1/6] Checking SSH connectivity to {}...", node.host);
+    dchat_log::out!("  [1/6] Checking SSH connectivity to {}...", node.host);
     check_ssh(&node.host, key).await?;
 
-    println!("  [2/6] Installing Redis...");
+    dchat_log::out!("  [2/6] Installing Redis...");
     install_redis(&node.host, key).await?;
 
-    println!("  [3/6] Configuring Redis node...");
+    dchat_log::out!("  [3/6] Configuring Redis node...");
     configure_redis_node(cluster, node, key).await?;
 
-    println!("  [4/6] Starting Redis container...");
+    dchat_log::out!("  [4/6] Starting Redis container...");
     start_redis_node(node, key).await?;
 
-    println!("  [5/6] Waiting for node to be ready...");
+    dchat_log::out!("  [5/6] Waiting for node to be ready...");
     sleep(Duration::from_secs(5)).await;
 
-    println!("  [6/6] Health check...");
+    dchat_log::out!("  [6/6] Health check...");
     check_redis_health(&node.host, cluster.port).await?;
 
-    println!("  ✅ Node {} deployed successfully", node.node_id);
+    dchat_log::out!("  ✅ Node {} deployed successfully", node.node_id);
     Ok(())
 }
 
 async fn deploy_minio(config_path: &Path, node: &str, key: Option<&Path>) -> Result<()> {
-    println!("🚀 Deploying MinIO cluster...");
+    dchat_log::out!("🚀 Deploying MinIO cluster...");
 
     let config_json = fs::read_to_string(config_path)?;
     let config: MinIOConfig = serde_json::from_str(&config_json)?;
@@ -520,7 +520,7 @@ async fn deploy_minio(config_path: &Path, node: &str, key: Option<&Path>) -> Res
     };
 
     for (i, node) in nodes_to_deploy.iter().enumerate() {
-        println!(
+        dchat_log::out!(
             "\n[{}/{}] Deploying MinIO node: {}",
             i + 1,
             nodes_to_deploy.len(),
@@ -530,16 +530,16 @@ async fn deploy_minio(config_path: &Path, node: &str, key: Option<&Path>) -> Res
         sleep(Duration::from_secs(5)).await;
     }
 
-    println!("\n✅ MinIO cluster deployment complete!");
-    println!(
+    dchat_log::out!("\n✅ MinIO cluster deployment complete!");
+    dchat_log::out!(
         "🔗 API: http://{}:{}",
         config.nodes[0].host, config.api_port
     );
-    println!(
+    dchat_log::out!(
         "🔗 Console: http://{}:{}",
         config.nodes[0].host, config.console_port
     );
-    println!("📝 Server command: {}", config.server_command());
+    dchat_log::out!("📝 Server command: {}", config.server_command());
 
     Ok(())
 }
@@ -549,13 +549,13 @@ async fn deploy_minio_node(
     node: &MinIONode,
     key: Option<&Path>,
 ) -> Result<()> {
-    println!("  [1/6] Checking SSH connectivity to {}...", node.host);
+    dchat_log::out!("  [1/6] Checking SSH connectivity to {}...", node.host);
     check_ssh(&node.host, key).await?;
 
-    println!("  [2/6] Installing MinIO...");
+    dchat_log::out!("  [2/6] Installing MinIO...");
     install_minio(&node.host, key).await?;
 
-    println!("  [3/6] Creating data volumes...");
+    dchat_log::out!("  [3/6] Creating data volumes...");
     create_directories(
         &node.host,
         &node
@@ -567,21 +567,21 @@ async fn deploy_minio_node(
     )
     .await?;
 
-    println!("  [4/6] Starting MinIO container...");
+    dchat_log::out!("  [4/6] Starting MinIO container...");
     start_minio_node(cluster, node, key).await?;
 
-    println!("  [5/6] Waiting for node to be ready...");
+    dchat_log::out!("  [5/6] Waiting for node to be ready...");
     sleep(Duration::from_secs(10)).await;
 
-    println!("  [6/6] Health check...");
+    dchat_log::out!("  [6/6] Health check...");
     check_minio_health(&node.host, cluster.api_port).await?;
 
-    println!("  ✅ Node {} deployed successfully", node.node_id);
+    dchat_log::out!("  ✅ Node {} deployed successfully", node.node_id);
     Ok(())
 }
 
 async fn deploy_tikv(config_path: &Path, component: &str, key: Option<&Path>) -> Result<()> {
-    println!("🚀 Deploying TiKV cluster ({})...", component);
+    dchat_log::out!("🚀 Deploying TiKV cluster ({})...", component);
 
     let config_json = fs::read_to_string(config_path)?;
     let config: TiKVConfig = serde_json::from_str(&config_json)?;
@@ -589,7 +589,7 @@ async fn deploy_tikv(config_path: &Path, component: &str, key: Option<&Path>) ->
     match component {
         "pd" | "all" => {
             for (i, pd) in config.pd_nodes.iter().enumerate() {
-                println!(
+                dchat_log::out!(
                     "\n[{}/{}] Deploying TiKV PD: {}",
                     i + 1,
                     config.pd_nodes.len(),
@@ -604,7 +604,7 @@ async fn deploy_tikv(config_path: &Path, component: &str, key: Option<&Path>) ->
 
     if component == "tikv" || component == "all" {
         for (i, tikv) in config.tikv_nodes.iter().enumerate() {
-            println!(
+            dchat_log::out!(
                 "\n[{}/{}] Deploying TiKV storage: {}",
                 i + 1,
                 config.tikv_nodes.len(),
@@ -615,32 +615,32 @@ async fn deploy_tikv(config_path: &Path, component: &str, key: Option<&Path>) ->
         }
     }
 
-    println!("\n✅ TiKV cluster deployment complete!");
-    println!("🔗 PD endpoints: {:?}", config.pd_endpoints());
+    dchat_log::out!("\n✅ TiKV cluster deployment complete!");
+    dchat_log::out!("🔗 PD endpoints: {:?}", config.pd_endpoints());
 
     Ok(())
 }
 
 async fn deploy_tikv_pd(cluster: &TiKVConfig, pd: &TiKVPDNode, key: Option<&Path>) -> Result<()> {
-    println!("  [1/6] Checking SSH connectivity to {}...", pd.host);
+    dchat_log::out!("  [1/6] Checking SSH connectivity to {}...", pd.host);
     check_ssh(&pd.host, key).await?;
 
-    println!("  [2/6] Installing TiKV PD...");
+    dchat_log::out!("  [2/6] Installing TiKV PD...");
     install_tikv(&pd.host, key).await?;
 
-    println!("  [3/6] Creating data directory...");
+    dchat_log::out!("  [3/6] Creating data directory...");
     create_directories(&pd.host, &[&pd.data_dir], key).await?;
 
-    println!("  [4/6] Starting PD container...");
+    dchat_log::out!("  [4/6] Starting PD container...");
     start_tikv_pd(cluster, pd, key).await?;
 
-    println!("  [5/6] Waiting for PD to be ready...");
+    dchat_log::out!("  [5/6] Waiting for PD to be ready...");
     sleep(Duration::from_secs(10)).await;
 
-    println!("  [6/6] Health check...");
+    dchat_log::out!("  [6/6] Health check...");
     check_tikv_pd_health(&pd.host, cluster.pd_port).await?;
 
-    println!("  ✅ PD {} deployed successfully", pd.node_id);
+    dchat_log::out!("  ✅ PD {} deployed successfully", pd.node_id);
     Ok(())
 }
 
@@ -649,31 +649,31 @@ async fn deploy_tikv_storage(
     tikv: &TiKVStorageNode,
     key: Option<&Path>,
 ) -> Result<()> {
-    println!("  [1/6] Checking SSH connectivity to {}...", tikv.host);
+    dchat_log::out!("  [1/6] Checking SSH connectivity to {}...", tikv.host);
     check_ssh(&tikv.host, key).await?;
 
-    println!("  [2/6] Installing TiKV storage...");
+    dchat_log::out!("  [2/6] Installing TiKV storage...");
     install_tikv(&tikv.host, key).await?;
 
-    println!("  [3/6] Creating data directory...");
+    dchat_log::out!("  [3/6] Creating data directory...");
     create_directories(&tikv.host, &[&tikv.data_dir], key).await?;
 
-    println!("  [4/6] Starting TiKV container...");
+    dchat_log::out!("  [4/6] Starting TiKV container...");
     start_tikv_storage(cluster, tikv, key).await?;
 
-    println!("  [5/6] Waiting for TiKV to be ready...");
+    dchat_log::out!("  [5/6] Waiting for TiKV to be ready...");
     sleep(Duration::from_secs(10)).await;
 
-    println!("  [6/6] Health check...");
+    dchat_log::out!("  [6/6] Health check...");
     check_tikv_storage_health(&tikv.host, tikv.status_address.port()).await?;
 
-    println!("  ✅ Storage {} deployed successfully", tikv.node_id);
+    dchat_log::out!("  ✅ Storage {} deployed successfully", tikv.node_id);
     Ok(())
 }
 
 async fn deploy_all(config_dir: &Path, key: Option<&Path>, parallel: bool) -> Result<()> {
-    println!("🚀 Deploying complete distributed storage infrastructure...");
-    println!("📁 Config directory: {}", config_dir.display());
+    dchat_log::out!("🚀 Deploying complete distributed storage infrastructure...");
+    dchat_log::out!("📁 Config directory: {}", config_dir.display());
 
     let cockroach_config = config_dir.join("cockroachdb-config.json");
     let redis_config = config_dir.join("redis-config.json");
@@ -681,52 +681,52 @@ async fn deploy_all(config_dir: &Path, key: Option<&Path>, parallel: bool) -> Re
     let tikv_config = config_dir.join("tikv-config.json");
 
     if parallel {
-        println!("⚡ Parallel deployment mode (faster but riskier)");
+        dchat_log::out!("⚡ Parallel deployment mode (faster but riskier)");
         // In production: use tokio::spawn for parallel deployment
         // For now, deploy sequentially
     }
 
     // Deploy in order: TiKV PD → TiKV Storage → CockroachDB → Redis → MinIO
-    println!("\n📦 Step 1: Deploying TiKV cluster...");
+    dchat_log::out!("\n📦 Step 1: Deploying TiKV cluster...");
     deploy_tikv(&tikv_config, "all", key).await?;
 
-    println!("\n📦 Step 2: Deploying CockroachDB cluster...");
+    dchat_log::out!("\n📦 Step 2: Deploying CockroachDB cluster...");
     deploy_cockroachdb(&cockroach_config, "all", key).await?;
 
-    println!("\n📦 Step 3: Deploying Redis cluster...");
+    dchat_log::out!("\n📦 Step 3: Deploying Redis cluster...");
     deploy_redis(&redis_config, "all", key).await?;
 
-    println!("\n📦 Step 4: Deploying MinIO cluster...");
+    dchat_log::out!("\n📦 Step 4: Deploying MinIO cluster...");
     deploy_minio(&minio_config, "all", key).await?;
 
-    println!("\n✅ Complete distributed storage deployment finished!");
-    println!("\n📊 Next steps:");
-    println!(
+    dchat_log::out!("\n✅ Complete distributed storage deployment finished!");
+    dchat_log::out!("\n📊 Next steps:");
+    dchat_log::out!(
         "  1. Run health checks: deploy-storage health-check --config-dir {}",
         config_dir.display()
     );
-    println!("  2. Migrate data: deploy-storage migrate --source postgresql --source-connection <conn> --target-config {}", config_dir.display());
-    println!("  3. Configure application to use new storage backends");
+    dchat_log::out!("  2. Migrate data: deploy-storage migrate --source postgresql --source-connection <conn> --target-config {}", config_dir.display());
+    dchat_log::out!("  3. Configure application to use new storage backends");
 
     Ok(())
 }
 
 async fn health_check(config_dir: &Path, _timeout: u64) -> Result<()> {
-    println!("🔍 Checking health of all storage systems...");
+    dchat_log::out!("🔍 Checking health of all storage systems...");
 
     let mut all_healthy = true;
 
     // Check CockroachDB
-    println!("\n[1/4] CockroachDB health check...");
+    dchat_log::out!("\n[1/4] CockroachDB health check...");
     let cockroach_config = config_dir.join("cockroachdb-config.json");
     if cockroach_config.exists() {
         let config_json = fs::read_to_string(&cockroach_config)?;
         let config: CockroachDBConfig = serde_json::from_str(&config_json)?;
         for node in &config.nodes {
             match check_cockroachdb_health(&node.host, config.http_port).await {
-                Ok(_) => println!("  ✅ {} healthy", node.node_id),
+                Ok(_) => dchat_log::out!("  ✅ {} healthy", node.node_id),
                 Err(e) => {
-                    println!("  ❌ {} unhealthy: {}", node.node_id, e);
+                    dchat_log::out!("  ❌ {} unhealthy: {}", node.node_id, e);
                     all_healthy = false;
                 }
             }
@@ -734,16 +734,16 @@ async fn health_check(config_dir: &Path, _timeout: u64) -> Result<()> {
     }
 
     // Check Redis
-    println!("\n[2/4] Redis health check...");
+    dchat_log::out!("\n[2/4] Redis health check...");
     let redis_config = config_dir.join("redis-config.json");
     if redis_config.exists() {
         let config_json = fs::read_to_string(&redis_config)?;
         let config: RedisConfig = serde_json::from_str(&config_json)?;
         for node in config.masters.iter().chain(config.replicas.iter()) {
             match check_redis_health(&node.host, config.port).await {
-                Ok(_) => println!("  ✅ {} healthy", node.node_id),
+                Ok(_) => dchat_log::out!("  ✅ {} healthy", node.node_id),
                 Err(e) => {
-                    println!("  ❌ {} unhealthy: {}", node.node_id, e);
+                    dchat_log::out!("  ❌ {} unhealthy: {}", node.node_id, e);
                     all_healthy = false;
                 }
             }
@@ -751,16 +751,16 @@ async fn health_check(config_dir: &Path, _timeout: u64) -> Result<()> {
     }
 
     // Check MinIO
-    println!("\n[3/4] MinIO health check...");
+    dchat_log::out!("\n[3/4] MinIO health check...");
     let minio_config = config_dir.join("minio-config.json");
     if minio_config.exists() {
         let config_json = fs::read_to_string(&minio_config)?;
         let config: MinIOConfig = serde_json::from_str(&config_json)?;
         for node in &config.nodes {
             match check_minio_health(&node.host, config.api_port).await {
-                Ok(_) => println!("  ✅ {} healthy", node.node_id),
+                Ok(_) => dchat_log::out!("  ✅ {} healthy", node.node_id),
                 Err(e) => {
-                    println!("  ❌ {} unhealthy: {}", node.node_id, e);
+                    dchat_log::out!("  ❌ {} unhealthy: {}", node.node_id, e);
                     all_healthy = false;
                 }
             }
@@ -768,25 +768,25 @@ async fn health_check(config_dir: &Path, _timeout: u64) -> Result<()> {
     }
 
     // Check TiKV
-    println!("\n[4/4] TiKV health check...");
+    dchat_log::out!("\n[4/4] TiKV health check...");
     let tikv_config = config_dir.join("tikv-config.json");
     if tikv_config.exists() {
         let config_json = fs::read_to_string(&tikv_config)?;
         let config: TiKVConfig = serde_json::from_str(&config_json)?;
         for pd in &config.pd_nodes {
             match check_tikv_pd_health(&pd.host, config.pd_port).await {
-                Ok(_) => println!("  ✅ {} healthy", pd.node_id),
+                Ok(_) => dchat_log::out!("  ✅ {} healthy", pd.node_id),
                 Err(e) => {
-                    println!("  ❌ {} unhealthy: {}", pd.node_id, e);
+                    dchat_log::out!("  ❌ {} unhealthy: {}", pd.node_id, e);
                     all_healthy = false;
                 }
             }
         }
         for tikv in &config.tikv_nodes {
             match check_tikv_storage_health(&tikv.host, tikv.status_address.port()).await {
-                Ok(_) => println!("  ✅ {} healthy", tikv.node_id),
+                Ok(_) => dchat_log::out!("  ✅ {} healthy", tikv.node_id),
                 Err(e) => {
-                    println!("  ❌ {} unhealthy: {}", tikv.node_id, e);
+                    dchat_log::out!("  ❌ {} unhealthy: {}", tikv.node_id, e);
                     all_healthy = false;
                 }
             }
@@ -794,7 +794,7 @@ async fn health_check(config_dir: &Path, _timeout: u64) -> Result<()> {
     }
 
     if all_healthy {
-        println!("\n✅ All storage systems are healthy!");
+        dchat_log::out!("\n✅ All storage systems are healthy!");
         Ok(())
     } else {
         anyhow::bail!("⚠️  Some storage systems are unhealthy")
@@ -807,42 +807,42 @@ async fn migrate(
     target_config: &Path,
     dry_run: bool,
 ) -> Result<()> {
-    println!(
+    dchat_log::out!(
         "🔄 Migrating data from {} to distributed storage...",
         source
     );
 
     if dry_run {
-        println!("🔍 DRY RUN MODE - no data will be modified");
+        dchat_log::out!("🔍 DRY RUN MODE - no data will be modified");
     }
 
-    println!("📊 Migration plan:");
-    println!("  Source: {} ({})", source, source_connection);
-    println!("  Target config: {}", target_config.display());
+    dchat_log::out!("📊 Migration plan:");
+    dchat_log::out!("  Source: {} ({})", source, source_connection);
+    dchat_log::out!("  Target config: {}", target_config.display());
 
     match source {
         "postgresql" => {
-            println!("\n📝 PostgreSQL → CockroachDB migration:");
-            println!("  1. Export schema: pg_dump --schema-only");
-            println!("  2. Convert types: TEXT → STRING, SERIAL → INT");
-            println!("  3. Import schema to CockroachDB");
-            println!("  4. Bulk copy data: COPY TO CSV → IMPORT INTO");
-            println!("  5. Verify row counts and indexes");
+            dchat_log::out!("\n📝 PostgreSQL → CockroachDB migration:");
+            dchat_log::out!("  1. Export schema: pg_dump --schema-only");
+            dchat_log::out!("  2. Convert types: TEXT → STRING, SERIAL → INT");
+            dchat_log::out!("  3. Import schema to CockroachDB");
+            dchat_log::out!("  4. Bulk copy data: COPY TO CSV → IMPORT INTO");
+            dchat_log::out!("  5. Verify row counts and indexes");
 
             if !dry_run {
-                println!("\n⚠️  Actual migration not implemented yet");
-                println!("    Use cockroach import or pg_dump → cockroach sql");
+                dchat_log::out!("\n⚠️  Actual migration not implemented yet");
+                dchat_log::out!("    Use cockroach import or pg_dump → cockroach sql");
             }
         }
         "sqlite" => {
-            println!("\n📝 SQLite → TiKV migration:");
-            println!("  1. Read all key-value pairs from SQLite");
-            println!("  2. Batch insert into TiKV using RawClient");
-            println!("  3. Verify key counts");
+            dchat_log::out!("\n📝 SQLite → TiKV migration:");
+            dchat_log::out!("  1. Read all key-value pairs from SQLite");
+            dchat_log::out!("  2. Batch insert into TiKV using RawClient");
+            dchat_log::out!("  3. Verify key counts");
 
             if !dry_run {
-                println!("\n⚠️  Actual migration not implemented yet");
-                println!("    Use TiKV RawClient API for bulk inserts");
+                dchat_log::out!("\n⚠️  Actual migration not implemented yet");
+                dchat_log::out!("    Use TiKV RawClient API for bulk inserts");
             }
         }
         _ => anyhow::bail!("Unsupported source: {}", source),
@@ -1128,7 +1128,7 @@ ls -la {}
         }
     }
     
-    println!("    ✅ TLS certificates generated for node {}", node.node_id);
+    dchat_log::out!("    ✅ TLS certificates generated for node {}", node.node_id);
     Ok(())
 }
 
@@ -1216,7 +1216,7 @@ systemctl status cockroachdb --no-pager
         ));
     }
     
-    println!("    ✅ CockroachDB node {} started via systemd", node.node_id);
+    dchat_log::out!("    ✅ CockroachDB node {} started via systemd", node.node_id);
     Ok(())
 }
 
@@ -1309,7 +1309,7 @@ chown -R redis:redis /var/lib/redis /var/log/redis /etc/redis
         ));
     }
     
-    println!("    ✅ Redis configuration created for {}:{}", node.host, port);
+    dchat_log::out!("    ✅ Redis configuration created for {}:{}", node.host, port);
     Ok(())
 }
 
@@ -1368,7 +1368,7 @@ redis-cli -p {} ping
         ));
     }
     
-    println!("    ✅ Redis node started on {}:{}", node.host, port);
+    dchat_log::out!("    ✅ Redis node started on {}:{}", node.host, port);
     Ok(())
 }
 
@@ -1411,7 +1411,7 @@ async fn create_redis_cluster(config: &RedisConfig, key: Option<&Path>) -> Resul
         return Err(anyhow::anyhow!("Failed to create Redis cluster with masters"));
     }
     
-    println!("    ✅ Redis cluster created with {} masters", master_nodes.len());
+    dchat_log::out!("    ✅ Redis cluster created with {} masters", master_nodes.len());
     
     // Add replicas to the cluster
     for replica in &config.replicas {
@@ -1458,7 +1458,7 @@ async fn create_redis_cluster(config: &RedisConfig, key: Option<&Path>) -> Resul
                 let add_status = add_cmd.status()?;
                 
                 if add_status.success() {
-                    println!("    ✅ Added replica {}:{} -> master {}:{}", 
+                    dchat_log::out!("    ✅ Added replica {}:{} -> master {}:{}", 
                         replica.host, replica_port, master.host, master_port);
                 }
             }
@@ -1478,9 +1478,9 @@ async fn create_redis_cluster(config: &RedisConfig, key: Option<&Path>) -> Resul
     
     let cluster_state = String::from_utf8_lossy(&check_output.stdout);
     if cluster_state.contains("cluster_state:ok") {
-        println!("    ✅ Redis cluster is healthy");
+        dchat_log::out!("    ✅ Redis cluster is healthy");
     } else {
-        println!("    ⚠️  Redis cluster state: {}", cluster_state.trim());
+        dchat_log::out!("    ⚠️  Redis cluster state: {}", cluster_state.trim());
     }
     
     Ok(())
@@ -1586,7 +1586,7 @@ systemctl status minio --no-pager
         ));
     }
     
-    println!("    ✅ MinIO node started on {}:{}", node.host, api_port);
+    dchat_log::out!("    ✅ MinIO node started on {}:{}", node.host, api_port);
     Ok(())
 }
 
@@ -1700,7 +1700,7 @@ systemctl status tikv-pd --no-pager
         ));
     }
     
-    println!("    ✅ TiKV PD node {} started on {}:{}", pd.node_id, pd.host, client_port);
+    dchat_log::out!("    ✅ TiKV PD node {} started on {}:{}", pd.node_id, pd.host, client_port);
     Ok(())
 }
 
@@ -1833,7 +1833,7 @@ systemctl status tikv-storage --no-pager
         ));
     }
     
-    println!("    ✅ TiKV storage node started on {}:{}", tikv.host, tikv_port);
+    dchat_log::out!("    ✅ TiKV storage node started on {}:{}", tikv.host, tikv_port);
     Ok(())
 }
 

@@ -297,7 +297,7 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
 
     if let Err(e) = run(cli).await {
-        eprintln!("{} {}", "error:".red().bold(), e);
+        edchat_log::out!("{} {}", "error:".red().bold(), e);
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS

@@ -100,7 +100,7 @@ pub async fn handle_propose_upgrade(
     voting_days: u32,
     quorum: u32,
 ) -> Result<()> {
-    println!("\n📜 Submitting Protocol Upgrade Proposal");
+    dchat_log::out!("\n📜 Submitting Protocol Upgrade Proposal");
 
     let proposer_id = UserId(
         uuid::Uuid::parse_str(&proposer).map_err(|_| Error::validation("Invalid proposer ID"))?,
@@ -147,12 +147,12 @@ pub async fn handle_propose_upgrade(
     let proposal_id = manager.submit_proposal(proposal)?;
     persist_manager(&manager)?;
 
-    println!("✅ Proposal submitted successfully!");
-    println!("Proposal ID: {}", proposal_id);
-    println!("Title: {}", title);
-    println!("Target Version: {}", target_version);
-    println!("Voting Deadline: {} days from now", voting_days);
-    println!("Required Quorum: {}%", quorum);
+    dchat_log::out!("✅ Proposal submitted successfully!");
+    dchat_log::out!("Proposal ID: {}", proposal_id);
+    dchat_log::out!("Title: {}", title);
+    dchat_log::out!("Target Version: {}", target_version);
+    dchat_log::out!("Voting Deadline: {} days from now", voting_days);
+    dchat_log::out!("Required Quorum: {}%", quorum);
 
     Ok(())
 }
@@ -162,10 +162,10 @@ pub async fn handle_list_proposals(status: Option<String>) -> Result<()> {
     let manager = load_manager().await;
     let proposals = manager.get_active_proposals();
 
-    println!("\n📊 Upgrade Proposals ({}):", proposals.len());
+    dchat_log::out!("\n📊 Upgrade Proposals ({}):", proposals.len());
 
     if proposals.is_empty() {
-        println!("No active proposals found.");
+        dchat_log::out!("No active proposals found.");
         return Ok(());
     }
 
@@ -187,27 +187,27 @@ pub async fn handle_list_proposals(status: Option<String>) -> Result<()> {
             }
         }
 
-        println!("\n{}", "-".repeat(80));
-        println!("ID: {}", proposal.id);
-        println!("Title: {}", proposal.title);
-        println!(
+        dchat_log::out!("\n{}", "-".repeat(80));
+        dchat_log::out!("ID: {}", proposal.id);
+        dchat_log::out!("Title: {}", proposal.title);
+        dchat_log::out!(
             "Version: {} → {}",
             proposal.current_version, proposal.target_version
         );
-        println!("Type: {:?}", proposal.upgrade_type);
-        println!("Status: {:?}", proposal.status);
-        println!(
+        dchat_log::out!("Type: {:?}", proposal.upgrade_type);
+        dchat_log::out!("Status: {:?}", proposal.status);
+        dchat_log::out!(
             "Votes: {} for, {} against",
             proposal.votes_for, proposal.votes_against
         );
-        println!("Quorum: {:.2}%", proposal.quorum_bps as f64 / 100.0);
-        println!(
+        dchat_log::out!("Quorum: {:.2}%", proposal.quorum_bps as f64 / 100.0);
+        dchat_log::out!(
             "Deadline: {}",
             proposal.voting_deadline.format("%Y-%m-%d %H:%M:%S UTC")
         );
 
         if let Some(ref url) = proposal.spec_url {
-            println!("Spec: {}", url);
+            dchat_log::out!("Spec: {}", url);
         }
     }
 
@@ -223,38 +223,38 @@ pub async fn handle_get_proposal(proposal_id: String) -> Result<()> {
 
     match manager.get_proposal(&id) {
         Some(proposal) => {
-            println!("\n📋 Proposal Details");
-            println!("{}", "=".repeat(80));
-            println!("ID: {}", proposal.id);
-            println!("Proposer: {}", proposal.proposer);
-            println!("Title: {}", proposal.title);
-            println!("Description:\n{}", proposal.description);
-            println!(
+            dchat_log::out!("\n📋 Proposal Details");
+            dchat_log::out!("{}", "=".repeat(80));
+            dchat_log::out!("ID: {}", proposal.id);
+            dchat_log::out!("Proposer: {}", proposal.proposer);
+            dchat_log::out!("Title: {}", proposal.title);
+            dchat_log::out!("Description:\n{}", proposal.description);
+            dchat_log::out!(
                 "\nVersion: {} → {}",
                 proposal.current_version, proposal.target_version
             );
-            println!("Type: {:?}", proposal.upgrade_type);
-            println!("Status: {:?}", proposal.status);
-            println!("\nVoting:");
-            println!("  For: {}", proposal.votes_for);
-            println!("  Against: {}", proposal.votes_against);
-            println!("  Quorum: {:.2}%", proposal.quorum_bps as f64 / 100.0);
-            println!(
+            dchat_log::out!("Type: {:?}", proposal.upgrade_type);
+            dchat_log::out!("Status: {:?}", proposal.status);
+            dchat_log::out!("\nVoting:");
+            dchat_log::out!("  For: {}", proposal.votes_for);
+            dchat_log::out!("  Against: {}", proposal.votes_against);
+            dchat_log::out!("  Quorum: {:.2}%", proposal.quorum_bps as f64 / 100.0);
+            dchat_log::out!(
                 "  Deadline: {}",
                 proposal.voting_deadline.format("%Y-%m-%d %H:%M:%S UTC")
             );
 
             if let Some(ref url) = proposal.spec_url {
-                println!("\nSpecification: {}", url);
+                dchat_log::out!("\nSpecification: {}", url);
             }
 
             if !proposal.validator_signatures.is_empty() {
-                println!(
+                dchat_log::out!(
                     "\nValidator Signatures: {}",
                     proposal.validator_signatures.len()
                 );
                 for (i, sig) in proposal.validator_signatures.iter().enumerate() {
-                    println!(
+                    dchat_log::out!(
                         "  {}. {} (stake: {})",
                         i + 1,
                         sig.validator_id,
@@ -264,16 +264,16 @@ pub async fn handle_get_proposal(proposal_id: String) -> Result<()> {
             }
 
             if let Some(height) = proposal.activation_height {
-                println!("\nActivation Height: {}", height);
+                dchat_log::out!("\nActivation Height: {}", height);
             }
             if let Some(time) = proposal.activation_time {
-                println!("Activation Time: {}", time.format("%Y-%m-%d %H:%M:%S UTC"));
+                dchat_log::out!("Activation Time: {}", time.format("%Y-%m-%d %H:%M:%S UTC"));
             }
 
             Ok(())
         }
         None => {
-            println!("❌ Proposal not found: {}", proposal_id);
+            dchat_log::out!("❌ Proposal not found: {}", proposal_id);
             Ok(())
         }
     }
@@ -295,11 +295,11 @@ pub async fn handle_vote(
     manager.cast_upgrade_vote(id, voter_id, vote_for, voting_power)?;
     persist_manager(&manager)?;
 
-    println!("\n✅ Vote cast successfully!");
-    println!("Proposal: {}", proposal_id);
-    println!("Voter: {}", voter);
-    println!("Vote: {}", if vote_for { "FOR" } else { "AGAINST" });
-    println!("Voting Power: {}", voting_power);
+    dchat_log::out!("\n✅ Vote cast successfully!");
+    dchat_log::out!("Proposal: {}", proposal_id);
+    dchat_log::out!("Voter: {}", voter);
+    dchat_log::out!("Vote: {}", if vote_for { "FOR" } else { "AGAINST" });
+    dchat_log::out!("Voting Power: {}", voting_power);
 
     Ok(())
 }
@@ -321,11 +321,11 @@ pub async fn handle_sign_upgrade(
             .map_err(|_| Error::validation("Invalid validator ID"))?,
     );
 
-    println!("\n🔑 Validator Signing Upgrade Approval");
-    println!("Proposal: {}", proposal_id);
-    println!("Validator: {}", validator_id);
-    println!("Stake: {}", stake);
-    println!("Key File: {}", key_file.display());
+    dchat_log::out!("\n🔑 Validator Signing Upgrade Approval");
+    dchat_log::out!("Proposal: {}", proposal_id);
+    dchat_log::out!("Validator: {}", validator_id);
+    dchat_log::out!("Stake: {}", stake);
+    dchat_log::out!("Key File: {}", key_file.display());
 
     // Load validator key
     let validator_keypair = load_validator_key(&key_file).await?;
@@ -370,7 +370,7 @@ pub async fn handle_sign_upgrade(
         hex::encode(&signature.to_bytes()[..8])
     );
 
-    println!("✅ Validator signature added!");
+    dchat_log::out!("✅ Validator signature added!");
 
     Ok(())
 }
@@ -384,9 +384,9 @@ pub async fn handle_finalize_proposal(proposal_id: String) -> Result<()> {
     let passed = manager.finalize_proposal(id)?;
     persist_manager(&manager)?;
 
-    println!("\n📊 Proposal Finalized");
-    println!("Proposal ID: {}", proposal_id);
-    println!(
+    dchat_log::out!("\n📊 Proposal Finalized");
+    dchat_log::out!("Proposal ID: {}", proposal_id);
+    dchat_log::out!(
         "Result: {}",
         if passed {
             "✅ APPROVED"
@@ -396,9 +396,9 @@ pub async fn handle_finalize_proposal(proposal_id: String) -> Result<()> {
     );
 
     if let Some(proposal) = manager.get_proposal(&id) {
-        println!("Votes For: {}", proposal.votes_for);
-        println!("Votes Against: {}", proposal.votes_against);
-        println!("Quorum: {:.2}%", proposal.quorum_bps as f64 / 100.0);
+        dchat_log::out!("Votes For: {}", proposal.votes_for);
+        dchat_log::out!("Votes Against: {}", proposal.votes_against);
+        dchat_log::out!("Quorum: {:.2}%", proposal.quorum_bps as f64 / 100.0);
     }
 
     Ok(())
@@ -420,10 +420,10 @@ pub async fn handle_schedule_upgrade(
     manager.schedule_upgrade(id, activation_height, time)?;
     persist_manager(&manager)?;
 
-    println!("\n⏰ Upgrade Scheduled");
-    println!("Proposal ID: {}", proposal_id);
-    println!("Activation Height: {}", activation_height);
-    println!("Activation Time: {}", time.format("%Y-%m-%d %H:%M:%S UTC"));
+    dchat_log::out!("\n⏰ Upgrade Scheduled");
+    dchat_log::out!("Proposal ID: {}", proposal_id);
+    dchat_log::out!("Activation Height: {}", activation_height);
+    dchat_log::out!("Activation Time: {}", time.format("%Y-%m-%d %H:%M:%S UTC"));
 
     Ok(())
 }
@@ -437,10 +437,10 @@ pub async fn handle_activate_upgrade(proposal_id: String, current_height: u64) -
     manager.activate_upgrade(id, current_height)?;
     persist_manager(&manager)?;
 
-    println!("\n🚀 Upgrade Activated!");
-    println!("Proposal ID: {}", proposal_id);
-    println!("Block Height: {}", current_height);
-    println!("New Version: {}", manager.current_version());
+    dchat_log::out!("\n🚀 Upgrade Activated!");
+    dchat_log::out!("Proposal ID: {}", proposal_id);
+    dchat_log::out!("Block Height: {}", current_height);
+    dchat_log::out!("New Version: {}", manager.current_version());
 
     Ok(())
 }
@@ -454,8 +454,8 @@ pub async fn handle_cancel_upgrade(proposal_id: String) -> Result<()> {
     manager.cancel_upgrade(id)?;
     persist_manager(&manager)?;
 
-    println!("\n❌ Upgrade Cancelled");
-    println!("Proposal ID: {}", proposal_id);
+    dchat_log::out!("\n❌ Upgrade Cancelled");
+    dchat_log::out!("Proposal ID: {}", proposal_id);
 
     Ok(())
 }
@@ -463,7 +463,7 @@ pub async fn handle_cancel_upgrade(proposal_id: String) -> Result<()> {
 /// Handle `dchat governance version` command
 pub async fn handle_version() -> Result<()> {
     let manager = load_manager().await;
-    println!(
+    dchat_log::out!(
         "\n🔖 Current Protocol Version: {}",
         manager.current_version()
     );
@@ -475,26 +475,26 @@ pub async fn handle_fork_history() -> Result<()> {
     let manager = load_manager().await;
     let forks = manager.get_fork_history();
 
-    println!("\n🌿 Fork History ({} forks):", forks.len());
+    dchat_log::out!("\n🌿 Fork History ({} forks):", forks.len());
 
     if forks.is_empty() {
-        println!("No forks recorded yet.");
+        dchat_log::out!("No forks recorded yet.");
         return Ok(());
     }
 
     for fork in forks {
-        println!("\n{}", "-".repeat(80));
-        println!("Fork ID: {}", fork.fork_id);
-        println!("Parent Version: {}", fork.parent_version);
-        println!("Fork Version: {}", fork.fork_version);
-        println!("Fork Height: {}", fork.fork_height);
-        println!(
+        dchat_log::out!("\n{}", "-".repeat(80));
+        dchat_log::out!("Fork ID: {}", fork.fork_id);
+        dchat_log::out!("Parent Version: {}", fork.parent_version);
+        dchat_log::out!("Fork Version: {}", fork.fork_version);
+        dchat_log::out!("Fork Height: {}", fork.fork_height);
+        dchat_log::out!(
             "Fork Time: {}",
             fork.fork_time.format("%Y-%m-%d %H:%M:%S UTC")
         );
-        println!("Supporting Nodes: {}", fork.supporting_nodes.len());
-        println!("Total Stake: {}", fork.total_stake);
-        println!(
+        dchat_log::out!("Supporting Nodes: {}", fork.supporting_nodes.len());
+        dchat_log::out!("Total Stake: {}", fork.total_stake);
+        dchat_log::out!(
             "Canonical: {}",
             if fork.is_canonical { "Yes" } else { "No" }
         );
@@ -510,16 +510,16 @@ pub async fn handle_check_compatibility(peer_version: String) -> Result<()> {
 
     let compatible = manager.is_compatible_version(&peer_ver);
 
-    println!("\n🔍 Version Compatibility Check");
-    println!("Current Version: {}", manager.current_version());
-    println!("Peer Version: {}", peer_ver);
-    println!(
+    dchat_log::out!("\n🔍 Version Compatibility Check");
+    dchat_log::out!("Current Version: {}", manager.current_version());
+    dchat_log::out!("Peer Version: {}", peer_ver);
+    dchat_log::out!(
         "Compatible: {}",
         if compatible { "✅ Yes" } else { "❌ No" }
     );
 
     if !compatible {
-        println!("\n⚠️  Warning: Incompatible versions may not be able to communicate!");
+        dchat_log::out!("\n⚠️  Warning: Incompatible versions may not be able to communicate!");
     }
 
     Ok(())
@@ -534,16 +534,16 @@ pub async fn handle_configure(
 
     if let Some(threshold) = hard_fork_threshold {
         manager.set_hard_fork_threshold(threshold)?;
-        println!("✅ Hard fork threshold set to {}%", threshold);
+        dchat_log::out!("✅ Hard fork threshold set to {}%", threshold);
     }
 
     if let Some(stake) = total_stake {
         manager.update_total_stake(stake);
-        println!("✅ Total stake updated to {}", stake);
+        dchat_log::out!("✅ Total stake updated to {}", stake);
     }
 
     persist_manager(&manager)?;
-    println!("\n⚙️  Governance Configuration Updated");
+    dchat_log::out!("\n⚙️  Governance Configuration Updated");
 
     Ok(())
 }

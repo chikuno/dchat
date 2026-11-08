@@ -8,6 +8,7 @@ repository = "https://github.com/dchat/dchat"
 documentation = "https://docs.rs/dchat-sdk-rust"
 
 [dependencies]
+dchat-log = { path = "../dchat-log" }
 dchat-core = { path = "../dchat-core" }
 dchat-crypto = { path = "../dchat-crypto" }
 dchat-identity = { path = "../dchat-identity" }

@@ -22,12 +22,12 @@ pub async fn handle_list_scenarios() -> Result<()> {
         ("clock-skew", "Introduce clock drift between nodes", 60),
     ];
 
-    println!("\n🌪️  Available Chaos Scenarios ({}):", scenarios.len());
-    println!("{:<30} {:<60} {:>10}s", "Name", "Description", "Duration");
-    println!("{}", "-".repeat(105));
+    dchat_log::out!("\n🌪️  Available Chaos Scenarios ({}):", scenarios.len());
+    dchat_log::out!("{:<30} {:<60} {:>10}s", "Name", "Description", "Duration");
+    dchat_log::out!("{}", "-".repeat(105));
 
     for (name, desc, duration) in scenarios {
-        println!(
+        dchat_log::out!(
             "{:<30} {:<60} {:>10}",
             name,
             if desc.len() > 60 {
@@ -46,8 +46,8 @@ pub async fn handle_list_scenarios() -> Result<()> {
 pub async fn handle_execute(scenario: String, duration: u64) -> Result<()> {
     let mut orchestrator = ChaosOrchestrator::new();
 
-    println!("\n🌪️  Executing Chaos Scenario: {}", scenario);
-    println!("Duration: {}s", duration);
+    dchat_log::out!("\n🌪️  Executing Chaos Scenario: {}", scenario);
+    dchat_log::out!("Duration: {}s", duration);
 
     // Try to parse as experiment type
     let exp_type = match scenario.to_lowercase().as_str() {
@@ -58,7 +58,7 @@ pub async fn handle_execute(scenario: String, duration: u64) -> Result<()> {
         "resource-exhaustion" => ChaosExperimentType::ResourceExhaustion,
         "clock-skew" => ChaosExperimentType::ClockSkew,
         _ => {
-            println!("❌ Unknown scenario. Use list-scenarios to see available options.");
+            dchat_log::out!("❌ Unknown scenario. Use list-scenarios to see available options.");
             return Ok(());
         }
     };
@@ -66,18 +66,18 @@ pub async fn handle_execute(scenario: String, duration: u64) -> Result<()> {
     let exp_id = format!("exp_{}", uuid::Uuid::new_v4());
     orchestrator.start_experiment(exp_id.clone(), exp_type)?;
 
-    println!("✅ Experiment started: {}", exp_id);
-    println!("⏳ Running for {} seconds...", duration);
+    dchat_log::out!("✅ Experiment started: {}", exp_id);
+    dchat_log::out!("⏳ Running for {} seconds...", duration);
 
     // Simulate duration
     tokio::time::sleep(tokio::time::Duration::from_secs(duration)).await;
 
     orchestrator.end_experiment(&exp_id, true)?;
 
-    println!("✅ Experiment completed successfully!");
+    dchat_log::out!("✅ Experiment completed successfully!");
 
     let rate = orchestrator.calculate_success_rate();
-    println!("Success rate: {:.1}%", rate * 100.0);
+    dchat_log::out!("Success rate: {:.1}%", rate * 100.0);
 
     Ok(())
 }
@@ -89,14 +89,14 @@ pub async fn handle_inject_fault(
     severity: f64,
     duration: u64,
 ) -> Result<()> {
-    println!("\n💉 Injecting Fault:");
-    println!("Target: {}", node);
-    println!("Type: {}", fault_type);
-    println!("Severity: {:.1}%", severity * 100.0);
-    println!("Duration: {}s", duration);
+    dchat_log::out!("\n💉 Injecting Fault:");
+    dchat_log::out!("Target: {}", node);
+    dchat_log::out!("Type: {}", fault_type);
+    dchat_log::out!("Severity: {:.1}%", severity * 100.0);
+    dchat_log::out!("Duration: {}s", duration);
 
-    println!("\n✅ Fault injection simulated");
-    println!("(Actual fault injection requires infrastructure integration)");
+    dchat_log::out!("\n✅ Fault injection simulated");
+    dchat_log::out!("(Actual fault injection requires infrastructure integration)");
 
     Ok(())
 }
@@ -116,13 +116,13 @@ pub async fn handle_simulate_partition(
         .map(|s| s.trim().to_string())
         .collect();
 
-    println!("\n🌐 Simulating Network Partition:");
-    println!("Partition A: {:?}", nodes_a);
-    println!("Partition B: {:?}", nodes_b);
-    println!("Duration: {}s", duration);
+    dchat_log::out!("\n🌐 Simulating Network Partition:");
+    dchat_log::out!("Partition A: {:?}", nodes_a);
+    dchat_log::out!("Partition B: {:?}", nodes_b);
+    dchat_log::out!("Duration: {}s", duration);
 
-    println!("\n✅ Network partition simulated");
-    println!("(Actual partition requires network infrastructure control)");
+    dchat_log::out!("\n✅ Network partition simulated");
+    dchat_log::out!("(Actual partition requires network infrastructure control)");
 
     Ok(())
 }

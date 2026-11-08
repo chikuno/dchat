@@ -13,8 +13,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Handle `dchat network status` command
 pub async fn handle_network_status(config: &Config) -> Result<()> {
-    println!("\n📡 Network Status:");
-    println!("══════════════════════════════════════════════════════════");
+    dchat_log::out!("\n📡 Network Status:");
+    dchat_log::out!("══════════════════════════════════════════════════════════");
 
     // Try to fetch real metrics from running node first
     // Default endpoints for metrics and health
@@ -31,15 +31,15 @@ pub async fn handle_network_status(config: &Config) -> Result<()> {
             if let Ok(body) = resp.text().await {
                 if let Ok(health) = serde_json::from_str::<serde_json::Value>(&body) {
                     // Display real metrics from running node
-                    println!("Status: 🟢 Node is running");
-                    println!();
+                    dchat_log::out!("Status: 🟢 Node is running");
+                    dchat_log::out!();
 
                     if let Some(peer_id) = health.get("peer_id").and_then(|v| v.as_str()) {
-                        println!("Local Peer ID: {}", peer_id);
+                        dchat_log::out!("Local Peer ID: {}", peer_id);
                     }
 
-                    println!("Protocol Version: {}", VERSION);
-                    println!(
+                    dchat_log::out!("Protocol Version: {}", VERSION);
+                    dchat_log::out!(
                         "Network: {}",
                         if config.network.enable_mdns {
                             "testnet (mDNS enabled)"
@@ -47,11 +47,11 @@ pub async fn handle_network_status(config: &Config) -> Result<()> {
                             "mainnet"
                         }
                     );
-                    println!();
+                    dchat_log::out!();
 
                     // Show peer counts from health endpoint
                     if let Some(peers) = health.get("peer_count") {
-                        println!("Connected Peers: {}", peers);
+                        dchat_log::out!("Connected Peers: {}", peers);
                     }
 
                     if let Some(currency_ready) = health.get("currency_chain_ready") {
@@ -60,7 +60,7 @@ pub async fn handle_network_status(config: &Config) -> Result<()> {
                         } else {
                             "🔴 Disconnected"
                         };
-                        println!("Currency Chain: {}", status);
+                        dchat_log::out!("Currency Chain: {}", status);
                     }
 
                     if let Some(chat_ready) = health.get("chat_chain_ready") {
@@ -69,24 +69,24 @@ pub async fn handle_network_status(config: &Config) -> Result<()> {
                         } else {
                             "🔴 Disconnected"
                         };
-                        println!("Chat Chain: {}", status);
+                        dchat_log::out!("Chat Chain: {}", status);
                     }
 
                     if let Some(uptime) = health.get("uptime_secs") {
                         let secs = uptime.as_u64().unwrap_or(0);
                         let hours = secs / 3600;
                         let mins = (secs % 3600) / 60;
-                        println!("Uptime: {}h {}m", hours, mins);
+                        dchat_log::out!("Uptime: {}h {}m", hours, mins);
                     }
 
-                    println!();
-                    println!("Listen Addresses:");
+                    dchat_log::out!();
+                    dchat_log::out!("Listen Addresses:");
                     for addr in &config.network.listen_addresses {
-                        println!("  • {}", addr);
+                        dchat_log::out!("  • {}", addr);
                     }
-                    println!();
-                    println!("Bootstrap Peers: {}", config.network.bootstrap_peers.len());
-                    println!("Max Connections: {}", config.network.max_connections);
+                    dchat_log::out!();
+                    dchat_log::out!("Bootstrap Peers: {}", config.network.bootstrap_peers.len());
+                    dchat_log::out!("Max Connections: {}", config.network.max_connections);
 
                     return Ok(());
                 }
@@ -98,16 +98,16 @@ pub async fn handle_network_status(config: &Config) -> Result<()> {
     }
 
     // Fallback: Initialize network to get status (node not running)
-    println!("Status: 🔴 Node not running (showing config)");
-    println!();
+    dchat_log::out!("Status: 🔴 Node not running (showing config)");
+    dchat_log::out!();
 
     let network_config = NetworkConfig::default();
     let network = NetworkManager::new(network_config).await?;
     let peer_id = network.peer_id();
 
-    println!("Local Peer ID: {}", peer_id);
-    println!("Protocol Version: {}", VERSION);
-    println!(
+    dchat_log::out!("Local Peer ID: {}", peer_id);
+    dchat_log::out!("Protocol Version: {}", VERSION);
+    dchat_log::out!(
         "Network: {}",
         if config.network.enable_mdns {
             "testnet (mDNS enabled)"
@@ -115,28 +115,28 @@ pub async fn handle_network_status(config: &Config) -> Result<()> {
             "mainnet"
         }
     );
-    println!();
-    println!("Listen Addresses:");
+    dchat_log::out!();
+    dchat_log::out!("Listen Addresses:");
     for addr in &config.network.listen_addresses {
-        println!("  • {}", addr);
+        dchat_log::out!("  • {}", addr);
     }
-    println!();
-    println!("Bootstrap Peers: {}", config.network.bootstrap_peers.len());
-    println!("Max Connections: {}", config.network.max_connections);
-    println!(
+    dchat_log::out!();
+    dchat_log::out!("Bootstrap Peers: {}", config.network.bootstrap_peers.len());
+    dchat_log::out!("Max Connections: {}", config.network.max_connections);
+    dchat_log::out!(
         "Connection Timeout: {}ms",
         config.network.connection_timeout_ms
     );
-    println!();
-    println!("💡 Start a node with: dchat user --light-client");
+    dchat_log::out!();
+    dchat_log::out!("💡 Start a node with: dchat user --light-client");
 
     Ok(())
 }
 
 /// Handle `dchat network peers` command
 pub async fn handle_network_peers(config: &Config, node_type: Option<String>) -> Result<()> {
-    println!("\n👥 Connected Peers:");
-    println!("══════════════════════════════════════════════════════════");
+    dchat_log::out!("\n👥 Connected Peers:");
+    dchat_log::out!("══════════════════════════════════════════════════════════");
 
     // Try to fetch real peer data from running node's metrics endpoint
     let metrics_url = "http://127.0.0.1:9615/metrics";
@@ -182,32 +182,32 @@ pub async fn handle_network_peers(config: &Config, node_type: Option<String>) ->
 
                 let total = validators + relays + clients;
                 if total > 0 {
-                    println!("📊 Live Peer Statistics (from running node):");
-                    println!();
+                    dchat_log::out!("📊 Live Peer Statistics (from running node):");
+                    dchat_log::out!();
 
                     let filter = node_type.as_deref();
-                    println!("{:<20} {:>10}", "Type", "Count");
-                    println!("{}", "-".repeat(32));
+                    dchat_log::out!("{:<20} {:>10}", "Type", "Count");
+                    dchat_log::out!("{}", "-".repeat(32));
 
                     if filter.is_none() || filter == Some("validator") {
-                        println!("{:<20} {:>10}", "Validators", validators);
+                        dchat_log::out!("{:<20} {:>10}", "Validators", validators);
                     }
                     if filter.is_none() || filter == Some("relay") {
-                        println!("{:<20} {:>10}", "Relays", relays);
+                        dchat_log::out!("{:<20} {:>10}", "Relays", relays);
                     }
                     if filter.is_none() || filter == Some("client") {
-                        println!("{:<20} {:>10}", "Clients", clients);
+                        dchat_log::out!("{:<20} {:>10}", "Clients", clients);
                     }
 
-                    println!("{}", "-".repeat(32));
-                    println!("{:<20} {:>10}", "Total", total);
-                    println!();
+                    dchat_log::out!("{}", "-".repeat(32));
+                    dchat_log::out!("{:<20} {:>10}", "Total", total);
+                    dchat_log::out!();
 
                     if total_rtt > 0.0 {
-                        println!("Average RTT: {:.1}ms", total_rtt);
+                        dchat_log::out!("Average RTT: {:.1}ms", total_rtt);
                     }
                     if total_quality > 0.0 {
-                        println!("Connection Quality: {:.0}%", total_quality * 100.0);
+                        dchat_log::out!("Connection Quality: {:.0}%", total_quality * 100.0);
                     }
 
                     return Ok(());
@@ -217,19 +217,19 @@ pub async fn handle_network_peers(config: &Config, node_type: Option<String>) ->
     }
 
     // Fallback: show bootstrap peers from config
-    println!("(Node not running - showing configured bootstrap peers)");
-    println!();
+    dchat_log::out!("(Node not running - showing configured bootstrap peers)");
+    dchat_log::out!();
 
     let peers = &config.network.bootstrap_peers;
 
     if peers.is_empty() {
-        println!("No peers configured. Use --bootstrap to add peers.");
+        dchat_log::out!("No peers configured. Use --bootstrap to add peers.");
         return Ok(());
     }
 
     let filter = node_type.as_deref();
-    println!("{:<20} {:<50} {:>10}", "Type", "Address", "Quality");
-    println!("{}", "-".repeat(82));
+    dchat_log::out!("{:<20} {:<50} {:>10}", "Type", "Address", "Quality");
+    dchat_log::out!("{}", "-".repeat(82));
 
     for (i, peer_addr) in peers.iter().enumerate() {
         let ptype = if peer_addr.contains("validator") {
@@ -247,7 +247,7 @@ pub async fn handle_network_peers(config: &Config, node_type: Option<String>) ->
             }
         }
 
-        println!(
+        dchat_log::out!(
             "{:<20} {:<50} {:>10}",
             ptype,
             if peer_addr.len() > 48 {
@@ -264,7 +264,7 @@ pub async fn handle_network_peers(config: &Config, node_type: Option<String>) ->
 
 /// Handle `dchat network connect` command
 pub async fn handle_network_connect(multiaddr: String) -> Result<()> {
-    println!("🔗 Connecting to peer: {}", multiaddr);
+    dchat_log::out!("🔗 Connecting to peer: {}", multiaddr);
 
     // Validate multiaddr format
     let addr: Multiaddr = multiaddr
@@ -272,15 +272,15 @@ pub async fn handle_network_connect(multiaddr: String) -> Result<()> {
         .map_err(|e| Error::validation(format!("Invalid multiaddr: {}", e)))?;
 
     // In production, this would actually dial the peer
-    println!("✅ Connection initiated to {}", addr);
-    println!("   Check status with: dchat network peers");
+    dchat_log::out!("✅ Connection initiated to {}", addr);
+    dchat_log::out!("   Check status with: dchat network peers");
 
     Ok(())
 }
 
 /// Handle `dchat network disconnect` command
 pub async fn handle_network_disconnect(peer_id: String) -> Result<()> {
-    println!("👋 Disconnecting from peer: {}", peer_id);
+    dchat_log::out!("👋 Disconnecting from peer: {}", peer_id);
 
     // Validate peer ID format
     let _pid: PeerId = peer_id
@@ -288,7 +288,7 @@ pub async fn handle_network_disconnect(peer_id: String) -> Result<()> {
         .map_err(|e| Error::validation(format!("Invalid peer ID: {}", e)))?;
 
     // In production, this would disconnect from the peer
-    println!("✅ Disconnected from {}", peer_id);
+    dchat_log::out!("✅ Disconnected from {}", peer_id);
 
     Ok(())
 }
@@ -299,7 +299,7 @@ pub async fn handle_network_ban(
     duration_hours: u32,
     reason: Option<String>,
 ) -> Result<()> {
-    println!("🚫 Banning peer: {}", peer_id);
+    dchat_log::out!("🚫 Banning peer: {}", peer_id);
 
     let _pid: PeerId = peer_id
         .parse()
@@ -311,41 +311,41 @@ pub async fn handle_network_ban(
         format!("{} hours", duration_hours)
     };
 
-    println!("Duration: {}", duration_str);
+    dchat_log::out!("Duration: {}", duration_str);
     if let Some(r) = &reason {
-        println!("Reason: {}", r);
+        dchat_log::out!("Reason: {}", r);
     }
 
     // In production, this would add to ban list in database
-    println!("✅ Peer banned successfully");
-    println!("   Unban with: dchat network unban --peer-id {}", peer_id);
+    dchat_log::out!("✅ Peer banned successfully");
+    dchat_log::out!("   Unban with: dchat network unban --peer-id {}", peer_id);
 
     Ok(())
 }
 
 /// Handle `dchat network unban` command
 pub async fn handle_network_unban(peer_id: String) -> Result<()> {
-    println!("✅ Unbanning peer: {}", peer_id);
+    dchat_log::out!("✅ Unbanning peer: {}", peer_id);
 
     let _pid: PeerId = peer_id
         .parse()
         .map_err(|e| Error::validation(format!("Invalid peer ID: {}", e)))?;
 
     // In production, this would remove from ban list
-    println!("Peer {} can now reconnect", peer_id);
+    dchat_log::out!("Peer {} can now reconnect", peer_id);
 
     Ok(())
 }
 
 /// Handle `dchat network banned` command
 pub async fn handle_network_banned() -> Result<()> {
-    println!("\n🚫 Banned Peers:");
-    println!("══════════════════════════════════════════════════════════");
+    dchat_log::out!("\n🚫 Banned Peers:");
+    dchat_log::out!("══════════════════════════════════════════════════════════");
 
     // In production, this would read from database
-    println!("No banned peers.");
-    println!();
-    println!("Ban a peer with: dchat network ban --peer-id <ID> --reason <REASON>");
+    dchat_log::out!("No banned peers.");
+    dchat_log::out!();
+    dchat_log::out!("Ban a peer with: dchat network ban --peer-id <ID> --reason <REASON>");
 
     Ok(())
 }
@@ -428,14 +428,14 @@ pub async fn handle_network_peer_record(
         let json = serde_json::to_string_pretty(&record)
             .map_err(|e| Error::Config(format!("Failed to serialize peer record: {}", e)))?;
         tokio::fs::write(&path, json).await.map_err(Error::Io)?;
-        println!("✓ Wrote peer record to {:?}", path);
+        dchat_log::out!("✓ Wrote peer record to {:?}", path);
     }
 
-    println!("\nPeerId: {}", record.peer_id);
-    println!("Multiaddr: {}", record.multiaddr);
-    println!("\nConfig snippet:");
-    println!("[network]");
-    println!("bootstrap_peers = [\"{}\"]", record.multiaddr);
+    dchat_log::out!("\nPeerId: {}", record.peer_id);
+    dchat_log::out!("Multiaddr: {}", record.multiaddr);
+    dchat_log::out!("\nConfig snippet:");
+    dchat_log::out!("[network]");
+    dchat_log::out!("bootstrap_peers = [\"{}\"]", record.multiaddr);
 
     Ok(())
 }

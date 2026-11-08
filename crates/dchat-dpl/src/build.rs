@@ -380,19 +380,19 @@ pub fn cli_main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
-        eprintln!("Usage: {} <command> [args...]", args[0]);
-        eprintln!();
-        eprintln!("Commands:");
-        eprintln!("  verify-schema <idl.json> <expected_hash>  Verify IDL schema hash");
-        eprintln!("  verify-wasm <file.wasm> <expected_hash>   Verify WASM manifest");
-        eprintln!("  extract <file.wasm>                       Extract and print manifest");
+        edchat_log::out!("Usage: {} <command> [args...]", args[0]);
+        edchat_log::out!();
+        edchat_log::out!("Commands:");
+        edchat_log::out!("  verify-schema <idl.json> <expected_hash>  Verify IDL schema hash");
+        edchat_log::out!("  verify-wasm <file.wasm> <expected_hash>   Verify WASM manifest");
+        edchat_log::out!("  extract <file.wasm>                       Extract and print manifest");
         process::exit(1);
     }
 
     match args[1].as_str() {
         "verify-schema" => {
             if args.len() < 4 {
-                eprintln!(
+                edchat_log::out!(
                     "Usage: {} verify-schema <idl.json> <expected_hash>",
                     args[0]
                 );
@@ -406,17 +406,17 @@ pub fn cli_main() {
                 Ok(hash) => {
                     let actual = hex::encode(&hash);
                     if actual == *expected {
-                        println!("✓ Schema hash verified: {}", actual);
+                        dchat_log::out!("✓ Schema hash verified: {}", actual);
                         process::exit(0);
                     } else {
-                        eprintln!("✗ Schema hash mismatch!");
-                        eprintln!("  Expected: {}", expected);
-                        eprintln!("  Actual:   {}", actual);
+                        edchat_log::out!("✗ Schema hash mismatch!");
+                        edchat_log::out!("  Expected: {}", expected);
+                        edchat_log::out!("  Actual:   {}", actual);
                         process::exit(1);
                     }
                 }
                 Err(e) => {
-                    eprintln!("Error: {}", e);
+                    edchat_log::out!("Error: {}", e);
                     process::exit(1);
                 }
             }
@@ -424,7 +424,7 @@ pub fn cli_main() {
 
         "verify-wasm" => {
             if args.len() < 4 {
-                eprintln!("Usage: {} verify-wasm <file.wasm> <expected_hash>", args[0]);
+                edchat_log::out!("Usage: {} verify-wasm <file.wasm> <expected_hash>", args[0]);
                 process::exit(1);
             }
 
@@ -434,18 +434,18 @@ pub fn cli_main() {
             let expected_bytes: [u8; 32] = match hex::decode(expected) {
                 Ok(v) if v.len() == 32 => v.try_into().unwrap(),
                 _ => {
-                    eprintln!("Invalid expected hash: must be 64 hex characters");
+                    edchat_log::out!("Invalid expected hash: must be 64 hex characters");
                     process::exit(1);
                 }
             };
 
             match verify_wasm_manifest(&wasm_path, &expected_bytes) {
                 Ok(()) => {
-                    println!("✓ WASM manifest verified");
+                    dchat_log::out!("✓ WASM manifest verified");
                     process::exit(0);
                 }
                 Err(e) => {
-                    eprintln!("✗ Verification failed: {}", e);
+                    edchat_log::out!("✗ Verification failed: {}", e);
                     process::exit(1);
                 }
             }
@@ -453,7 +453,7 @@ pub fn cli_main() {
 
         "extract" => {
             if args.len() < 3 {
-                eprintln!("Usage: {} extract <file.wasm>", args[0]);
+                edchat_log::out!("Usage: {} extract <file.wasm>", args[0]);
                 process::exit(1);
             }
 
@@ -461,25 +461,25 @@ pub fn cli_main() {
             let wasm_bytes = match fs::read(&wasm_path) {
                 Ok(bytes) => bytes,
                 Err(e) => {
-                    eprintln!("Failed to read WASM file: {}", e);
+                    edchat_log::out!("Failed to read WASM file: {}", e);
                     process::exit(1);
                 }
             };
 
             match extract_manifest_from_wasm(&wasm_bytes) {
                 Ok(manifest) => {
-                    println!("Schema hash: {}", hex::encode(&manifest.schema_hash));
+                    dchat_log::out!("Schema hash: {}", hex::encode(&manifest.schema_hash));
                     process::exit(0);
                 }
                 Err(e) => {
-                    eprintln!("Failed to extract manifest: {}", e);
+                    edchat_log::out!("Failed to extract manifest: {}", e);
                     process::exit(1);
                 }
             }
         }
 
         _ => {
-            eprintln!("Unknown command: {}", args[1]);
+            edchat_log::out!("Unknown command: {}", args[1]);
             process::exit(1);
         }
     }

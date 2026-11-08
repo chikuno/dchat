@@ -49,20 +49,20 @@ fn test_wasm_exists_and_validates() {
 
     // Check file exists
     if !wasm_path.exists() {
-        eprintln!("WASM not found at {:?}", wasm_path);
-        eprintln!("Please compile the counter contract first (wasmi/wasip1):");
-        eprintln!("  rustup target add wasm32-wasip1");
-        eprintln!("  cd examples/contracts/dpl-counter");
-        eprintln!("  cargo build --target wasm32-wasip1 --release");
-        eprintln!("\nIf you're using the legacy counter example instead:");
-        eprintln!("  cd examples/contracts/counter");
-        eprintln!("  cargo build --target wasm32-unknown-unknown --release");
+        dchat_log::out!("WASM not found at {:?}", wasm_path);
+        dchat_log::out!("Please compile the counter contract first (wasmi/wasip1):");
+        dchat_log::out!("  rustup target add wasm32-wasip1");
+        dchat_log::out!("  cd examples/contracts/dpl-counter");
+        dchat_log::out!("  cargo build --target wasm32-wasip1 --release");
+        dchat_log::out!("\nIf you're using the legacy counter example instead:");
+        dchat_log::out!("  cd examples/contracts/counter");
+        dchat_log::out!("  cargo build --target wasm32-unknown-unknown --release");
         panic!("Counter contract WASM not found");
     }
 
     // Load WASM
     let wasm_bytes = std::fs::read(&wasm_path).expect("Failed to read WASM file");
-    eprintln!("Loaded WASM: {} bytes", wasm_bytes.len());
+    dchat_log::out!("Loaded WASM: {} bytes", wasm_bytes.len());
 
     // Validate with dchat validator
     let validator = BytecodeValidator::new();
@@ -70,14 +70,14 @@ fn test_wasm_exists_and_validates() {
 
     match validation_result {
         Ok(validated) => {
-            eprintln!("✅ WASM validation passed!");
-            eprintln!("   Code hash: {:?}", hex::encode(&validated.code_hash[..8]));
-            eprintln!("   Size: {} bytes", validated.size);
+            dchat_log::out!("✅ WASM validation passed!");
+            dchat_log::out!("   Code hash: {:?}", hex::encode(&validated.code_hash[..8]));
+            dchat_log::out!("   Size: {} bytes", validated.size);
         }
         Err(e) => {
             // Some validation may fail for our simple contract since
             // it doesn't have all expected exports, but that's OK for testing
-            eprintln!("⚠️  Validation notes: {:?}", e);
+            dchat_log::out!("⚠️  Validation notes: {:?}", e);
         }
     }
 }
@@ -87,7 +87,7 @@ fn test_wasm_module_loads() {
     let wasm_path = get_wasm_path();
 
     if !wasm_path.exists() {
-        eprintln!("Skipping: WASM not found");
+        dchat_log::out!("Skipping: WASM not found");
         return;
     }
 
@@ -99,12 +99,12 @@ fn test_wasm_module_loads() {
 
     match module {
         Ok(m) => {
-            eprintln!("✅ WASM module loaded successfully!");
+            dchat_log::out!("✅ WASM module loaded successfully!");
             // Check exports
             let exports: Vec<_> = m.exports().collect();
-            eprintln!("   Exports ({}):", exports.len());
+            dchat_log::out!("   Exports ({}):", exports.len());
             for export in exports {
-                eprintln!("     - {}: {:?}", export.name(), export.ty());
+                dchat_log::out!("     - {}: {:?}", export.name(), export.ty());
             }
         }
         Err(e) => {
@@ -118,7 +118,7 @@ fn test_counter_contract_execution() {
     let wasm_path = get_wasm_path();
 
     if !wasm_path.exists() {
-        eprintln!("Skipping: WASM not found");
+        dchat_log::out!("Skipping: WASM not found");
         return;
     }
 
@@ -168,17 +168,17 @@ fn test_counter_contract_execution() {
         .get_typed_func::<u32, u32>(&store, "alloc")
         .expect("alloc export not found");
 
-    eprintln!("✅ All required exports found!");
+    dchat_log::out!("✅ All required exports found!");
 
     // Allocate memory for account data
     let account_ptr = alloc
         .call(&mut store, COUNTER_STATE_SIZE as u32)
         .expect("alloc failed");
-    eprintln!("   Allocated account data at: 0x{:x}", account_ptr);
+    dchat_log::out!("   Allocated account data at: 0x{:x}", account_ptr);
 
     // Allocate memory for instruction data
     let ix_ptr = alloc.call(&mut store, 16).expect("alloc failed");
-    eprintln!("   Allocated instruction data at: 0x{:x}", ix_ptr);
+    dchat_log::out!("   Allocated instruction data at: 0x{:x}", ix_ptr);
 
     // Write initialize instruction
     memory
@@ -192,7 +192,7 @@ fn test_counter_contract_execution() {
             (account_ptr, COUNTER_STATE_SIZE as u32, ix_ptr, 1),
         )
         .expect("entrypoint call failed");
-    eprintln!("   Initialize result: {}", result);
+    dchat_log::out!("   Initialize result: {}", result);
     assert_eq!(result, 0, "Initialize should succeed");
 
     // Read back account data to verify initialization
@@ -210,7 +210,7 @@ fn test_counter_contract_execution() {
 
     let counter_value = u64::from_le_bytes(account_data[5..13].try_into().unwrap());
     assert_eq!(counter_value, 0, "Counter should be 0 after init");
-    eprintln!("   Counter value after init: {}", counter_value);
+    dchat_log::out!("   Counter value after init: {}", counter_value);
 
     // Test increment
     memory
@@ -231,7 +231,7 @@ fn test_counter_contract_execution() {
         .expect("read failed");
     let counter_value = u64::from_le_bytes(account_data[5..13].try_into().unwrap());
     assert_eq!(counter_value, 1, "Counter should be 1 after increment");
-    eprintln!("   Counter value after increment: {}", counter_value);
+    dchat_log::out!("   Counter value after increment: {}", counter_value);
 
     // Test increment by 5
     let mut ix_data = vec![IX_INCREMENT];
@@ -258,7 +258,7 @@ fn test_counter_contract_execution() {
         .expect("read failed");
     let counter_value = u64::from_le_bytes(account_data[5..13].try_into().unwrap());
     assert_eq!(counter_value, 6, "Counter should be 6");
-    eprintln!("   Counter value after increment by 5: {}", counter_value);
+    dchat_log::out!("   Counter value after increment by 5: {}", counter_value);
 
     // Test decrement
     let mut ix_data = vec![IX_DECREMENT];
@@ -285,7 +285,7 @@ fn test_counter_contract_execution() {
         .expect("read failed");
     let counter_value = u64::from_le_bytes(account_data[5..13].try_into().unwrap());
     assert_eq!(counter_value, 4, "Counter should be 4");
-    eprintln!("   Counter value after decrement by 2: {}", counter_value);
+    dchat_log::out!("   Counter value after decrement by 2: {}", counter_value);
 
     // Test set
     let mut ix_data = vec![IX_SET];
@@ -312,9 +312,9 @@ fn test_counter_contract_execution() {
         .expect("read failed");
     let counter_value = u64::from_le_bytes(account_data[5..13].try_into().unwrap());
     assert_eq!(counter_value, 100, "Counter should be 100");
-    eprintln!("   Counter value after set to 100: {}", counter_value);
+    dchat_log::out!("   Counter value after set to 100: {}", counter_value);
 
-    eprintln!("\n✅ All counter contract tests passed!");
+    dchat_log::out!("\n✅ All counter contract tests passed!");
 }
 
 #[test]
@@ -322,7 +322,7 @@ fn test_counter_error_cases() {
     let wasm_path = get_wasm_path();
 
     if !wasm_path.exists() {
-        eprintln!("Skipping: WASM not found");
+        dchat_log::out!("Skipping: WASM not found");
         return;
     }
 
@@ -383,7 +383,7 @@ fn test_counter_error_cases() {
         )
         .expect("entrypoint call failed");
     assert_eq!(result, 2, "Should return ERR_NOT_INITIALIZED (2)");
-    eprintln!("✅ Increment on uninitialized returns correct error");
+    dchat_log::out!("✅ Increment on uninitialized returns correct error");
 
     // Initialize first
     memory
@@ -405,7 +405,7 @@ fn test_counter_error_cases() {
         )
         .expect("entrypoint call failed");
     assert_eq!(result, 3, "Should return ERR_ALREADY_INITIALIZED (3)");
-    eprintln!("✅ Double initialize returns correct error");
+    dchat_log::out!("✅ Double initialize returns correct error");
 
     // Test: underflow should fail
     let mut ix_data = vec![IX_DECREMENT];
@@ -426,7 +426,7 @@ fn test_counter_error_cases() {
         )
         .expect("entrypoint call failed");
     assert_eq!(result, 5, "Should return ERR_UNDERFLOW (5)");
-    eprintln!("✅ Underflow returns correct error");
+    dchat_log::out!("✅ Underflow returns correct error");
 
     // Test: invalid instruction
     memory
@@ -440,7 +440,7 @@ fn test_counter_error_cases() {
         )
         .expect("entrypoint call failed");
     assert_eq!(result, 1, "Should return ERR_INVALID_INSTRUCTION (1)");
-    eprintln!("✅ Invalid instruction returns correct error");
+    dchat_log::out!("✅ Invalid instruction returns correct error");
 
-    eprintln!("\n✅ All error case tests passed!");
+    dchat_log::out!("\n✅ All error case tests passed!");
 }

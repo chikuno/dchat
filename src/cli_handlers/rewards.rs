@@ -42,9 +42,9 @@ fn init_currency_chain() -> Result<CurrencyChainClient> {
 pub async fn handle_claim(user_id: String) -> Result<()> {
     let uid = UserId(Uuid::parse_str(&user_id).map_err(|_| Error::validation("Invalid user ID"))?);
 
-    println!("\n🎁 Claiming Rewards:");
-    println!("══════════════════════════════════════════════════════════");
-    println!("User ID: {}", user_id);
+    dchat_log::out!("\n🎁 Claiming Rewards:");
+    dchat_log::out!("══════════════════════════════════════════════════════════");
+    dchat_log::out!("User ID: {}", user_id);
 
     match init_currency_chain() {
         Ok(currency_chain) => {
@@ -52,52 +52,52 @@ pub async fn handle_claim(user_id: String) -> Result<()> {
             match currency_chain.get_wallet(&uid) {
                 Ok(Some(wallet)) => {
                     if wallet.rewards_pending == 0 {
-                        println!();
-                        println!("Pending Rewards: 0 DCHAT");
-                        println!();
-                        println!("No rewards to claim at this time.");
-                        println!("💡 Earn rewards by staking tokens or running a relay node!");
+                        dchat_log::out!();
+                        dchat_log::out!("Pending Rewards: 0 DCHAT");
+                        dchat_log::out!();
+                        dchat_log::out!("No rewards to claim at this time.");
+                        dchat_log::out!("💡 Earn rewards by staking tokens or running a relay node!");
                     } else {
-                        println!();
-                        println!(
+                        dchat_log::out!();
+                        dchat_log::out!(
                             "Pending Rewards: {} DCHAT",
                             format_tokens(wallet.rewards_pending)
                         );
 
                         match currency_chain.claim_rewards(&uid) {
                             Ok(tx_hash) => {
-                                println!();
-                                println!("✅ Rewards claimed successfully!");
-                                println!("   Transaction: {}", tx_hash);
-                                println!(
+                                dchat_log::out!();
+                                dchat_log::out!("✅ Rewards claimed successfully!");
+                                dchat_log::out!("   Transaction: {}", tx_hash);
+                                dchat_log::out!(
                                     "   Amount: {} DCHAT",
                                     format_tokens(wallet.rewards_pending)
                                 );
                             }
                             Err(e) => {
-                                println!();
-                                println!("❌ Failed to claim rewards: {}", e);
+                                dchat_log::out!();
+                                dchat_log::out!("❌ Failed to claim rewards: {}", e);
                             }
                         }
                     }
                 }
                 Ok(None) => {
-                    println!();
-                    println!("Pending Rewards: 0 DCHAT");
-                    println!();
-                    println!("No rewards to claim at this time.");
-                    println!("💡 Earn rewards by staking tokens or running a relay node!");
+                    dchat_log::out!();
+                    dchat_log::out!("Pending Rewards: 0 DCHAT");
+                    dchat_log::out!();
+                    dchat_log::out!("No rewards to claim at this time.");
+                    dchat_log::out!("💡 Earn rewards by staking tokens or running a relay node!");
                 }
                 Err(e) => {
-                    println!();
-                    println!("⚠️  Unable to query rewards: {}", e);
+                    dchat_log::out!();
+                    dchat_log::out!("⚠️  Unable to query rewards: {}", e);
                 }
             }
         }
         Err(e) => {
             tracing::warn!("Failed to connect to currency chain: {}", e);
-            println!();
-            println!("⚠️  Cannot connect to currency chain: {}", e);
+            dchat_log::out!();
+            dchat_log::out!("⚠️  Cannot connect to currency chain: {}", e);
         }
     }
 
@@ -108,10 +108,10 @@ pub async fn handle_claim(user_id: String) -> Result<()> {
 pub async fn handle_history(user_id: String, limit: u32) -> Result<()> {
     let uid = UserId(Uuid::parse_str(&user_id).map_err(|_| Error::validation("Invalid user ID"))?);
 
-    println!("\n📜 Reward History (last {}):", limit);
-    println!("══════════════════════════════════════════════════════════");
-    println!("{:<24} {:<20} {:>15}", "Date", "Type", "Amount");
-    println!("{}", "-".repeat(65));
+    dchat_log::out!("\n📜 Reward History (last {}):", limit);
+    dchat_log::out!("══════════════════════════════════════════════════════════");
+    dchat_log::out!("{:<24} {:<20} {:>15}", "Date", "Type", "Amount");
+    dchat_log::out!("{}", "-".repeat(65));
 
     match init_currency_chain() {
         Ok(currency_chain) => {
@@ -120,19 +120,19 @@ pub async fn handle_history(user_id: String, limit: u32) -> Result<()> {
                 .await
             {
                 Ok(history) if history.is_empty() => {
-                    println!("No reward history found.");
-                    println!();
-                    println!("Rewards are distributed:");
-                    println!("  • Staking rewards: Every epoch (~24 hours)");
-                    println!("  • Relay rewards: Per message delivered");
-                    println!("  • Validator rewards: Per block produced");
+                    dchat_log::out!("No reward history found.");
+                    dchat_log::out!();
+                    dchat_log::out!("Rewards are distributed:");
+                    dchat_log::out!("  • Staking rewards: Every epoch (~24 hours)");
+                    dchat_log::out!("  • Relay rewards: Per message delivered");
+                    dchat_log::out!("  • Validator rewards: Per block produced");
                 }
                 Ok(history) => {
                     for entry in history {
                         let date = chrono::DateTime::from_timestamp(entry.timestamp, 0)
                             .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
                             .unwrap_or_else(|| "unknown".to_string());
-                        println!(
+                        dchat_log::out!(
                             "{:<24} {:<20} {:>12} DCHAT",
                             date,
                             entry.reward_type,
@@ -142,13 +142,13 @@ pub async fn handle_history(user_id: String, limit: u32) -> Result<()> {
                 }
                 Err(e) => {
                     tracing::warn!("Failed to query reward history: {}", e);
-                    println!("⚠️  Unable to query history: {}", e);
+                    dchat_log::out!("⚠️  Unable to query history: {}", e);
                 }
             }
         }
         Err(e) => {
             tracing::warn!("Failed to connect to currency chain: {}", e);
-            println!("⚠️  Cannot connect to currency chain: {}", e);
+            dchat_log::out!("⚠️  Cannot connect to currency chain: {}", e);
         }
     }
 
@@ -159,35 +159,35 @@ pub async fn handle_history(user_id: String, limit: u32) -> Result<()> {
 pub async fn handle_pending(user_id: String) -> Result<()> {
     let uid = UserId(Uuid::parse_str(&user_id).map_err(|_| Error::validation("Invalid user ID"))?);
 
-    println!("\n⏳ Pending Rewards:");
-    println!("══════════════════════════════════════════════════════════");
-    println!("User ID: {}", user_id);
-    println!();
+    dchat_log::out!("\n⏳ Pending Rewards:");
+    dchat_log::out!("══════════════════════════════════════════════════════════");
+    dchat_log::out!("User ID: {}", user_id);
+    dchat_log::out!();
 
     match init_currency_chain() {
         Ok(currency_chain) => {
             match currency_chain.get_pending_rewards_breakdown(&uid).await {
                 Ok(breakdown) => {
-                    println!(
+                    dchat_log::out!(
                         "Staking Rewards:    {} DCHAT",
                         format_tokens(breakdown.staking_rewards)
                     );
-                    println!(
+                    dchat_log::out!(
                         "Relay Rewards:      {} DCHAT",
                         format_tokens(breakdown.relay_rewards)
                     );
-                    println!(
+                    dchat_log::out!(
                         "Referral Rewards:   {} DCHAT",
                         format_tokens(breakdown.referral_rewards)
                     );
-                    println!("──────────────────────────");
+                    dchat_log::out!("──────────────────────────");
                     let total = breakdown.staking_rewards
                         + breakdown.relay_rewards
                         + breakdown.referral_rewards;
-                    println!("Total Pending:      {} DCHAT", format_tokens(total));
-                    println!();
+                    dchat_log::out!("Total Pending:      {} DCHAT", format_tokens(total));
+                    dchat_log::out!();
                     if total > 0 {
-                        println!("Claim with: dchat rewards claim --user-id {}", user_id);
+                        dchat_log::out!("Claim with: dchat rewards claim --user-id {}", user_id);
                     }
                 }
                 Err(e) => {
@@ -195,24 +195,24 @@ pub async fn handle_pending(user_id: String) -> Result<()> {
                     // Fallback to wallet query
                     match currency_chain.get_wallet(&uid) {
                         Ok(Some(wallet)) => {
-                            println!(
+                            dchat_log::out!(
                                 "Staking Rewards:    {} DCHAT",
                                 format_tokens(wallet.rewards_pending)
                             );
-                            println!("Relay Rewards:      0 DCHAT");
-                            println!("Referral Rewards:   0 DCHAT");
-                            println!("──────────────────────────");
-                            println!(
+                            dchat_log::out!("Relay Rewards:      0 DCHAT");
+                            dchat_log::out!("Referral Rewards:   0 DCHAT");
+                            dchat_log::out!("──────────────────────────");
+                            dchat_log::out!(
                                 "Total Pending:      {} DCHAT",
                                 format_tokens(wallet.rewards_pending)
                             );
-                            println!();
+                            dchat_log::out!();
                             if wallet.rewards_pending > 0 {
-                                println!("Claim with: dchat rewards claim --user-id {}", user_id);
+                                dchat_log::out!("Claim with: dchat rewards claim --user-id {}", user_id);
                             }
                         }
                         _ => {
-                            println!("⚠️  Unable to query rewards: {}", e);
+                            dchat_log::out!("⚠️  Unable to query rewards: {}", e);
                         }
                     }
                 }
@@ -220,7 +220,7 @@ pub async fn handle_pending(user_id: String) -> Result<()> {
         }
         Err(e) => {
             tracing::warn!("Failed to connect to currency chain: {}", e);
-            println!("⚠️  Cannot connect to currency chain: {}", e);
+            dchat_log::out!("⚠️  Cannot connect to currency chain: {}", e);
         }
     }
 
@@ -231,10 +231,10 @@ pub async fn handle_pending(user_id: String) -> Result<()> {
 pub async fn handle_breakdown(user_id: String) -> Result<()> {
     let uid = UserId(Uuid::parse_str(&user_id).map_err(|_| Error::validation("Invalid user ID"))?);
 
-    println!("\n📊 Reward Breakdown:");
-    println!("══════════════════════════════════════════════════════════");
-    println!("User ID: {}", user_id);
-    println!();
+    dchat_log::out!("\n📊 Reward Breakdown:");
+    dchat_log::out!("══════════════════════════════════════════════════════════");
+    dchat_log::out!("User ID: {}", user_id);
+    dchat_log::out!();
 
     match init_currency_chain() {
         Ok(currency_chain) => match currency_chain.get_all_time_rewards(&uid).await {
@@ -264,53 +264,53 @@ pub async fn handle_breakdown(user_id: String) -> Result<()> {
                     0.0
                 };
 
-                println!("All-Time Earnings:");
-                println!(
+                dchat_log::out!("All-Time Earnings:");
+                dchat_log::out!(
                     "  Staking:     {} DCHAT ({:.1}%)",
                     format_tokens(breakdown.staking),
                     staking_pct
                 );
-                println!(
+                dchat_log::out!(
                     "  Relaying:    {} DCHAT ({:.1}%)",
                     format_tokens(breakdown.relaying),
                     relaying_pct
                 );
-                println!(
+                dchat_log::out!(
                     "  Referrals:   {} DCHAT ({:.1}%)",
                     format_tokens(breakdown.referrals),
                     referral_pct
                 );
-                println!(
+                dchat_log::out!(
                     "  Governance:  {} DCHAT ({:.1}%)",
                     format_tokens(breakdown.governance),
                     governance_pct
                 );
-                println!("──────────────────────────");
-                println!("  Total:       {} DCHAT", format_tokens(total));
-                println!();
-                println!("Current APY Estimate:");
-                println!("  Staking APY:    {:.1}%", breakdown.current_staking_apy);
-                println!(
+                dchat_log::out!("──────────────────────────");
+                dchat_log::out!("  Total:       {} DCHAT", format_tokens(total));
+                dchat_log::out!();
+                dchat_log::out!("Current APY Estimate:");
+                dchat_log::out!("  Staking APY:    {:.1}%", breakdown.current_staking_apy);
+                dchat_log::out!(
                     "  Combined APY:   ~{:.1}% (with active relaying)",
                     breakdown.combined_apy_estimate
                 );
             }
             Err(e) => {
                 tracing::warn!("Failed to query reward breakdown: {}", e);
-                println!("All-Time Earnings:");
-                println!("  Staking:     0 DCHAT (0%)");
-                println!("  Relaying:    0 DCHAT (0%)");
-                println!("  Referrals:   0 DCHAT (0%)");
-                println!("  Governance:  0 DCHAT (0%)");
-                println!("──────────────────────────");
-                println!("  Total:       0 DCHAT");
-                println!();
-                println!("⚠️  Could not retrieve full breakdown: {}", e);
+                dchat_log::out!("All-Time Earnings:");
+                dchat_log::out!("  Staking:     0 DCHAT (0%)");
+                dchat_log::out!("  Relaying:    0 DCHAT (0%)");
+                dchat_log::out!("  Referrals:   0 DCHAT (0%)");
+                dchat_log::out!("  Governance:  0 DCHAT (0%)");
+                dchat_log::out!("──────────────────────────");
+                dchat_log::out!("  Total:       0 DCHAT");
+                dchat_log::out!();
+                dchat_log::out!("⚠️  Could not retrieve full breakdown: {}", e);
             }
         },
         Err(e) => {
             tracing::warn!("Failed to connect to currency chain: {}", e);
-            println!("⚠️  Cannot connect to currency chain: {}", e);
+            dchat_log::out!("⚠️  Cannot connect to currency chain: {}", e);
         }
     }
 
@@ -321,10 +321,10 @@ pub async fn handle_breakdown(user_id: String) -> Result<()> {
 pub async fn handle_compound(user_id: String, enable: bool) -> Result<()> {
     let uid = UserId(Uuid::parse_str(&user_id).map_err(|_| Error::validation("Invalid user ID"))?);
 
-    println!("\n🔄 Auto-Compound Settings:");
-    println!("══════════════════════════════════════════════════════════");
-    println!("User ID: {}", user_id);
-    println!(
+    dchat_log::out!("\n🔄 Auto-Compound Settings:");
+    dchat_log::out!("══════════════════════════════════════════════════════════");
+    dchat_log::out!("User ID: {}", user_id);
+    dchat_log::out!(
         "Auto-Compound: {}",
         if enable { "ENABLED" } else { "DISABLED" }
     );
@@ -333,23 +333,23 @@ pub async fn handle_compound(user_id: String, enable: bool) -> Result<()> {
         Ok(currency_chain) => match currency_chain.set_auto_compound(&uid, enable).await {
             Ok(_) => {
                 if enable {
-                    println!();
-                    println!("✅ Auto-compounding enabled!");
-                    println!("   Rewards will be automatically restaked for maximum returns.");
+                    dchat_log::out!();
+                    dchat_log::out!("✅ Auto-compounding enabled!");
+                    dchat_log::out!("   Rewards will be automatically restaked for maximum returns.");
                 } else {
-                    println!();
-                    println!("✅ Auto-compounding disabled!");
-                    println!("   Rewards will accumulate as claimable balance.");
+                    dchat_log::out!();
+                    dchat_log::out!("✅ Auto-compounding disabled!");
+                    dchat_log::out!("   Rewards will accumulate as claimable balance.");
                 }
             }
             Err(e) => {
-                println!();
-                println!("❌ Failed to update auto-compound setting: {}", e);
+                dchat_log::out!();
+                dchat_log::out!("❌ Failed to update auto-compound setting: {}", e);
             }
         },
         Err(e) => {
             tracing::warn!("Failed to connect to currency chain: {}", e);
-            println!("⚠️  Cannot connect to currency chain: {}", e);
+            dchat_log::out!("⚠️  Cannot connect to currency chain: {}", e);
         }
     }
 

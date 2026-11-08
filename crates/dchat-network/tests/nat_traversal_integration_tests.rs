@@ -15,7 +15,7 @@ async fn test_nat_detection_with_public_stun() {
     // It will detect the actual NAT type of the testing environment
     match timeout(Duration::from_secs(15), manager.detect_nat_type()).await {
         Ok(Ok(nat_type)) => {
-            println!("Detected NAT type: {:?}", nat_type);
+            dchat_log::out!("Detected NAT type: {:?}", nat_type);
             assert!(manager.detected_nat_type().is_some());
 
             // Verify NAT type is valid
@@ -34,11 +34,11 @@ async fn test_nat_detection_with_public_stun() {
             }
         }
         Ok(Err(e)) => {
-            println!("NAT detection failed (may be offline): {:?}", e);
+            dchat_log::out!("NAT detection failed (may be offline): {:?}", e);
             // Don't fail test if network is unavailable
         }
         Err(_) => {
-            println!("NAT detection timed out (may be firewalled)");
+            dchat_log::out!("NAT detection timed out (may be firewalled)");
             // Don't fail test if network is slow/firewalled
         }
     }
@@ -117,7 +117,7 @@ fn test_stun_response_parsing() {
     // Parse the response
     match manager.parse_stun_response(&response) {
         Ok(addr) => {
-            println!("Parsed address: {}", addr);
+            dchat_log::out!("Parsed address: {}", addr);
             assert_eq!(addr.port(), 12345);
             assert_eq!(addr.ip().to_string(), "203.0.113.10");
         }
@@ -243,7 +243,7 @@ fn test_turn_allocate_response_parsing() {
 
     match manager.parse_turn_allocate_response(&response) {
         Ok(addr) => {
-            println!("Parsed relay address: {}", addr);
+            dchat_log::out!("Parsed relay address: {}", addr);
             assert_eq!(addr.port(), 54321);
             assert_eq!(addr.ip().to_string(), "198.51.100.5");
         }
@@ -281,7 +281,7 @@ fn test_turn_error_response() {
             panic!("Should have failed on error response");
         }
         Err(e) => {
-            println!("Correctly detected error: {:?}", e);
+            dchat_log::out!("Correctly detected error: {:?}", e);
             assert!(e.to_string().contains("allocation failed"));
         }
     }
@@ -335,7 +335,7 @@ async fn test_hole_punching_timeout() {
             );
         }
         Ok(Err(e)) => {
-            println!("Hole punching error (expected): {:?}", e);
+            dchat_log::out!("Hole punching error (expected): {:?}", e);
         }
         Err(_) => {
             panic!("Hole punching test timed out");
@@ -422,7 +422,7 @@ fn test_nat_type_classification() {
             | NatStrategy::HolePunching
             | NatStrategy::TURN
             | NatStrategy::Turn => {
-                println!("{:?} -> {:?}", nat_type, strategy);
+                dchat_log::out!("{:?} -> {:?}", nat_type, strategy);
             }
         }
     }

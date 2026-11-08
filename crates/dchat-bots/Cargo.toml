@@ -5,6 +5,7 @@ edition = "2021"
 publish = false
 
 [dependencies]
+dchat-log = { path = "../dchat-log" }
 dchat-core = { path = "../dchat-core" }
 dchat-messaging = { path = "../dchat-messaging" }
 dchat-identity = { path = "../dchat-identity" }

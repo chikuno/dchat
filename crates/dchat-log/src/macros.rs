@@ -320,3 +320,15 @@ macro_rules! sol_log_slice {
         $crate::log_slice!($($arg)*);
     };
 }
+
+
+/// Emit an interactive prompt without trailing newline (replaces `print!`)
+#[macro_export]
+macro_rules! prompt {
+    ($msg:literal) => {
+        $crate::cli::cli_prompt($msg);
+    };
+    ($($arg:tt)*) => {
+        $crate::cli::cli_prompt(&$crate::__private::format!($($arg)*));
+    };
+}

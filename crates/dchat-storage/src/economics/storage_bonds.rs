@@ -353,7 +353,7 @@ mod tests {
     async fn test_storage_bond_creation() {
         // Skip if no RPC endpoint is set
         if std::env::var("CURRENCY_CHAIN_RPC").is_err() {
-            println!("Skipping test_storage_bond_creation - CURRENCY_CHAIN_RPC not set");
+            dchat_log::debug!("Skipping test_storage_bond_creation - CURRENCY_CHAIN_RPC not set");
             return;
         }
 

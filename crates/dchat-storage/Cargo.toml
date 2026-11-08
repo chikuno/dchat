@@ -5,6 +5,7 @@ edition = "2021"
 
 license.workspace = true
 [dependencies]
+dchat-log = { path = "../dchat-log" }
 # Workspace dependencies
 dchat-core = { path = "../dchat-core" }
 dchat-crypto = { path = "../dchat-crypto" }

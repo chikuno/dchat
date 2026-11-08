@@ -1259,7 +1259,7 @@ mod tests {
         let result = sync.process_proposal(proposal).await;
         assert!(result.is_err());
         if let Err(ref e) = result {
-            eprintln!("Got error: {:?}", e);
+            dchat_log::debug!("Got error: {:?}", e);
         }
         assert!(matches!(
             result.unwrap_err(),
@@ -1317,7 +1317,7 @@ mod tests {
         // Should accept valid block
         let result = sync.process_proposal(proposal).await;
         if let Err(ref e) = result {
-            eprintln!("Test failed with error: {:?}", e);
+            dchat_log::debug!("Test failed with error: {:?}", e);
         }
         assert!(result.is_ok());
     }
@@ -1429,7 +1429,7 @@ mod tests {
         let result = sync.process_proposal(proposal).await;
         assert!(result.is_err());
         if let Err(ref e) = result {
-            eprintln!("Got error for unregistered validator: {:?}", e);
+            dchat_log::debug!("Got error for unregistered validator: {:?}", e);
         }
         assert!(matches!(
             result.unwrap_err(),

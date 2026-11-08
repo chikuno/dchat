@@ -8,7 +8,7 @@ use std::fs;
 pub async fn run(verbose: bool) -> IroncladResult<()> {
     let project = Project::find()?;
 
-    println!(
+    dchat_log::out!(
         "{} {}",
         "🧹".bold(),
         "Cleaning build artifacts...".cyan().bold()
@@ -22,7 +22,7 @@ pub async fn run(verbose: bool) -> IroncladResult<()> {
         let size = dir_size(&target_dir);
 
         if verbose {
-            println!("  {} Removing target/ ({} bytes)", "→".dimmed(), size);
+            dchat_log::out!("  {} Removing target/ ({} bytes)", "→".dimmed(), size);
         }
 
         fs::remove_dir_all(&target_dir)?;
@@ -35,7 +35,7 @@ pub async fn run(verbose: bool) -> IroncladResult<()> {
         let size = dir_size(&generated_dir);
 
         if verbose {
-            println!("  {} Removing generated/ ({} bytes)", "→".dimmed(), size);
+            dchat_log::out!("  {} Removing generated/ ({} bytes)", "→".dimmed(), size);
         }
 
         fs::remove_dir_all(&generated_dir)?;
@@ -48,15 +48,15 @@ pub async fn run(verbose: bool) -> IroncladResult<()> {
         let size = fs::metadata(&idl_path)?.len();
 
         if verbose {
-            println!("  {} Removing {}", "→".dimmed(), idl_path.display());
+            dchat_log::out!("  {} Removing {}", "→".dimmed(), idl_path.display());
         }
 
         fs::remove_file(&idl_path)?;
         cleaned += size;
     }
 
-    println!();
-    println!(
+    dchat_log::out!();
+    dchat_log::out!(
         "{} {}",
         "✅".green(),
         format!("Cleaned {} bytes", cleaned).green().bold()

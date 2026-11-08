@@ -64,8 +64,8 @@ mod tests {
         assert_eq!(filtered[0].id, "cm1", "First message should be cm1");
         assert_eq!(filtered[1].id, "cm3", "Second message should be cm3");
         
-        println!("✅ Channel message filter logic test PASSED");
-        println!("   Found {} messages for channel '{}': {:?}", 
+        dchat_log::out!("✅ Channel message filter logic test PASSED");
+        dchat_log::out!("   Found {} messages for channel '{}': {:?}", 
                  filtered.len(), 
                  target_channel,
                  filtered.iter().map(|m| m.id.clone()).collect::<Vec<_>>());

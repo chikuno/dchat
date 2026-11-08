@@ -17,27 +17,27 @@ async fn run_all_chaos_scenarios() {
     executor.add_scenario(scenarios::high_latency());
     executor.add_scenario(scenarios::resource_exhaustion());
 
-    println!("\n🔥 Running Comprehensive Chaos Engineering Test Suite 🔥\n");
-    println!("═══════════════════════════════════════════════════════════\n");
+    dchat_log::out!("\n🔥 Running Comprehensive Chaos Engineering Test Suite 🔥\n");
+    dchat_log::out!("═══════════════════════════════════════════════════════════\n");
 
     let results = executor.run_all().await;
 
-    println!("\n═══════════════════════════════════════════════════════════");
-    println!("📊 Chaos Test Results Summary:");
-    println!("═══════════════════════════════════════════════════════════\n");
+    dchat_log::out!("\n═══════════════════════════════════════════════════════════");
+    dchat_log::out!("📊 Chaos Test Results Summary:");
+    dchat_log::out!("═══════════════════════════════════════════════════════════\n");
 
     let mut total_passed = 0;
     let mut total_failed = 0;
 
     for result in &results {
         let status = if result.success { "✅ PASSED" } else { "❌ FAILED" };
-        println!("{} - Scenario {:?}", status, result.scenario_id);
-        println!("   Duration: {:?}", result.duration);
-        println!("   Faults Injected: {}", result.faults_injected);
-        println!("   Checks Passed: {}", result.checks_passed);
-        println!("   Checks Failed: {}", result.checks_failed);
-        println!("   Observations: {}", result.observations.len());
-        println!();
+        dchat_log::out!("{} - Scenario {:?}", status, result.scenario_id);
+        dchat_log::out!("   Duration: {:?}", result.duration);
+        dchat_log::out!("   Faults Injected: {}", result.faults_injected);
+        dchat_log::out!("   Checks Passed: {}", result.checks_passed);
+        dchat_log::out!("   Checks Failed: {}", result.checks_failed);
+        dchat_log::out!("   Observations: {}", result.observations.len());
+        dchat_log::out!();
 
         if result.success {
             total_passed += 1;
@@ -46,13 +46,13 @@ async fn run_all_chaos_scenarios() {
         }
     }
 
-    println!("═══════════════════════════════════════════════════════════");
-    println!("🎯 Final Results:");
-    println!("   Total Scenarios: {}", results.len());
-    println!("   Passed: {}", total_passed);
-    println!("   Failed: {}", total_failed);
-    println!("   Success Rate: {:.1}%", (total_passed as f64 / results.len() as f64) * 100.0);
-    println!("═══════════════════════════════════════════════════════════\n");
+    dchat_log::out!("═══════════════════════════════════════════════════════════");
+    dchat_log::out!("🎯 Final Results:");
+    dchat_log::out!("   Total Scenarios: {}", results.len());
+    dchat_log::out!("   Passed: {}", total_passed);
+    dchat_log::out!("   Failed: {}", total_failed);
+    dchat_log::out!("   Success Rate: {:.1}%", (total_passed as f64 / results.len() as f64) * 100.0);
+    dchat_log::out!("═══════════════════════════════════════════════════════════\n");
 
     // All scenarios should pass
     assert_eq!(total_failed, 0, "Some chaos scenarios failed");

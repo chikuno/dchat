@@ -209,7 +209,7 @@ async fn main() -> Result<()> {
 
 /// Generate backup configuration files
 async fn generate_config(output_dir: &str) -> Result<()> {
-    println!("🔧 Generating backup configuration...");
+    dchat_log::out!("🔧 Generating backup configuration...");
 
     let config = DisasterRecoveryConfig::new_production();
 
@@ -222,79 +222,79 @@ async fn generate_config(output_dir: &str) -> Result<()> {
         .context("Failed to serialize config")?;
     let config_path = Path::new(output_dir).join("backup-config.json");
     fs::write(&config_path, config_json).context("Failed to write config file")?;
-    println!("✅ Main config: {}", config_path.display());
+    dchat_log::out!("✅ Main config: {}", config_path.display());
 
     // Generate S3 lifecycle policy
     let s3_lifecycle = generate_s3_lifecycle_policy(&config.s3);
     let s3_path = Path::new(output_dir).join("s3-lifecycle.json");
     fs::write(&s3_path, s3_lifecycle).context("Failed to write S3 lifecycle policy")?;
-    println!("✅ S3 lifecycle: {}", s3_path.display());
+    dchat_log::out!("✅ S3 lifecycle: {}", s3_path.display());
 
     // Generate GCS lifecycle policy
     let gcs_lifecycle = generate_gcs_lifecycle_policy(&config.gcs);
     let gcs_path = Path::new(output_dir).join("gcs-lifecycle.json");
     fs::write(&gcs_path, gcs_lifecycle).context("Failed to write GCS lifecycle policy")?;
-    println!("✅ GCS lifecycle: {}", gcs_path.display());
+    dchat_log::out!("✅ GCS lifecycle: {}", gcs_path.display());
 
     // Generate cron jobs
     let cron_jobs = generate_cron_jobs(&config);
     let cron_path = Path::new(output_dir).join("backup-cron.txt");
     fs::write(&cron_path, cron_jobs).context("Failed to write cron jobs")?;
-    println!("✅ Cron jobs: {}", cron_path.display());
+    dchat_log::out!("✅ Cron jobs: {}", cron_path.display());
 
     // Generate systemd timers
     let systemd_timers = generate_systemd_timers(&config);
     let systemd_path = Path::new(output_dir).join("backup-timers.service");
     fs::write(&systemd_path, systemd_timers).context("Failed to write systemd timers")?;
-    println!("✅ Systemd timers: {}", systemd_path.display());
+    dchat_log::out!("✅ Systemd timers: {}", systemd_path.display());
 
     // Generate Prometheus alerts
     let prometheus_alerts = generate_prometheus_alerts(&config.monitoring);
     let alerts_path = Path::new(output_dir).join("backup-alerts.yml");
     fs::write(&alerts_path, prometheus_alerts).context("Failed to write Prometheus alerts")?;
-    println!("✅ Prometheus alerts: {}", alerts_path.display());
+    dchat_log::out!("✅ Prometheus alerts: {}", alerts_path.display());
 
     // Print summary
-    println!("\n📊 Backup Configuration Summary:");
-    println!(
+    dchat_log::out!("\n📊 Backup Configuration Summary:");
+    dchat_log::out!(
         "   Snapshot Schedule: Every {} hours",
         config.snapshot_schedule.full_interval_hours
     );
-    println!(
+    dchat_log::out!(
         "   Snapshots per Day: {}",
         config.snapshot_schedule.snapshots_per_day()
     );
-    println!(
+    dchat_log::out!(
         "   Retention: {} days full, {} days incremental",
         config.snapshot_schedule.retention.full_days,
         config.snapshot_schedule.retention.incremental_days
     );
-    println!(
+    dchat_log::out!(
         "   PITR Window: {} days",
         config.wal_archive.pitr_window_days
     );
-    println!(
+    dchat_log::out!(
         "   Daily Storage: {:.2} TB",
         config.calculate_daily_storage()
     );
-    println!("   Monthly Cost: ${:.2}", config.estimate_monthly_cost());
-    println!(
+    dchat_log::out!("   Monthly Cost: ${:.2}", config.estimate_monthly_cost());
+    dchat_log::out!(
         "   RTO (Local): {} min",
         config.get_rto_minutes(BackupTier::Local)
     );
-    println!("   RPO: {} min", config.get_rpo_minutes());
+    dchat_log::out!("   RPO: {} min", config.get_rpo_minutes());
 
     Ok(())
 }
 
 /// Setup S3 hot backups
 async fn setup_s3(config_path: &str) -> Result<()> {
-    println!("☁️  Setting up S3 hot backups...");
+    dchat_log::out!("☁️  Setting up S3 hot backups...");
 
     let config = load_config(config_path).await?;
 
     // Step 1: Create S3 bucket
-    println!("Step 1/6: Creating S3 bucket: {}", config.s3.bucket);
+    dchat_log::out!("Step 1/6: Creating S3 bucket: {}", config.s3.bucket);
     run_command(
         "aws",
         &[
@@ -308,7 +308,7 @@ async fn setup_s3(config_path: &str) -> Result<()> {
     .await?;
 
     // Step 2: Enable versioning
-    println!("Step 2/6: Enabling versioning");
+    dchat_log::out!("Step 2/6: Enabling versioning");
     run_command(
         "aws",
         &[
@@ -323,7 +323,7 @@ async fn setup_s3(config_path: &str) -> Result<()> {
     .await?;
 
     // Step 3: Configure lifecycle policy
-    println!("Step 3/6: Configuring lifecycle policy");
+    dchat_log::out!("Step 3/6: Configuring lifecycle policy");
     let lifecycle_policy = format!(
         r#"{{
         "Rules": [{{
@@ -352,7 +352,7 @@ async fn setup_s3(config_path: &str) -> Result<()> {
     .await?;
 
     // Step 4: Enable encryption
-    println!("Step 4/6: Enabling encryption");
+    dchat_log::out!("Step 4/6: Enabling encryption");
     run_command("aws", &[
         "s3api", "put-bucket-encryption",
         "--bucket", &config.s3.bucket,
@@ -365,7 +365,7 @@ async fn setup_s3(config_path: &str) -> Result<()> {
 
     // Step 5: Setup cross-region replication
     if let Some(replication_region) = &config.s3.replication_region {
-        println!(
+        dchat_log::out!(
             "Step 5/6: Setting up cross-region replication to {}",
             replication_region
         );
@@ -383,35 +383,35 @@ async fn setup_s3(config_path: &str) -> Result<()> {
         .await?;
 
         // Configure replication (simplified)
-        println!("   Note: Complete replication setup requires IAM role configuration");
+        dchat_log::out!("   Note: Complete replication setup requires IAM role configuration");
     } else {
-        println!("Step 5/6: Skipping cross-region replication");
+        dchat_log::out!("Step 5/6: Skipping cross-region replication");
     }
 
     // Step 6: Verify bucket
-    println!("Step 6/6: Verifying bucket");
+    dchat_log::out!("Step 6/6: Verifying bucket");
     run_command(
         "aws",
         &["s3api", "head-bucket", "--bucket", &config.s3.bucket],
     )
     .await?;
 
-    println!("✅ S3 hot backups configured successfully!");
-    println!("   Bucket: {}", config.s3.bucket);
-    println!("   Region: {}", config.s3.region);
-    println!("   URL: {}", config.s3.generate_s3_url());
+    dchat_log::out!("✅ S3 hot backups configured successfully!");
+    dchat_log::out!("   Bucket: {}", config.s3.bucket);
+    dchat_log::out!("   Region: {}", config.s3.region);
+    dchat_log::out!("   URL: {}", config.s3.generate_s3_url());
 
     Ok(())
 }
 
 /// Setup GCS warm backups
 async fn setup_gcs(config_path: &str) -> Result<()> {
-    println!("☁️  Setting up GCS warm backups...");
+    dchat_log::out!("☁️  Setting up GCS warm backups...");
 
     let config = load_config(config_path).await?;
 
     // Step 1: Create GCS bucket
-    println!("Step 1/4: Creating GCS bucket: {}", config.gcs.bucket);
+    dchat_log::out!("Step 1/4: Creating GCS bucket: {}", config.gcs.bucket);
     run_command(
         "gsutil",
         &[
@@ -426,7 +426,7 @@ async fn setup_gcs(config_path: &str) -> Result<()> {
     .await?;
 
     // Step 2: Set retention policy
-    println!("Step 2/4: Setting retention policy");
+    dchat_log::out!("Step 2/4: Setting retention policy");
     run_command(
         "gsutil",
         &[
@@ -439,7 +439,7 @@ async fn setup_gcs(config_path: &str) -> Result<()> {
     .await?;
 
     // Step 3: Enable encryption
-    println!("Step 3/4: Enabling encryption");
+    dchat_log::out!("Step 3/4: Enabling encryption");
     run_command(
         "gsutil",
         &[
@@ -453,48 +453,48 @@ async fn setup_gcs(config_path: &str) -> Result<()> {
     .await?;
 
     // Step 4: Verify bucket
-    println!("Step 4/4: Verifying bucket");
+    dchat_log::out!("Step 4/4: Verifying bucket");
     run_command(
         "gsutil",
         &["ls", "-L", "-b", &format!("gs://{}", config.gcs.bucket)],
     )
     .await?;
 
-    println!("✅ GCS warm backups configured successfully!");
-    println!("   Bucket: {}", config.gcs.bucket);
-    println!("   Storage Class: {}", config.gcs.storage_class);
-    println!("   URL: {}", config.gcs.generate_gcs_url());
+    dchat_log::out!("✅ GCS warm backups configured successfully!");
+    dchat_log::out!("   Bucket: {}", config.gcs.bucket);
+    dchat_log::out!("   Storage Class: {}", config.gcs.storage_class);
+    dchat_log::out!("   URL: {}", config.gcs.generate_gcs_url());
 
     Ok(())
 }
 
 /// Setup IPFS cold backups
 async fn setup_ipfs(config_path: &str) -> Result<()> {
-    println!("🌐 Setting up IPFS cold backups...");
+    dchat_log::out!("🌐 Setting up IPFS cold backups...");
 
     let config = load_config(config_path).await?;
 
     // Step 1: Initialize IPFS nodes
-    println!("Step 1/5: Initializing IPFS nodes");
+    dchat_log::out!("Step 1/5: Initializing IPFS nodes");
     for (i, node) in config.ipfs.nodes.iter().enumerate() {
-        println!("   Node {}: {}", i + 1, node);
+        dchat_log::out!("   Node {}: {}", i + 1, node);
         run_command("ipfs", &["--api", node, "id"]).await?;
     }
 
     // Step 2: Configure pinning services
-    println!("Step 2/5: Configuring pinning services");
+    dchat_log::out!("Step 2/5: Configuring pinning services");
     for service in &config.ipfs.pinning_services {
-        println!("   Pinning service: {}", service);
+        dchat_log::out!("   Pinning service: {}", service);
         // Note: Requires API keys
-        println!("   Note: Configure API keys for {}", service);
+        dchat_log::out!("   Note: Configure API keys for {}", service);
     }
 
     // Step 3: Test IPFS connectivity
-    println!("Step 3/5: Testing IPFS connectivity");
+    dchat_log::out!("Step 3/5: Testing IPFS connectivity");
     run_command("ipfs", &["--api", &config.ipfs.nodes[0], "swarm", "peers"]).await?;
 
     // Step 4: Create backup directory structure
-    println!("Step 4/5: Creating directory structure");
+    dchat_log::out!("Step 4/5: Creating directory structure");
     let test_data = "IPFS backup test";
     fs::write("/tmp/ipfs-test.txt", test_data)?;
     run_command(
@@ -504,13 +504,13 @@ async fn setup_ipfs(config_path: &str) -> Result<()> {
     .await?;
 
     // Step 5: Verify replication
-    println!("Step 5/5: Verifying replication factor");
-    println!("   Replication factor: {}", config.ipfs.replication_factor);
-    println!("   Nodes: {}", config.ipfs.nodes.len());
+    dchat_log::out!("Step 5/5: Verifying replication factor");
+    dchat_log::out!("   Replication factor: {}", config.ipfs.replication_factor);
+    dchat_log::out!("   Nodes: {}", config.ipfs.nodes.len());
 
-    println!("✅ IPFS cold backups configured successfully!");
-    println!("   Nodes: {}", config.ipfs.nodes.len());
-    println!(
+    dchat_log::out!("✅ IPFS cold backups configured successfully!");
+    dchat_log::out!("   Nodes: {}", config.ipfs.nodes.len());
+    dchat_log::out!(
         "   Pinning services: {}",
         config.ipfs.pinning_services.len()
     );
@@ -520,14 +520,14 @@ async fn setup_ipfs(config_path: &str) -> Result<()> {
 
 /// Setup local replicas
 async fn setup_replicas(config_path: &str) -> Result<()> {
-    println!("🔄 Setting up local replicas...");
+    dchat_log::out!("🔄 Setting up local replicas...");
 
     let config = load_config(config_path).await?;
 
     for (i, replica) in config.local_replicas.nodes.iter().enumerate() {
-        println!("\nReplica {}/{}:", i + 1, config.local_replicas.nodes.len());
-        println!("   Host: {}", replica.host);
-        println!("   Region: {}", replica.region);
+        dchat_log::out!("\nReplica {}/{}:", i + 1, config.local_replicas.nodes.len());
+        dchat_log::out!("   Host: {}", replica.host);
+        dchat_log::out!("   Region: {}", replica.region);
         
         // Validate hostname before any SSH operations
         validate_hostname(&replica.host)?;
@@ -539,16 +539,16 @@ async fn setup_replicas(config_path: &str) -> Result<()> {
         }
 
         // Step 1: Check SSH connectivity
-        println!("Step 1/4: Checking SSH connectivity");
+        dchat_log::out!("Step 1/4: Checking SSH connectivity");
         run_secure_ssh_command(&replica.host, &["echo", "'Connected'"]).await?;
 
         // Step 2: Create data directory
-        println!("Step 2/4: Creating data directory: {}", replica.data_dir);
+        dchat_log::out!("Step 2/4: Creating data directory: {}", replica.data_dir);
         run_secure_ssh_command(&replica.host, &["sudo", "mkdir", "-p", &replica.data_dir]).await?;
 
         // Step 3: Configure streaming replication
         if config.local_replicas.streaming {
-            println!("Step 3/4: Configuring streaming replication");
+            dchat_log::out!("Step 3/4: Configuring streaming replication");
             let replication_config = format!(
                 "primary_conninfo = 'host=primary port={} user=replication'\nrestore_command = 'wal-g wal-fetch %f %p'\n",
                 replica.port
@@ -561,24 +561,24 @@ async fn setup_replicas(config_path: &str) -> Result<()> {
             );
             run_secure_ssh_command(&replica.host, &[&config_cmd]).await?;
         } else {
-            println!("Step 3/4: Skipping streaming replication");
+            dchat_log::out!("Step 3/4: Skipping streaming replication");
         }
 
         // Step 4: Start replica
-        println!("Step 4/4: Starting replica");
+        dchat_log::out!("Step 4/4: Starting replica");
         run_secure_ssh_command(
             &replica.host,
             &["sudo", "systemctl", "start", "postgresql-replica"],
         )
         .await?;
 
-        println!("✅ Replica {} configured", i + 1);
+        dchat_log::out!("✅ Replica {} configured", i + 1);
     }
 
-    println!("\n✅ All local replicas configured successfully!");
-    println!("   Total replicas: {}", config.local_replicas.nodes.len());
-    println!("   Streaming: {}", config.local_replicas.streaming);
-    println!(
+    dchat_log::out!("\n✅ All local replicas configured successfully!");
+    dchat_log::out!("   Total replicas: {}", config.local_replicas.nodes.len());
+    dchat_log::out!("   Streaming: {}", config.local_replicas.streaming);
+    dchat_log::out!(
         "   Lag threshold: {} seconds",
         config.local_replicas.lag_threshold_seconds
     );
@@ -603,21 +603,21 @@ async fn run_secure_ssh_command(host: &str, args: &[&str]) -> Result<()> {
 
 /// Schedule snapshot jobs
 async fn schedule_snapshots(config_path: &str) -> Result<()> {
-    println!("⏰ Scheduling snapshot jobs...");
+    dchat_log::out!("⏰ Scheduling snapshot jobs...");
 
     let config = load_config(config_path).await?;
 
     // Step 1: Create snapshot scripts
-    println!("Step 1/5: Creating snapshot scripts");
+    dchat_log::out!("Step 1/5: Creating snapshot scripts");
     create_snapshot_script("cockroachdb", &config).await?;
     create_snapshot_script("redis", &config).await?;
     create_snapshot_script("minio", &config).await?;
     create_snapshot_script("tikv", &config).await?;
 
     // Step 2: Schedule CockroachDB backups
-    println!("Step 2/5: Scheduling CockroachDB backups");
-    println!("   Full: {}", config.backends.cockroachdb.full_schedule);
-    println!(
+    dchat_log::out!("Step 2/5: Scheduling CockroachDB backups");
+    dchat_log::out!("   Full: {}", config.backends.cockroachdb.full_schedule);
+    dchat_log::out!(
         "   Incremental: {}",
         config.backends.cockroachdb.incremental_schedule
     );
@@ -635,17 +635,17 @@ async fn schedule_snapshots(config_path: &str) -> Result<()> {
     .await?;
 
     // Step 3: Schedule Redis backups
-    println!("Step 3/5: Scheduling Redis backups");
+    dchat_log::out!("Step 3/5: Scheduling Redis backups");
     if config.backends.redis.rdb_enabled {
-        println!("   RDB: Configured via redis.conf");
+        dchat_log::out!("   RDB: Configured via redis.conf");
     }
     if config.backends.redis.aof_enabled {
-        println!("   AOF: {} fsync", config.backends.redis.aof_fsync);
+        dchat_log::out!("   AOF: {} fsync", config.backends.redis.aof_fsync);
     }
 
     // Step 4: Schedule TiKV backups
-    println!("Step 4/5: Scheduling TiKV backups");
-    println!("   Schedule: {}", config.backends.tikv.schedule);
+    dchat_log::out!("Step 4/5: Scheduling TiKV backups");
+    dchat_log::out!("   Schedule: {}", config.backends.tikv.schedule);
     schedule_cron_job(
         "tikv-backup",
         &config.backends.tikv.schedule,
@@ -654,8 +654,8 @@ async fn schedule_snapshots(config_path: &str) -> Result<()> {
     .await?;
 
     // Step 5: Schedule verification tests
-    println!("Step 5/5: Scheduling verification tests");
-    println!("   Schedule: {}", config.verification.schedule);
+    dchat_log::out!("Step 5/5: Scheduling verification tests");
+    dchat_log::out!("   Schedule: {}", config.verification.schedule);
     schedule_cron_job(
         "backup-verification",
         &config.verification.schedule,
@@ -663,48 +663,48 @@ async fn schedule_snapshots(config_path: &str) -> Result<()> {
     )
     .await?;
 
-    println!("✅ Snapshot jobs scheduled successfully!");
-    println!(
+    dchat_log::out!("✅ Snapshot jobs scheduled successfully!");
+    dchat_log::out!(
         "   Snapshots per day: {}",
         config.snapshot_schedule.snapshots_per_day()
     );
-    println!("   Compression: {:?}", config.snapshot_schedule.compression);
+    dchat_log::out!("   Compression: {:?}", config.snapshot_schedule.compression);
 
     Ok(())
 }
 
 /// Setup WAL archiving
 async fn setup_wal(config_path: &str, backend: &str) -> Result<()> {
-    println!("📝 Setting up WAL archiving for {}...", backend);
+    dchat_log::out!("📝 Setting up WAL archiving for {}...", backend);
 
     let config = load_config(config_path).await?;
 
     match backend {
         "cockroachdb" => {
-            println!("Step 1/3: Installing wal-g");
+            dchat_log::out!("Step 1/3: Installing wal-g");
             run_command("wget", &[
                 "https://github.com/wal-g/wal-g/releases/download/v2.0.1/wal-g-pg-ubuntu-20.04-amd64",
                 "-O", "/usr/local/bin/wal-g",
             ]).await?;
             run_command("chmod", &["+x", "/usr/local/bin/wal-g"]).await?;
 
-            println!("Step 2/3: Configuring WAL archiving");
+            dchat_log::out!("Step 2/3: Configuring WAL archiving");
             let wal_config = format!(
                 "wal_level = replica\narchive_mode = on\narchive_command = '{}'\narchive_timeout = {}\n",
                 config.wal_archive.archive_command,
                 config.wal_archive.archive_timeout
             );
             fs::write("/tmp/wal-config.conf", wal_config)?;
-            println!(
+            dchat_log::out!(
                 "   Archive location: {}",
                 config.wal_archive.archive_location
             );
 
-            println!("Step 3/3: Restarting database");
+            dchat_log::out!("Step 3/3: Restarting database");
             run_command("systemctl", &["restart", "cockroachdb"]).await?;
         }
         "tikv" => {
-            println!("Step 1/3: Installing BR (Backup & Restore tool)");
+            dchat_log::out!("Step 1/3: Installing BR (Backup & Restore tool)");
             run_command(
                 "wget",
                 &[
@@ -720,10 +720,10 @@ async fn setup_wal(config_path: &str, backend: &str) -> Result<()> {
             )
             .await?;
 
-            println!("Step 2/3: Configuring continuous backup");
-            println!("   Destination: {}", config.backends.tikv.destination);
+            dchat_log::out!("Step 2/3: Configuring continuous backup");
+            dchat_log::out!("   Destination: {}", config.backends.tikv.destination);
 
-            println!("Step 3/3: Starting backup daemon");
+            dchat_log::out!("Step 3/3: Starting backup daemon");
             run_command("systemctl", &["start", "tikv-backup-daemon"]).await?;
         }
         _ => {
@@ -731,13 +731,13 @@ async fn setup_wal(config_path: &str, backend: &str) -> Result<()> {
         }
     }
 
-    println!("✅ WAL archiving configured successfully!");
-    println!("   Backend: {}", backend);
-    println!(
+    dchat_log::out!("✅ WAL archiving configured successfully!");
+    dchat_log::out!("   Backend: {}", backend);
+    dchat_log::out!(
         "   PITR window: {} days",
         config.wal_archive.pitr_window_days
     );
-    println!("   Compression: {}", config.wal_archive.compression);
+    dchat_log::out!("   Compression: {}", config.wal_archive.compression);
 
     Ok(())
 }
@@ -748,7 +748,7 @@ async fn test_restore(
     restore_type: &str,
     target_time: Option<&str>,
 ) -> Result<()> {
-    println!("🧪 Testing restore procedure...");
+    dchat_log::out!("🧪 Testing restore procedure...");
 
     let config = load_config(config_path).await?;
 
@@ -760,31 +760,31 @@ async fn test_restore(
         _ => return Err(anyhow::anyhow!("Invalid restore type: {}", restore_type)),
     };
 
-    println!("Restore Configuration:");
-    println!("   Type: {:?}", restore_config.restore_type);
-    println!("   Source: {:?}", restore_config.source_tier);
-    println!("   Target time: {:?}", restore_config.target_time);
+    dchat_log::out!("Restore Configuration:");
+    dchat_log::out!("   Type: {:?}", restore_config.restore_type);
+    dchat_log::out!("   Source: {:?}", restore_config.source_tier);
+    dchat_log::out!("   Target time: {:?}", restore_config.target_time);
 
     // Step 1: Create test database
-    println!("\nStep 1/6: Creating test database");
+    dchat_log::out!("\nStep 1/6: Creating test database");
     run_command("createdb", &["backup_restore_test"]).await?;
 
     // Step 2: List available backups
-    println!("Step 2/6: Listing available backups");
+    dchat_log::out!("Step 2/6: Listing available backups");
     run_command("aws", &["s3", "ls", &config.s3.generate_s3_url()]).await?;
 
     // Step 3: Download backup
-    println!(
+    dchat_log::out!(
         "Step 3/6: Downloading backup from {}",
         config.s3.generate_s3_url()
     );
     sleep(Duration::from_secs(2)).await;
 
     // Step 4: Restore data
-    println!("Step 4/6: Restoring data");
+    dchat_log::out!("Step 4/6: Restoring data");
     match restore_config.restore_type {
         RestoreType::Full => {
-            println!("   Performing full restore...");
+            dchat_log::out!("   Performing full restore...");
             run_command(
                 "pg_restore",
                 &["-d", "backup_restore_test", "/tmp/backup.dump"],
@@ -792,7 +792,7 @@ async fn test_restore(
             .await?;
         }
         RestoreType::PointInTime => {
-            println!(
+            dchat_log::out!(
                 "   Performing point-in-time restore to {}...",
                 restore_config.target_time.as_ref().unwrap()
             );
@@ -803,13 +803,13 @@ async fn test_restore(
             .await?;
         }
         RestoreType::Partial => {
-            println!("   Performing partial restore...");
+            dchat_log::out!("   Performing partial restore...");
         }
     }
 
     // Step 5: Verify restored data
     if restore_config.verify_after_restore {
-        println!("Step 5/6: Verifying restored data");
+        dchat_log::out!("Step 5/6: Verifying restored data");
         run_command(
             "psql",
             &[
@@ -821,15 +821,15 @@ async fn test_restore(
         )
         .await?;
     } else {
-        println!("Step 5/6: Skipping verification");
+        dchat_log::out!("Step 5/6: Skipping verification");
     }
 
     // Step 6: Cleanup
-    println!("Step 6/6: Cleaning up test database");
+    dchat_log::out!("Step 6/6: Cleaning up test database");
     run_command("dropdb", &["backup_restore_test"]).await?;
 
-    println!("✅ Restore test completed successfully!");
-    println!(
+    dchat_log::out!("✅ Restore test completed successfully!");
+    dchat_log::out!(
         "   RTO: {} minutes",
         config.get_rto_minutes(restore_config.source_tier)
     );
@@ -839,50 +839,50 @@ async fn test_restore(
 
 /// Run verification tests
 async fn verify_backups(config_path: &str) -> Result<()> {
-    println!("✅ Running backup verification tests...");
+    dchat_log::out!("✅ Running backup verification tests...");
 
     let config = load_config(config_path).await?;
 
-    println!("Verification Schedule: {}", config.verification.schedule);
-    println!("Test Databases: {:?}", config.verification.test_databases);
+    dchat_log::out!("Verification Schedule: {}", config.verification.schedule);
+    dchat_log::out!("Test Databases: {:?}", config.verification.test_databases);
 
     let mut results = Vec::new();
 
     for database in &config.verification.test_databases {
-        println!("\n🔍 Testing {}", database);
+        dchat_log::out!("\n🔍 Testing {}", database);
 
         // Step 1: Check backup exists
-        println!("Step 1/4: Checking backup existence");
+        dchat_log::out!("Step 1/4: Checking backup existence");
         let backup_exists = check_backup_exists(&config, database).await?;
 
         if !backup_exists {
-            println!("❌ No backup found for {}", database);
+            dchat_log::out!("❌ No backup found for {}", database);
             results.push((database.clone(), false));
             continue;
         }
 
         // Step 2: Download sample
-        println!(
+        dchat_log::out!(
             "Step 2/4: Downloading sample ({} MB)",
             config.verification.sample_size_mb
         );
         sleep(Duration::from_secs(1)).await;
 
         // Step 3: Verify integrity
-        println!("Step 3/4: Verifying integrity");
+        dchat_log::out!("Step 3/4: Verifying integrity");
         let integrity_ok = verify_backup_integrity(database).await?;
 
         // Step 4: Test restore
-        println!("Step 4/4: Testing restore");
+        dchat_log::out!("Step 4/4: Testing restore");
         let restore_ok = test_sample_restore(database).await?;
 
         let success = integrity_ok && restore_ok;
         results.push((database.clone(), success));
 
         if success {
-            println!("✅ {} verification passed", database);
+            dchat_log::out!("✅ {} verification passed", database);
         } else {
-            println!("❌ {} verification failed", database);
+            dchat_log::out!("❌ {} verification failed", database);
         }
     }
 
@@ -890,21 +890,21 @@ async fn verify_backups(config_path: &str) -> Result<()> {
     let success_count = results.iter().filter(|(_, ok)| *ok).count();
     let success_rate = (success_count as f64 / results.len() as f64) * 100.0;
 
-    println!("\n📊 Verification Results:");
-    println!("   Tests: {}", results.len());
-    println!("   Passed: {}", success_count);
-    println!("   Success Rate: {:.1}%", success_rate);
-    println!(
+    dchat_log::out!("\n📊 Verification Results:");
+    dchat_log::out!("   Tests: {}", results.len());
+    dchat_log::out!("   Passed: {}", success_count);
+    dchat_log::out!("   Success Rate: {:.1}%", success_rate);
+    dchat_log::out!(
         "   Threshold: {:.1}%",
         config.verification.success_threshold
     );
 
     if success_rate >= config.verification.success_threshold {
-        println!("✅ Verification tests passed!");
+        dchat_log::out!("✅ Verification tests passed!");
     } else {
-        println!("❌ Verification tests failed!");
+        dchat_log::out!("❌ Verification tests failed!");
         if config.verification.alert_on_failure {
-            println!("🚨 Alert triggered!");
+            dchat_log::out!("🚨 Alert triggered!");
         }
     }
 
@@ -913,167 +913,167 @@ async fn verify_backups(config_path: &str) -> Result<()> {
 
 /// Setup monitoring
 async fn setup_monitoring(config_path: &str) -> Result<()> {
-    println!("📊 Setting up backup monitoring...");
+    dchat_log::out!("📊 Setting up backup monitoring...");
 
     let config = load_config(config_path).await?;
 
     // Step 1: Generate Prometheus config
-    println!("Step 1/4: Generating Prometheus configuration");
+    dchat_log::out!("Step 1/4: Generating Prometheus configuration");
     let prometheus_config = generate_prometheus_config(&config);
     fs::write("/tmp/prometheus-backup.yml", prometheus_config)?;
 
     // Step 2: Create alert rules
-    println!("Step 2/4: Creating alert rules");
+    dchat_log::out!("Step 2/4: Creating alert rules");
     let alert_rules = generate_prometheus_alerts(&config.monitoring);
     fs::write("/tmp/backup-alerts.yml", alert_rules)?;
-    println!("   Rules: {}", config.monitoring.alert_rules.len());
+    dchat_log::out!("   Rules: {}", config.monitoring.alert_rules.len());
 
     // Step 3: Setup Grafana dashboard
-    println!("Step 3/4: Setting up Grafana dashboard");
+    dchat_log::out!("Step 3/4: Setting up Grafana dashboard");
     let dashboard = generate_grafana_dashboard(&config);
     fs::write("/tmp/backup-dashboard.json", dashboard)?;
-    println!("   Dashboard: {}", config.monitoring.dashboard_url);
+    dchat_log::out!("   Dashboard: {}", config.monitoring.dashboard_url);
 
     // Step 4: Configure alert channels
-    println!("Step 4/4: Configuring alert channels");
+    dchat_log::out!("Step 4/4: Configuring alert channels");
     for rule in &config.monitoring.alert_rules {
-        println!("   {}: {:?}", rule.name, rule.channels);
+        dchat_log::out!("   {}: {:?}", rule.name, rule.channels);
     }
 
-    println!("✅ Monitoring configured successfully!");
-    println!("   Metrics: {}", config.monitoring.prometheus_endpoint);
-    println!("   Alerts: {} rules", config.monitoring.alert_rules.len());
+    dchat_log::out!("✅ Monitoring configured successfully!");
+    dchat_log::out!("   Metrics: {}", config.monitoring.prometheus_endpoint);
+    dchat_log::out!("   Alerts: {} rules", config.monitoring.alert_rules.len());
 
     Ok(())
 }
 
 /// Deploy complete backup system
 async fn deploy_all(config_path: &str) -> Result<()> {
-    println!("🚀 Deploying complete backup system...");
+    dchat_log::out!("🚀 Deploying complete backup system...");
 
     let config = load_config(config_path).await?;
 
     // Verify configuration
-    println!("Step 1/9: Verifying configuration");
+    dchat_log::out!("Step 1/9: Verifying configuration");
     config
         .verify_configuration()
         .context("Configuration verification failed")?;
-    println!("✅ Configuration valid");
+    dchat_log::out!("✅ Configuration valid");
 
     // Setup S3
-    println!("\nStep 2/9: Setting up S3 hot backups");
+    dchat_log::out!("\nStep 2/9: Setting up S3 hot backups");
     setup_s3(config_path).await?;
     sleep(Duration::from_secs(5)).await;
 
     // Setup GCS
-    println!("\nStep 3/9: Setting up GCS warm backups");
+    dchat_log::out!("\nStep 3/9: Setting up GCS warm backups");
     setup_gcs(config_path).await?;
     sleep(Duration::from_secs(5)).await;
 
     // Setup IPFS
-    println!("\nStep 4/9: Setting up IPFS cold backups");
+    dchat_log::out!("\nStep 4/9: Setting up IPFS cold backups");
     setup_ipfs(config_path).await?;
     sleep(Duration::from_secs(5)).await;
 
     // Setup replicas
-    println!("\nStep 5/9: Setting up local replicas");
+    dchat_log::out!("\nStep 5/9: Setting up local replicas");
     setup_replicas(config_path).await?;
     sleep(Duration::from_secs(5)).await;
 
     // Schedule snapshots
-    println!("\nStep 6/9: Scheduling snapshots");
+    dchat_log::out!("\nStep 6/9: Scheduling snapshots");
     schedule_snapshots(config_path).await?;
     sleep(Duration::from_secs(5)).await;
 
     // Setup WAL archiving
-    println!("\nStep 7/9: Setting up WAL archiving");
+    dchat_log::out!("\nStep 7/9: Setting up WAL archiving");
     setup_wal(config_path, "cockroachdb").await?;
     setup_wal(config_path, "tikv").await?;
     sleep(Duration::from_secs(5)).await;
 
     // Setup monitoring
-    println!("\nStep 8/9: Setting up monitoring");
+    dchat_log::out!("\nStep 8/9: Setting up monitoring");
     setup_monitoring(config_path).await?;
     sleep(Duration::from_secs(5)).await;
 
     // Run verification
-    println!("\nStep 9/9: Running initial verification");
+    dchat_log::out!("\nStep 9/9: Running initial verification");
     verify_backups(config_path).await?;
 
-    println!("\n✅ Complete backup system deployed successfully!");
-    println!("\n📊 System Summary:");
-    println!("   Backup Tiers: 4 (Hot, Warm, Cold, Local)");
-    println!(
+    dchat_log::out!("\n✅ Complete backup system deployed successfully!");
+    dchat_log::out!("\n📊 System Summary:");
+    dchat_log::out!("   Backup Tiers: 4 (Hot, Warm, Cold, Local)");
+    dchat_log::out!(
         "   Snapshots/Day: {}",
         config.snapshot_schedule.snapshots_per_day()
     );
-    println!(
+    dchat_log::out!(
         "   PITR Window: {} days",
         config.wal_archive.pitr_window_days
     );
-    println!(
+    dchat_log::out!(
         "   RTO (Local): {} min",
         config.get_rto_minutes(BackupTier::Local)
     );
-    println!("   RPO: {} min", config.get_rpo_minutes());
-    println!(
+    dchat_log::out!("   RPO: {} min", config.get_rpo_minutes());
+    dchat_log::out!(
         "   Daily Storage: {:.2} TB",
         config.calculate_daily_storage()
     );
-    println!("   Monthly Cost: ${:.2}", config.estimate_monthly_cost());
+    dchat_log::out!("   Monthly Cost: ${:.2}", config.estimate_monthly_cost());
 
     Ok(())
 }
 
 /// Check backup system health
 async fn health_check(config_path: &str) -> Result<()> {
-    println!("🏥 Checking backup system health...");
+    dchat_log::out!("🏥 Checking backup system health...");
 
     let config = load_config(config_path).await?;
 
     let mut health_status = Vec::new();
 
     // Check S3
-    println!("Checking S3 hot backups...");
+    dchat_log::out!("Checking S3 hot backups...");
     let s3_ok = check_s3_health(&config.s3).await?;
     health_status.push(("S3 Hot", s3_ok));
 
     // Check GCS
-    println!("Checking GCS warm backups...");
+    dchat_log::out!("Checking GCS warm backups...");
     let gcs_ok = check_gcs_health(&config.gcs).await?;
     health_status.push(("GCS Warm", gcs_ok));
 
     // Check IPFS
-    println!("Checking IPFS cold backups...");
+    dchat_log::out!("Checking IPFS cold backups...");
     let ipfs_ok = check_ipfs_health(&config.ipfs).await?;
     health_status.push(("IPFS Cold", ipfs_ok));
 
     // Check replicas
-    println!("Checking local replicas...");
+    dchat_log::out!("Checking local replicas...");
     let replicas_ok = check_replicas_health(&config.local_replicas).await?;
     health_status.push(("Local Replicas", replicas_ok));
 
     // Check WAL archiving
-    println!("Checking WAL archiving...");
+    dchat_log::out!("Checking WAL archiving...");
     let wal_ok = check_wal_health(&config.wal_archive).await?;
     health_status.push(("WAL Archiving", wal_ok));
 
     // Check monitoring
-    println!("Checking monitoring...");
+    dchat_log::out!("Checking monitoring...");
     let monitoring_ok = check_monitoring_health(&config.monitoring).await?;
     health_status.push(("Monitoring", monitoring_ok));
 
-    println!("\n📊 Health Status:");
+    dchat_log::out!("\n📊 Health Status:");
     for (component, ok) in &health_status {
         let status = if *ok { "✅ OK" } else { "❌ FAILED" };
-        println!("   {}: {}", component, status);
+        dchat_log::out!("   {}: {}", component, status);
     }
 
     let all_ok = health_status.iter().all(|(_, ok)| *ok);
     if all_ok {
-        println!("\n✅ All systems healthy!");
+        dchat_log::out!("\n✅ All systems healthy!");
     } else {
-        println!("\n⚠️  Some systems unhealthy!");
+        dchat_log::out!("\n⚠️  Some systems unhealthy!");
     }
 
     Ok(())
@@ -1373,7 +1373,7 @@ echo "TiKV backup completed successfully"
     fs::write(&script_path, &script_content)?;
     run_command("chmod", &["+x", &script_path]).await?;
     
-    println!("   Created script: {}", script_path);
+    dchat_log::out!("   Created script: {}", script_path);
     Ok(())
 }
 
@@ -1391,7 +1391,7 @@ async fn schedule_cron_job(name: &str, schedule: &str, script: &str) -> Result<(
         .unwrap_or_default();
     
     if existing.contains(script) {
-        println!("   Cron job for {} already exists, updating", name);
+        dchat_log::out!("   Cron job for {} already exists, updating", name);
         // Remove old entry
         let filtered: Vec<&str> = existing.lines().filter(|l| !l.contains(script)).collect();
         let mut new_crontab = filtered.join("\n");
@@ -1412,7 +1412,7 @@ async fn schedule_cron_job(name: &str, schedule: &str, script: &str) -> Result<(
     // Install updated crontab
     run_command("crontab", &["/tmp/dchat-crontab"]).await?;
     
-    println!("   Scheduled: {} ({})", name, schedule);
+    dchat_log::out!("   Scheduled: {} ({})", name, schedule);
     Ok(())
 }
 
@@ -1431,7 +1431,7 @@ async fn check_backup_exists(config: &DisasterRecoveryConfig, database: &str) ->
     
     match s3_check {
         Ok(output) if output.status.success() && !output.stdout.is_empty() => {
-            println!("   Found backup in S3 hot tier");
+            dchat_log::out!("   Found backup in S3 hot tier");
             return Ok(true);
         }
         _ => {}
@@ -1448,7 +1448,7 @@ async fn check_backup_exists(config: &DisasterRecoveryConfig, database: &str) ->
     
     match gcs_check {
         Ok(output) if output.status.success() && !output.stdout.is_empty() => {
-            println!("   Found backup in GCS warm tier");
+            dchat_log::out!("   Found backup in GCS warm tier");
             return Ok(true);
         }
         _ => {}
@@ -1467,7 +1467,7 @@ async fn check_backup_exists(config: &DisasterRecoveryConfig, database: &str) ->
         
         match ipfs_check {
             Ok(output) if output.status.success() && !output.stdout.is_empty() => {
-                println!("   Found backup in IPFS cold tier");
+                dchat_log::out!("   Found backup in IPFS cold tier");
                 return Ok(true);
             }
             _ => {}
@@ -1479,7 +1479,7 @@ async fn check_backup_exists(config: &DisasterRecoveryConfig, database: &str) ->
 
 /// Verify backup integrity using checksums and metadata validation
 async fn verify_backup_integrity(database: &str) -> Result<bool> {
-    println!("   Verifying integrity for {}", database);
+    dchat_log::out!("   Verifying integrity for {}", database);
     
     if database == "cockroachdb" || database.starts_with("cockroach") {
         // Use CockroachDB's built-in backup verification
@@ -1555,7 +1555,7 @@ async fn verify_backup_integrity(database: &str) -> Result<bool> {
 
 /// Test sample restore to verify backup recoverability
 async fn test_sample_restore(database: &str) -> Result<bool> {
-    println!("   Testing sample restore for {}", database);
+    dchat_log::out!("   Testing sample restore for {}", database);
     
     // Create isolated test environment
     let test_dir = format!("/tmp/dchat-restore-test-{}", database);

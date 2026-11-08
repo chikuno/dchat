@@ -19,6 +19,7 @@ name = "ironclad"
 path = "src/main.rs"
 
 [dependencies]
+dchat-log = { path = "../dchat-log" }
 # CLI framework
 clap = { version = "4", features = ["derive", "env", "color"] }
 clap_complete = "4"

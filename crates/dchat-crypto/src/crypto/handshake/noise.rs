@@ -429,7 +429,7 @@ pub fn spawn_timeout_cleanup_task(manager: Arc<NoiseHandshakeManager>) {
             let timed_out = manager.cleanup_timed_out_handshakes().await;
 
             if !timed_out.is_empty() {
-                eprintln!(
+                dchat_log::debug!(
                     "[HandshakeManager] Cleaned up {} timed-out handshakes",
                     timed_out.len()
                 );

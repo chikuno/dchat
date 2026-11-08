@@ -11,52 +11,52 @@ pub async fn run(
 ) -> IroncladResult<()> {
     let project = Project::find()?;
 
-    println!("{} {}", "ℹ️".bold(), "Program Information".cyan().bold());
-    println!();
+    dchat_log::out!("{} {}", "ℹ️".bold(), "Program Information".cyan().bold());
+    dchat_log::out!();
 
     // Show local project info
-    println!("  {}", "Project:".cyan().bold());
-    println!("    Name: {}", project.config.project.name.green());
-    println!("    Version: {}", project.config.project.version);
+    dchat_log::out!("  {}", "Project:".cyan().bold());
+    dchat_log::out!("    Name: {}", project.config.project.name.green());
+    dchat_log::out!("    Version: {}", project.config.project.version);
 
     if let Some(desc) = &project.config.project.description {
-        println!("    Description: {}", desc.dimmed());
+        dchat_log::out!("    Description: {}", desc.dimmed());
     }
 
     if !project.config.project.authors.is_empty() {
-        println!("    Authors: {}", project.config.project.authors.join(", "));
+        dchat_log::out!("    Authors: {}", project.config.project.authors.join(", "));
     }
 
     if let Some(program_id) = &project.config.project.program_id {
-        println!("    Program ID: {}", program_id.yellow());
+        dchat_log::out!("    Program ID: {}", program_id.yellow());
     }
 
     // Check for WASM
     let wasm_path = project.wasm_path(true);
     if wasm_path.exists() {
-        println!();
-        println!("  {}", "Build:".cyan().bold());
+        dchat_log::out!();
+        dchat_log::out!("  {}", "Build:".cyan().bold());
 
         let metadata = std::fs::metadata(&wasm_path)?;
-        println!("    WASM: {}", wasm_path.display().to_string().dimmed());
-        println!("    Size: {} bytes", metadata.len());
+        dchat_log::out!("    WASM: {}", wasm_path.display().to_string().dimmed());
+        dchat_log::out!("    Size: {} bytes", metadata.len());
 
         // Extract manifest info
         let wasm_bytes = std::fs::read(&wasm_path)?;
         if let Some((version, sdk_version, edition)) = extract_manifest_info(&wasm_bytes) {
-            println!("    Manifest Version: {}", version);
-            println!("    SDK Version: {}", sdk_version);
-            println!("    Edition: {}", edition);
+            dchat_log::out!("    Manifest Version: {}", version);
+            dchat_log::out!("    SDK Version: {}", sdk_version);
+            dchat_log::out!("    Edition: {}", edition);
         }
 
         // Check IDL
         let idl_path = project.idl_path();
         if idl_path.exists() {
-            println!("    IDL: {}", idl_path.display().to_string().dimmed());
+            dchat_log::out!("    IDL: {}", idl_path.display().to_string().dimmed());
         }
     } else {
-        println!();
-        println!(
+        dchat_log::out!();
+        dchat_log::out!(
             "  {} No WASM build found. Run 'ironclad build'",
             "⚠".yellow()
         );
@@ -64,43 +64,43 @@ pub async fn run(
 
     // Query on-chain info if program ID provided
     if let Some(pid) = program {
-        println!();
-        println!("  {}", "On-chain:".cyan().bold());
+        dchat_log::out!();
+        dchat_log::out!("  {}", "On-chain:".cyan().bold());
 
         let net = network.unwrap_or("mainnet");
         let network_config = project.config.networks.get(net);
 
         if let Some(config) = network_config {
-            println!("    Network: {}", net);
-            println!("    RPC: {}", config.url.dimmed());
+            dchat_log::out!("    Network: {}", net);
+            dchat_log::out!("    RPC: {}", config.url.dimmed());
 
             // In production, would query RPC
-            println!("    Program: {}", pid.yellow());
-            println!("    Status: {} (simulated)", "Active".green());
+            dchat_log::out!("    Program: {}", pid.yellow());
+            dchat_log::out!("    Status: {} (simulated)", "Active".green());
         } else {
-            println!("    {} Unknown network: {}", "⚠".yellow(), net);
+            dchat_log::out!("    {} Unknown network: {}", "⚠".yellow(), net);
         }
     }
 
     // Show configuration
     if verbose {
-        println!();
-        println!("  {}", "Configuration:".cyan().bold());
-        println!("    Target: {}", project.config.build.target);
-        println!("    Generate IDL: {}", project.config.build.generate_idl);
-        println!("    Verify Schema: {}", project.config.build.verify_schema);
+        dchat_log::out!();
+        dchat_log::out!("  {}", "Configuration:".cyan().bold());
+        dchat_log::out!("    Target: {}", project.config.build.target);
+        dchat_log::out!("    Generate IDL: {}", project.config.build.generate_idl);
+        dchat_log::out!("    Verify Schema: {}", project.config.build.verify_schema);
 
         if !project.config.build.rustflags.is_empty() {
-            println!(
+            dchat_log::out!(
                 "    Rustflags: {}",
                 project.config.build.rustflags.join(" ")
             );
         }
 
-        println!();
-        println!("  {}", "Networks:".cyan().bold());
+        dchat_log::out!();
+        dchat_log::out!("  {}", "Networks:".cyan().bold());
         for (name, config) in &project.config.networks {
-            println!("    {}: {}", name, config.url.dimmed());
+            dchat_log::out!("    {}: {}", name, config.url.dimmed());
         }
     }
 

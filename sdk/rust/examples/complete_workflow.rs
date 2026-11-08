@@ -12,39 +12,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let user_manager = UserManager::new(blockchain, "http://localhost:8080".to_string());
 
     // Create two users
-    println!("Creating users...");
+    dchat_log::out!("Creating users...");
     let alice = user_manager.create_user("alice").await?;
     let bob = user_manager.create_user("bob").await?;
 
-    println!("Alice: {} (confirmed: {})", alice.user_id, alice.on_chain_confirmed);
-    println!("Bob: {} (confirmed: {})", bob.user_id, bob.on_chain_confirmed);
+    dchat_log::out!("Alice: {} (confirmed: {})", alice.user_id, alice.on_chain_confirmed);
+    dchat_log::out!("Bob: {} (confirmed: {})", bob.user_id, bob.on_chain_confirmed);
 
     // Send direct message
-    println!("\nSending direct message...");
+    dchat_log::out!("\nSending direct message...");
     let message = user_manager
         .send_direct_message(&alice.user_id, &bob.user_id, "Hello Bob!", None)
         .await?;
-    println!(
+    dchat_log::out!(
         "Message sent: {} (TX: {:?})",
         message.message_id, message.tx_id
     );
 
     // Create channel
-    println!("\nCreating channel...");
+    dchat_log::out!("\nCreating channel...");
     let channel = user_manager
         .create_channel(&alice.user_id, "General", Some("General discussion"))
         .await?;
-    println!(
+    dchat_log::out!(
         "Channel created: {} (TX: {:?})",
         channel.channel_id, channel.tx_id
     );
 
     // Post to channel
-    println!("\nPosting to channel...");
+    dchat_log::out!("\nPosting to channel...");
     let post = user_manager
         .post_to_channel(&alice.user_id, &channel.channel_id, "Welcome everyone!")
         .await?;
-    println!("Posted: {} (TX: {:?})", post.message_id, post.tx_id);
+    dchat_log::out!("Posted: {} (TX: {:?})", post.message_id, post.tx_id);
 
     Ok(())
 }

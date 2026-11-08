@@ -47,7 +47,7 @@ async fn test_dilithium3_signature_verification() {
         "Wrong message should fail Dilithium3 verification"
     );
 
-    println!("✅ Dilithium3 signature verification test passed");
+    dchat_log::out!("✅ Dilithium3 signature verification test passed");
 }
 
 #[tokio::test]
@@ -83,7 +83,7 @@ async fn test_hybrid_signature_verification() {
         .verify(message, dilithium_keypair.public_key.as_bytes());
     assert!(dil_result.is_ok(), "Dilithium3 part should verify");
 
-    println!("✅ Hybrid signature verification test passed");
+    dchat_log::out!("✅ Hybrid signature verification test passed");
 }
 
 #[tokio::test]
@@ -147,7 +147,7 @@ async fn test_vote_persistence_porw() {
 
     assert!(has_voted, "Should detect existing vote");
 
-    println!("✅ Vote persistence PoRW test passed");
+    dchat_log::out!("✅ Vote persistence PoRW test passed");
 }
 
 #[tokio::test]
@@ -197,7 +197,7 @@ async fn test_vote_persistence_tsc() {
     assert_eq!(votes[0].lockup_tier, "Annual");
     assert_eq!(votes[0].stake_amount, 50000);
 
-    println!("✅ Vote persistence TSC test passed");
+    dchat_log::out!("✅ Vote persistence TSC test passed");
 }
 
 #[test]
@@ -209,7 +209,7 @@ fn test_geoip_lookup() {
     let manager = GeoIPManager::with_default_path();
 
     if manager.is_err() {
-        println!("⚠️  GeoIP database not found. Download GeoLite2-City.mmdb to run this test");
+        dchat_log::out!("⚠️  GeoIP database not found. Download GeoLite2-City.mmdb to run this test");
         return;
     }
 
@@ -223,17 +223,17 @@ fn test_geoip_lookup() {
     assert!(location.latitude != 0.0);
     assert!(location.longitude != 0.0);
 
-    println!("✅ GeoIP lookup test passed");
-    println!("   IP: {}", location.ip);
-    println!(
+    dchat_log::out!("✅ GeoIP lookup test passed");
+    dchat_log::out!("   IP: {}", location.ip);
+    dchat_log::out!(
         "   Country: {} ({})",
         location.country, location.country_code
     );
-    println!(
+    dchat_log::out!(
         "   Continent: {} ({})",
         location.continent, location.continent_code
     );
-    println!(
+    dchat_log::out!(
         "   Coordinates: {}, {}",
         location.latitude, location.longitude
     );
@@ -245,7 +245,7 @@ fn test_geographic_diversity_score() {
     let manager = GeoIPManager::with_default_path();
 
     if manager.is_err() {
-        println!("⚠️  GeoIP database not found");
+        dchat_log::out!("⚠️  GeoIP database not found");
         return;
     }
 
@@ -259,11 +259,11 @@ fn test_geographic_diversity_score() {
     ];
 
     let diversity = manager.calculate_diversity_score(&diverse_ips);
-    println!("Diversity score: {}", diversity);
+    dchat_log::out!("Diversity score: {}", diversity);
 
     assert!(diversity > 0.0, "Should have non-zero diversity");
 
-    println!("✅ Geographic diversity test passed");
+    dchat_log::out!("✅ Geographic diversity test passed");
 }
 
 #[test]
@@ -272,7 +272,7 @@ fn test_geographic_quorum_verification() {
     let manager = GeoIPManager::with_default_path();
 
     if manager.is_err() {
-        println!("⚠️  GeoIP database not found");
+        dchat_log::out!("⚠️  GeoIP database not found");
         return;
     }
 
@@ -289,20 +289,20 @@ fn test_geographic_quorum_verification() {
         .verify_geographic_quorum(&ips)
         .expect("Failed to verify quorum");
 
-    println!("Quorum analysis:");
-    println!("  Total nodes: {}", quorum.total_nodes);
-    println!("  Unique continents: {}", quorum.unique_continents);
-    println!(
+    dchat_log::out!("Quorum analysis:");
+    dchat_log::out!("  Total nodes: {}", quorum.total_nodes);
+    dchat_log::out!("  Unique continents: {}", quorum.unique_continents);
+    dchat_log::out!(
         "  Max concentration: {:.2}%",
         quorum.max_continent_concentration * 100.0
     );
-    println!("  Meets diversity: {}", quorum.meets_minimum_diversity);
-    println!(
+    dchat_log::out!("  Meets diversity: {}", quorum.meets_minimum_diversity);
+    dchat_log::out!(
         "  Meets concentration limit: {}",
         quorum.meets_concentration_limit
     );
 
-    println!("✅ Geographic quorum test passed");
+    dchat_log::out!("✅ Geographic quorum test passed");
 }
 
 #[tokio::test]
@@ -330,7 +330,7 @@ async fn test_oracle_network_registration() {
         "Should reject oracle with insufficient stake"
     );
 
-    println!("✅ Oracle registration test passed");
+    dchat_log::out!("✅ Oracle registration test passed");
 }
 
 #[tokio::test]
@@ -367,7 +367,7 @@ async fn test_oracle_prediction_submission() {
     // Note: Real signing requires proper message formatting
     // This test would need the actual signing_message() method
 
-    println!("✅ Oracle prediction submission test structure validated");
+    dchat_log::out!("✅ Oracle prediction submission test structure validated");
 }
 
 #[tokio::test]
@@ -392,10 +392,10 @@ async fn test_oracle_weight_calculation() {
     let weight = stats.calculate_weight();
     assert!(weight > 0.0, "Active oracle should have positive weight");
 
-    println!("✅ Oracle weight calculation test passed");
-    println!("   Stake: {}", stats.stake_amount);
-    println!("   Reputation: {}", stats.reputation_score);
-    println!("   Weight: {}", weight);
+    dchat_log::out!("✅ Oracle weight calculation test passed");
+    dchat_log::out!("   Stake: {}", stats.stake_amount);
+    dchat_log::out!("   Reputation: {}", stats.reputation_score);
+    dchat_log::out!("   Weight: {}", weight);
 }
 
 #[test]
@@ -420,8 +420,8 @@ fn test_distance_calculation() {
         distance
     );
 
-    println!("✅ Distance calculation test passed");
-    println!("   NYC to London: {:.2} km", distance);
+    dchat_log::out!("✅ Distance calculation test passed");
+    dchat_log::out!("   NYC to London: {:.2} km", distance);
 }
 
 #[tokio::test]
@@ -478,7 +478,7 @@ async fn test_transit_path_verification_with_dilithium3() {
     // Verify speed of light constraint
     let sol_result = path.verify_speed_of_light();
     if let Err(e) = &sol_result {
-        eprintln!("Speed of light verification failed: {:?}", e);
+        edchat_log::out!("Speed of light verification failed: {:?}", e);
     }
     assert!(
         sol_result.is_ok(),
@@ -486,7 +486,7 @@ async fn test_transit_path_verification_with_dilithium3() {
         sol_result
     );
 
-    println!("✅ Transit path with Dilithium3 test passed");
+    dchat_log::out!("✅ Transit path with Dilithium3 test passed");
 }
 
 // Run all tests with: cargo test --package dchat-blockchain --test consensus_gap_fixes

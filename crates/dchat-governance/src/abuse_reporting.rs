@@ -134,16 +134,16 @@ static ABUSE_REPORTING_ZK_KEYS: Lazy<Groth16Keys> = Lazy::new(|| {
         Ok(keys) => keys,
         Err(e) => {
             // Log critical error before panicking
-            eprintln!(
+            dchat_log::error!(
                 "CRITICAL: Failed to load ZK keys for abuse reporting: {:?}",
                 e
             );
-            eprintln!("The abuse reporting system cannot function without valid ZK keys.");
-            eprintln!(
+            dchat_log::error!("The abuse reporting system cannot function without valid ZK keys.");
+            dchat_log::error!(
                 "Either set {} environment variable pointing to key files,",
                 ZK_KEYS_DIR_ENV
             );
-            eprintln!("or generate keys using the setup tool: dchat-keygen --zk-keys");
+            dchat_log::error!("or generate keys using the setup tool: dchat-keygen --zk-keys");
             panic!("Failed to load ZK keys for abuse reporting: {:?}", e);
         }
     }

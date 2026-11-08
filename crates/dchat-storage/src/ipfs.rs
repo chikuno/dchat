@@ -713,7 +713,7 @@ mod tests {
         // First check if IPFS is available
         let health = client.health_check().await;
         if !health.unwrap_or(false) {
-            println!("Skipping test_upload_file_requires_ipfs - IPFS daemon not available");
+            dchat_log::debug!("Skipping test_upload_file_requires_ipfs - IPFS daemon not available");
             return;
         }
 
@@ -761,7 +761,7 @@ mod tests {
         // First check if IPFS is available
         let health = client.health_check().await;
         if !health.unwrap_or(false) {
-            println!("Skipping test_upload_directory_requires_ipfs - IPFS daemon not available");
+            dchat_log::debug!("Skipping test_upload_directory_requires_ipfs - IPFS daemon not available");
             return;
         }
 
@@ -806,7 +806,7 @@ mod tests {
         // First check if IPFS is available
         let health = client.health_check().await;
         if health.is_err() {
-            println!("Skipping test_pin_operations - IPFS daemon not available");
+            dchat_log::debug!("Skipping test_pin_operations - IPFS daemon not available");
             return;
         }
 
@@ -857,13 +857,10 @@ mod tests {
         match client.download(cid).await {
             Ok(data) => {
                 assert!(!data.is_empty());
-                println!(
-                    "Successfully downloaded {} bytes from public gateway",
-                    data.len()
-                );
+                dchat_log::out!("Successfully downloaded {} bytes from public gateway", data.len());
             }
             Err(e) => {
-                println!("Skipping test - network unavailable: {}", e);
+                dchat_log::debug!("Skipping test - network unavailable: {}", e);
             }
         }
     }

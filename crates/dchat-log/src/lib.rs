@@ -14,6 +14,7 @@
 //! - **Leveled Logging for Nodes**: Provides `info!`, `warn!`, `error!`, `debug!`, and `trace!`.
 
 #![cfg_attr(not(feature = "std"), no_std)]
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 #[cfg(all(not(feature = "std"), feature = "alloc"))]
 extern crate alloc;
@@ -45,7 +46,10 @@ pub use formatter::{encode_base64, format_pubkey};
 pub use syscalls::{log, log_64, log_compute_units, log_data, log_leveled, log_pubkey};
 
 // Re-export CLI functions and state
-pub use cli::{cli_dbg, cli_err, cli_failure, cli_header, cli_kv, cli_out, cli_success, OutputMode};
+pub use cli::{
+    cli_dbg, cli_err, cli_failure, cli_header, cli_kv, cli_out, cli_prompt, cli_success,
+    OutputMode,
+};
 #[cfg(feature = "std")]
 pub use cli::{
     get_output_mode, is_color_enabled, is_json_mode, is_quiet, set_color_enabled, set_json_mode,
@@ -73,7 +77,7 @@ pub mod prelude {
     };
     pub use crate::{
         dchat_dbg, debug, err, error, failure, header, info, kv, log_64, log_compute_units,
-        log_data, log_pubkey, log_slice, msg, out, sol_log, sol_log_64, sol_log_compute_units,
-        sol_log_data, success, trace, warn,
+        log_data, log_pubkey, log_slice, msg, out, prompt, sol_log, sol_log_64,
+        sol_log_compute_units, sol_log_data, success, trace, warn,
     };
 }

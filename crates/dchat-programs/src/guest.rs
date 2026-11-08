@@ -1116,8 +1116,7 @@ pub mod events {
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            eprintln!(
-                "[EVENT] program={} name={} data_len={}",
+            dchat_log::debug!("[EVENT] program={} name={} data_len={}",
                 program_id.to_base58(),
                 name,
                 data.len()

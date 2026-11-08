@@ -18,6 +18,7 @@ name = "ceremony_standalone"
 path = "src/bin/ceremony_standalone.rs"
 
 [dependencies]
+dchat-log = { path = "../dchat-log" }
 # Core dependencies
 dchat-core = { path = "../dchat-core" }
 dchat-crypto = { path = "../dchat-crypto" }

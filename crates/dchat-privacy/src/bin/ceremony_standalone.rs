@@ -257,7 +257,7 @@ fn validate_ceremony_keys(
     reputation_pk_bytes: &[u8],
     reputation_vk_bytes: &[u8],
 ) -> Result<(), String> {
-    println!("  Validating contact circuit keys...");
+    dchat_log::out!("  Validating contact circuit keys...");
 
     // Deserialize and validate contact keys using CanonicalDeserialize
     let contact_pk: ProvingKey<Bn254> = ProvingKey::deserialize_compressed(contact_pk_bytes)
@@ -279,12 +279,12 @@ fn validate_ceremony_keys(
 
     // Prepare verifying key for efficient batch verification
     let contact_pvk = prepare_verifying_key(&contact_vk);
-    println!(
+    dchat_log::out!(
         "    Contact VK prepared: {} public inputs",
         contact_pvk.vk.gamma_abc_g1.len() - 1
     );
 
-    println!("  Validating reputation circuit keys...");
+    dchat_log::out!("  Validating reputation circuit keys...");
 
     // Deserialize and validate reputation keys
     let reputation_pk: ProvingKey<Bn254> = ProvingKey::deserialize_compressed(reputation_pk_bytes)
@@ -304,39 +304,39 @@ fn validate_ceremony_keys(
 
     // Prepare reputation verifying key
     let reputation_pvk = prepare_verifying_key(&reputation_vk);
-    println!(
+    dchat_log::out!(
         "    Reputation VK prepared: {} public inputs",
         reputation_pvk.vk.gamma_abc_g1.len() - 1
     );
 
-    println!("  Key validation passed ✓");
+    dchat_log::out!("  Key validation passed ✓");
     Ok(())
 }
 
 fn main() {
-    println!("═══════════════════════════════════════════════════════════════");
-    println!("         dchat ZK Ceremony Artifact Generator (Standalone)");
-    println!("═══════════════════════════════════════════════════════════════");
-    println!();
+    dchat_log::out!("═══════════════════════════════════════════════════════════════");
+    dchat_log::out!("         dchat ZK Ceremony Artifact Generator (Standalone)");
+    dchat_log::out!("═══════════════════════════════════════════════════════════════");
+    dchat_log::out!();
 
     let config = CeremonySeedConfig::mainnet_config();
 
-    println!("Ceremony Configuration:");
-    println!("  Bitcoin Block: #{}", config.bitcoin_block_height);
-    println!("  Bitcoin Hash:  {}", config.bitcoin_block_hash);
+    dchat_log::out!("Ceremony Configuration:");
+    dchat_log::out!("  Bitcoin Block: #{}", config.bitcoin_block_height);
+    dchat_log::out!("  Bitcoin Hash:  {}", config.bitcoin_block_hash);
     if let Some(ref eth) = config.ethereum_block_hash {
-        println!("  Ethereum Hash: {}", eth);
+        dchat_log::out!("  Ethereum Hash: {}", eth);
     }
-    println!("  Domain:        {}", config.domain_separator);
-    println!("  Protocol Ver:  {}", config.protocol_version);
-    println!();
+    dchat_log::out!("  Domain:        {}", config.domain_separator);
+    dchat_log::out!("  Protocol Ver:  {}", config.protocol_version);
+    dchat_log::out!();
 
     let seed = config.derive_seed();
-    println!("Derived Seed: {}", hex::encode(&seed));
-    println!();
+    dchat_log::out!("Derived Seed: {}", hex::encode(&seed));
+    dchat_log::out!();
 
-    println!("Generating ceremony artifacts (this may take 1-2 minutes)...");
-    println!();
+    dchat_log::out!("Generating ceremony artifacts (this may take 1-2 minutes)...");
+    dchat_log::out!();
 
     let start = std::time::Instant::now();
 
@@ -345,7 +345,7 @@ fn main() {
     let poseidon_config = get_production_poseidon_config();
 
     // Generate contact circuit keys
-    println!("  Generating contact circuit keys...");
+    dchat_log::out!("  Generating contact circuit keys...");
     let contact_circuit = ContactCircuit {
         poseidon_config: poseidon_config.clone(),
         secret: None,
@@ -359,7 +359,7 @@ fn main() {
             .expect("Contact circuit setup failed");
 
     // Generate reputation circuit keys
-    println!("  Generating reputation circuit keys...");
+    dchat_log::out!("  Generating reputation circuit keys...");
     let reputation_circuit = ReputationCircuit {
         poseidon_config: poseidon_config.clone(),
         secret: None,
@@ -373,7 +373,7 @@ fn main() {
             .expect("Reputation circuit setup failed");
 
     // Serialize all keys
-    println!("  Serializing keys...");
+    dchat_log::out!("  Serializing keys...");
     let mut contact_pk_bytes = Vec::new();
     contact_pk
         .serialize_compressed(&mut contact_pk_bytes)
@@ -406,7 +406,7 @@ fn main() {
     let artifacts_hash = combined_hasher.finalize().to_hex().to_string();
 
     // Validate generated keys before writing
-    println!("Validating ceremony keys...");
+    dchat_log::out!("Validating ceremony keys...");
     validate_ceremony_keys(
         &contact_pk_bytes,
         &contact_vk_bytes,
@@ -414,19 +414,19 @@ fn main() {
         &reputation_vk_bytes,
     )
     .expect("Key validation failed");
-    println!();
+    dchat_log::out!();
 
     // Compute ceremony binding using Poseidon sponge
     let ceremony_binding = compute_ceremony_binding(&poseidon_config, &seed, &artifacts_hash);
-    println!(
+    dchat_log::out!(
         "Ceremony binding (Poseidon): {}",
         hex::encode(ceremony_binding.into_bigint().to_bytes_le())
     );
-    println!();
+    dchat_log::out!();
 
     let elapsed = start.elapsed();
-    println!("Generation complete in {:.2?}", elapsed);
-    println!();
+    dchat_log::out!("Generation complete in {:.2?}", elapsed);
+    dchat_log::out!();
 
     // Determine output directory (go up from src/bin to crate root, then ceremony)
     let manifest_dir =
@@ -435,8 +435,8 @@ fn main() {
     fs::create_dir_all(&ceremony_dir).expect("Failed to create ceremony directory");
 
     // Write artifact files
-    println!("Writing artifact files to {:?}", ceremony_dir);
-    println!();
+    dchat_log::out!("Writing artifact files to {:?}", ceremony_dir);
+    dchat_log::out!();
 
     let files: Vec<(&str, &[u8])> = vec![
         ("pot_final.bin", &pot_bytes),
@@ -449,7 +449,7 @@ fn main() {
     for (filename, data) in &files {
         let path = ceremony_dir.join(filename);
         fs::write(&path, data).expect(&format!("Failed to write {}", filename));
-        println!("  {:40} {:>10} bytes", filename, data.len());
+        dchat_log::out!("  {:40} {:>10} bytes", filename, data.len());
     }
 
     // Write hash file
@@ -486,21 +486,21 @@ fn main() {
 
     let hash_path = ceremony_dir.join("final_hash.txt");
     fs::write(&hash_path, &hash_content).expect("Failed to write final_hash.txt");
-    println!("  {:40}", "final_hash.txt");
+    dchat_log::out!("  {:40}", "final_hash.txt");
 
-    println!();
-    println!("═══════════════════════════════════════════════════════════════");
-    println!("                    CEREMONY ARTIFACTS HASH");
-    println!("═══════════════════════════════════════════════════════════════");
-    println!();
-    println!("  {}", artifacts_hash);
-    println!();
-    println!("═══════════════════════════════════════════════════════════════");
-    println!();
-    println!("SUCCESS! Ceremony artifacts generated.");
-    println!();
-    println!("Next steps:");
-    println!("  1. Rebuild dchat-privacy: cargo build --release -p dchat-privacy");
-    println!("  2. Verify artifacts: cargo run --release -p dchat-privacy --bin verify_ceremony");
-    println!();
+    dchat_log::out!();
+    dchat_log::out!("═══════════════════════════════════════════════════════════════");
+    dchat_log::out!("                    CEREMONY ARTIFACTS HASH");
+    dchat_log::out!("═══════════════════════════════════════════════════════════════");
+    dchat_log::out!();
+    dchat_log::out!("  {}", artifacts_hash);
+    dchat_log::out!();
+    dchat_log::out!("═══════════════════════════════════════════════════════════════");
+    dchat_log::out!();
+    dchat_log::out!("SUCCESS! Ceremony artifacts generated.");
+    dchat_log::out!();
+    dchat_log::out!("Next steps:");
+    dchat_log::out!("  1. Rebuild dchat-privacy: cargo build --release -p dchat-privacy");
+    dchat_log::out!("  2. Verify artifacts: cargo run --release -p dchat-privacy --bin verify_ceremony");
+    dchat_log::out!();
 }

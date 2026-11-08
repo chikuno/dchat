@@ -46,6 +46,11 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["dchat contributors"]
 
+[workspace.lints.clippy]
+print_stdout = "warn"
+print_stderr = "warn"
+dbg_macro = "warn"
+
 [package]
 name = "dchat"
 version.workspace = true

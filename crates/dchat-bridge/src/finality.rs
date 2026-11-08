@@ -549,7 +549,7 @@ mod tests {
         assert!(tracker.is_finalized(tx_hash));
         let verify_result = tracker.verify_proof(tx_hash, message);
         if let Err(ref e) = verify_result {
-            eprintln!("Verification error: {:?}", e);
+            dchat_log::debug!("Verification error: {:?}", e);
         }
         assert!(verify_result.is_ok(), "Verification should succeed");
         assert!(verify_result.unwrap(), "Signature should be valid");

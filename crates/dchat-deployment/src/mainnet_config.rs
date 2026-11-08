@@ -488,14 +488,14 @@ pub async fn write_mainnet_configs(output_dir: &Path) -> std::io::Result<()> {
         let toml_content = generate_server_toml(&config);
         tokio::fs::write(&filepath, toml_content).await?;
 
-        println!("✓ Generated: {}", filepath.display());
+        dchat_log::out!("✓ Generated: {}", filepath.display());
     }
 
     // Also write a summary JSON
     let summary_path = output_dir.join("mainnet-servers.json");
     let summary_json = serde_json::to_string_pretty(&configs)?;
     tokio::fs::write(&summary_path, summary_json).await?;
-    println!("✓ Generated: {}", summary_path.display());
+    dchat_log::out!("✓ Generated: {}", summary_path.display());
 
     Ok(())
 }

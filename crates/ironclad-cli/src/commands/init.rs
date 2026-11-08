@@ -6,7 +6,7 @@ use colored::*;
 use std::fs;
 
 pub async fn run(name: &str, template: &str, here: bool, verbose: bool) -> IroncladResult<()> {
-    println!(
+    dchat_log::out!(
         "{} {} {}",
         "🔨".bold(),
         "Initializing new Ironclad project:".cyan().bold(),
@@ -31,7 +31,7 @@ pub async fn run(name: &str, template: &str, here: bool, verbose: bool) -> Ironc
     fs::create_dir_all(&project_dir)?;
 
     if verbose {
-        println!("  {} Creating project structure...", "→".dimmed());
+        dchat_log::out!("  {} Creating project structure...", "→".dimmed());
     }
 
     // Create directory structure
@@ -81,18 +81,18 @@ pub async fn run(name: &str, template: &str, here: bool, verbose: bool) -> Ironc
     let test_file = generate_test_file(name);
     fs::write(project_dir.join("tests").join("integration.rs"), test_file)?;
 
-    println!();
-    println!("{}", "✅ Project initialized successfully!".green().bold());
-    println!();
-    println!("  {}", "Next steps:".cyan().bold());
-    println!();
+    dchat_log::out!();
+    dchat_log::out!("{}", "✅ Project initialized successfully!".green().bold());
+    dchat_log::out!();
+    dchat_log::out!("  {}", "Next steps:".cyan().bold());
+    dchat_log::out!();
     if !here {
-        println!("    cd {}", name);
+        dchat_log::out!("    cd {}", name);
     }
-    println!("    ironclad build");
-    println!("    ironclad test");
-    println!("    ironclad deploy --network devnet");
-    println!();
+    dchat_log::out!("    ironclad build");
+    dchat_log::out!("    ironclad test");
+    dchat_log::out!("    ironclad deploy --network devnet");
+    dchat_log::out!();
 
     Ok(())
 }
@@ -152,11 +152,11 @@ fn main() {
     let config = dchat_dpl::build::BuildConfig::default();
     
     if let Err(e) = dchat_dpl::build::generate_manifest_metadata(&config) {
-        println!("cargo:warning=DPL build: {}", e);
+        dchat_log::out!("cargo:warning=DPL build: {}", e);
     }
     
-    println!("cargo:rerun-if-changed=src/lib.rs");
-    println!("cargo:rerun-if-env-changed=DPL_SCHEMA_HASH");
+    dchat_log::out!("cargo:rerun-if-changed=src/lib.rs");
+    dchat_log::out!("cargo:rerun-if-env-changed=DPL_SCHEMA_HASH");
 }
 "#
     .to_string()

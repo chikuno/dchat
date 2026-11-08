@@ -240,8 +240,8 @@ impl ChaosTestExecutor {
     pub async fn run_scenario(&self, scenario: &ChaosScenario) -> ChaosTestResult {
         let start = std::time::Instant::now();
         
-        println!("🔥 Starting chaos scenario: {}", scenario.name);
-        println!("   Description: {}", scenario.description);
+        dchat_log::out!("🔥 Starting chaos scenario: {}", scenario.name);
+        dchat_log::out!("   Description: {}", scenario.description);
         
         // Inject faults
         for fault in &scenario.faults {
@@ -261,10 +261,10 @@ impl ChaosTestExecutor {
         for check in &scenario.validation_checks {
             if self.validate(check).await {
                 checks_passed += 1;
-                println!("   ✅ Check passed: {:?}", check);
+                dchat_log::out!("   ✅ Check passed: {:?}", check);
             } else {
                 checks_failed += 1;
-                println!("   ❌ Check failed: {:?}", check);
+                dchat_log::out!("   ❌ Check failed: {:?}", check);
             }
         }
 
@@ -289,43 +289,43 @@ impl ChaosTestExecutor {
         
         match &fault {
             ChaosFault::NetworkPartition { group_a, group_b, bidirectional } => {
-                println!("   💥 Injecting network partition between {:?} and {:?}", group_a, group_b);
+                dchat_log::out!("   💥 Injecting network partition between {:?} and {:?}", group_a, group_b);
                 self.record_observation(ObservationType::PartitionDetected, 
                     format!("Partition: {:?} <-> {:?} (bidirectional: {})", group_a, group_b, bidirectional)).await;
             },
             ChaosFault::NodeCrash { node_id, restart_after } => {
-                println!("   💥 Crashing node: {}", node_id);
+                dchat_log::out!("   💥 Crashing node: {}", node_id);
                 self.record_observation(ObservationType::NodeDown, 
                     format!("Node {} crashed (restart: {:?})", node_id, restart_after)).await;
             },
             ChaosFault::ByzantineNode { node_id, behavior } => {
-                println!("   💥 Node {} exhibiting Byzantine behavior: {:?}", node_id, behavior);
+                dchat_log::out!("   💥 Node {} exhibiting Byzantine behavior: {:?}", node_id, behavior);
                 self.record_observation(ObservationType::ByzantineBehaviorDetected,
                     format!("Node {} - {:?}", node_id, behavior)).await;
             },
             ChaosFault::LatencyInjection { target_nodes, min_latency_ms, max_latency_ms, .. } => {
-                println!("   💥 Injecting latency {}-{}ms to {:?}", min_latency_ms, max_latency_ms, target_nodes);
+                dchat_log::out!("   💥 Injecting latency {}-{}ms to {:?}", min_latency_ms, max_latency_ms, target_nodes);
             },
             ChaosFault::PacketLoss { target_nodes, loss_percentage } => {
-                println!("   💥 Injecting {}% packet loss to {:?}", loss_percentage, target_nodes);
+                dchat_log::out!("   💥 Injecting {}% packet loss to {:?}", loss_percentage, target_nodes);
             },
             ChaosFault::CpuThrottle { target_nodes, throttle_percentage } => {
-                println!("   💥 Throttling CPU by {}% on {:?}", throttle_percentage, target_nodes);
+                dchat_log::out!("   💥 Throttling CPU by {}% on {:?}", throttle_percentage, target_nodes);
             },
             ChaosFault::MemoryPressure { target_nodes, allocated_mb } => {
-                println!("   💥 Allocating {}MB memory on {:?}", allocated_mb, target_nodes);
+                dchat_log::out!("   💥 Allocating {}MB memory on {:?}", allocated_mb, target_nodes);
             },
             ChaosFault::DiskSlowdown { target_nodes, delay_ms } => {
-                println!("   💥 Slowing disk I/O by {}ms on {:?}", delay_ms, target_nodes);
+                dchat_log::out!("   💥 Slowing disk I/O by {}ms on {:?}", delay_ms, target_nodes);
             },
             ChaosFault::MessageReordering { target_nodes, reorder_probability } => {
-                println!("   💥 Reordering messages ({}% probability) on {:?}", reorder_probability * 100.0, target_nodes);
+                dchat_log::out!("   💥 Reordering messages ({}% probability) on {:?}", reorder_probability * 100.0, target_nodes);
             },
             ChaosFault::MessageDuplication { target_nodes, duplicate_probability } => {
-                println!("   💥 Duplicating messages ({}% probability) on {:?}", duplicate_probability * 100.0, target_nodes);
+                dchat_log::out!("   💥 Duplicating messages ({}% probability) on {:?}", duplicate_probability * 100.0, target_nodes);
             },
             ChaosFault::ClockSkew { target_nodes, skew_seconds } => {
-                println!("   💥 Skewing clocks by {}s on {:?}", skew_seconds, target_nodes);
+                dchat_log::out!("   💥 Skewing clocks by {}s on {:?}", skew_seconds, target_nodes);
             },
         }
 
@@ -334,7 +334,7 @@ impl ChaosTestExecutor {
 
     /// Clear all active faults
     async fn clear_faults(&self) {
-        println!("   🔧 Clearing all faults...");
+        dchat_log::out!("   🔧 Clearing all faults...");
         self.active_faults.write().await.clear();
         
         self.record_observation(ObservationType::RecoveryInitiated, 
@@ -367,7 +367,7 @@ impl ChaosTestExecutor {
     async fn validate(&self, check: &ValidationCheck) -> bool {
         match check {
             ValidationCheck::ConsensusReached { timeout } => {
-                println!("   🔍 Checking consensus (timeout: {:?})", timeout);
+                dchat_log::out!("   🔍 Checking consensus (timeout: {:?})", timeout);
                 // Check if consensus was reached by examining observations
                 let obs = self.observations.read().await;
                 let consensus_resumed = obs.iter().any(|o| {
@@ -380,7 +380,7 @@ impl ChaosTestExecutor {
                 !consensus_stalled || consensus_resumed
             },
             ValidationCheck::NoMessageLoss => {
-                println!("   🔍 Checking for message loss");
+                dchat_log::out!("   🔍 Checking for message loss");
                 // Check observations for message loss events
                 let obs = self.observations.read().await;
                 !obs.iter().any(|o| {
@@ -388,7 +388,7 @@ impl ChaosTestExecutor {
                 })
             },
             ValidationCheck::OrderingPreserved => {
-                println!("   🔍 Checking message ordering");
+                dchat_log::out!("   🔍 Checking message ordering");
                 // Verify no message reordering was detected
                 let obs = self.observations.read().await;
                 let reordering_detected = obs.iter().any(|o| {
@@ -397,7 +397,7 @@ impl ChaosTestExecutor {
                 !reordering_detected
             },
             ValidationCheck::RecoveryTime { max_duration } => {
-                println!("   🔍 Checking recovery time (max: {:?})", max_duration);
+                dchat_log::out!("   🔍 Checking recovery time (max: {:?})", max_duration);
                 // Measure time from recovery initiation to completion
                 let obs = self.observations.read().await;
                 let recovery_start = obs.iter()
@@ -416,7 +416,7 @@ impl ChaosTestExecutor {
                 }
             },
             ValidationCheck::NoDataCorruption => {
-                println!("   🔍 Checking for data corruption");
+                dchat_log::out!("   🔍 Checking for data corruption");
                 // Check for state inconsistency observations
                 let obs = self.observations.read().await;
                 !obs.iter().any(|o| {
@@ -424,7 +424,7 @@ impl ChaosTestExecutor {
                 })
             },
             ValidationCheck::ByzantineDetected { expected_count } => {
-                println!("   🔍 Checking Byzantine detection (expected: {})", expected_count);
+                dchat_log::out!("   🔍 Checking Byzantine detection (expected: {})", expected_count);
                 // Count Byzantine behavior detections
                 let obs = self.observations.read().await;
                 let detected_count = obs.iter()
@@ -435,7 +435,7 @@ impl ChaosTestExecutor {
                 detected_count >= *expected_count
             },
             ValidationCheck::StateConsistency => {
-                println!("   🔍 Checking state consistency across nodes");
+                dchat_log::out!("   🔍 Checking state consistency across nodes");
                 // Check for state inconsistency events
                 let obs = self.observations.read().await;
                 let partition_healed = obs.iter().any(|o| {
@@ -448,7 +448,7 @@ impl ChaosTestExecutor {
                 partition_healed || !inconsistency_detected
             },
             ValidationCheck::ThroughputBounds { min_tps, max_tps } => {
-                println!("   🔍 Checking throughput bounds ({}-{} TPS)", min_tps, max_tps);
+                dchat_log::out!("   🔍 Checking throughput bounds ({}-{} TPS)", min_tps, max_tps);
                 // Calculate TPS from observations
                 let obs = self.observations.read().await;
                 if obs.is_empty() {

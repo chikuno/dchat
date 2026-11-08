@@ -10,43 +10,43 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
-    println!("═══════════════════════════════════════════════════════════════");
-    println!("            dchat ZK Ceremony Artifact Generator");
-    println!("═══════════════════════════════════════════════════════════════");
-    println!();
+    dchat_log::out!("═══════════════════════════════════════════════════════════════");
+    dchat_log::out!("            dchat ZK Ceremony Artifact Generator");
+    dchat_log::out!("═══════════════════════════════════════════════════════════════");
+    dchat_log::out!();
 
     // Use mainnet configuration
     let config = CeremonySeedConfig::mainnet_config();
 
-    println!("Ceremony Configuration:");
-    println!("  Bitcoin Block: #{}", config.bitcoin_block_height);
-    println!("  Bitcoin Hash:  {}", config.bitcoin_block_hash);
+    dchat_log::out!("Ceremony Configuration:");
+    dchat_log::out!("  Bitcoin Block: #{}", config.bitcoin_block_height);
+    dchat_log::out!("  Bitcoin Hash:  {}", config.bitcoin_block_hash);
     if let Some(ref eth) = config.ethereum_block_hash {
-        println!("  Ethereum Hash: {}", eth);
+        dchat_log::out!("  Ethereum Hash: {}", eth);
     }
-    println!("  Domain:        {}", config.domain_separator);
-    println!("  Protocol Ver:  {}", config.protocol_version);
-    println!();
+    dchat_log::out!("  Domain:        {}", config.domain_separator);
+    dchat_log::out!("  Protocol Ver:  {}", config.protocol_version);
+    dchat_log::out!();
 
     let seed = config.derive_seed();
-    println!("Derived Seed: {}", hex::encode(&seed));
-    println!();
+    dchat_log::out!("Derived Seed: {}", hex::encode(&seed));
+    dchat_log::out!();
 
-    println!("Generating ceremony artifacts (this may take a minute)...");
-    println!();
+    dchat_log::out!("Generating ceremony artifacts (this may take a minute)...");
+    dchat_log::out!();
 
     let start = std::time::Instant::now();
     let artifacts = match generate_ceremony_artifacts(&config) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("ERROR: Failed to generate artifacts: {}", e);
+            edchat_log::out!("ERROR: Failed to generate artifacts: {}", e);
             std::process::exit(1);
         }
     };
     let elapsed = start.elapsed();
 
-    println!("Generation complete in {:.2?}", elapsed);
-    println!();
+    dchat_log::out!("Generation complete in {:.2?}", elapsed);
+    dchat_log::out!();
 
     // Determine output directory
     let ceremony_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("ceremony");
@@ -64,13 +64,13 @@ fn main() {
         ("reputation_vk_final.bin", &artifacts.reputation_vk_bytes),
     ];
 
-    println!("Writing artifact files to {:?}", ceremony_dir);
-    println!();
+    dchat_log::out!("Writing artifact files to {:?}", ceremony_dir);
+    dchat_log::out!();
 
     for (filename, data) in &files {
         let path = ceremony_dir.join(filename);
         fs::write(&path, data).expect(&format!("Failed to write {}", filename));
-        println!("  {:40} {:>10} bytes", filename, data.len());
+        dchat_log::out!("  {:40} {:>10} bytes", filename, data.len());
     }
 
     // Write hash file
@@ -100,30 +100,30 @@ fn main() {
 
     let hash_path = ceremony_dir.join("final_hash.txt");
     fs::write(&hash_path, &hash_content).expect("Failed to write final_hash.txt");
-    println!("  {:40}", "final_hash.txt");
+    dchat_log::out!("  {:40}", "final_hash.txt");
 
     // Write metadata JSON
     let metadata_json =
         serde_json::to_string_pretty(&artifacts.metadata).expect("Failed to serialize metadata");
     let metadata_path = ceremony_dir.join("ceremony_metadata.json");
     fs::write(&metadata_path, &metadata_json).expect("Failed to write metadata");
-    println!("  {:40}", "ceremony_metadata.json");
+    dchat_log::out!("  {:40}", "ceremony_metadata.json");
 
-    println!();
-    println!("═══════════════════════════════════════════════════════════════");
-    println!("                    CEREMONY ARTIFACTS HASH");
-    println!("═══════════════════════════════════════════════════════════════");
-    println!();
-    println!("  {}", artifacts.artifacts_hash);
-    println!();
-    println!("═══════════════════════════════════════════════════════════════");
-    println!();
-    println!("IMPORTANT: Before mainnet launch, verify this hash matches the");
-    println!("published value at: https://dchat.network/ceremony/verification");
-    println!();
-    println!("To verify artifacts independently:");
-    println!("  1. Regenerate using the same seed configuration");
-    println!("  2. Compare the resulting hash");
-    println!("  3. Hash must match exactly");
-    println!();
+    dchat_log::out!();
+    dchat_log::out!("═══════════════════════════════════════════════════════════════");
+    dchat_log::out!("                    CEREMONY ARTIFACTS HASH");
+    dchat_log::out!("═══════════════════════════════════════════════════════════════");
+    dchat_log::out!();
+    dchat_log::out!("  {}", artifacts.artifacts_hash);
+    dchat_log::out!();
+    dchat_log::out!("═══════════════════════════════════════════════════════════════");
+    dchat_log::out!();
+    dchat_log::out!("IMPORTANT: Before mainnet launch, verify this hash matches the");
+    dchat_log::out!("published value at: https://dchat.network/ceremony/verification");
+    dchat_log::out!();
+    dchat_log::out!("To verify artifacts independently:");
+    dchat_log::out!("  1. Regenerate using the same seed configuration");
+    dchat_log::out!("  2. Compare the resulting hash");
+    dchat_log::out!("  3. Hash must match exactly");
+    dchat_log::out!();
 }

@@ -11,7 +11,7 @@ pub async fn run(release: bool, verify: bool, verbose: bool) -> IroncladResult<(
     let start = Instant::now();
     let project = Project::find()?;
 
-    println!(
+    dchat_log::out!(
         "{} {} {}",
         "🔨".bold(),
         "Building".cyan().bold(),
@@ -56,7 +56,7 @@ pub async fn run(release: bool, verify: bool, verbose: bool) -> IroncladResult<(
     if !output.status.success() {
         pb.finish_and_clear();
         let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!("{}", stderr);
+        edchat_log::out!("{}", stderr);
         return Err(IroncladError::BuildFailed("Cargo build failed".to_string()));
     }
 
@@ -75,7 +75,7 @@ pub async fn run(release: bool, verify: bool, verbose: bool) -> IroncladResult<(
     let wasm_size = std::fs::metadata(&wasm_path)?.len();
 
     pb.finish_and_clear();
-    println!(
+    dchat_log::out!(
         "  {} WASM compiled: {} ({})",
         "✓".green(),
         wasm_path.display().to_string().dimmed(),
@@ -84,21 +84,21 @@ pub async fn run(release: bool, verify: bool, verbose: bool) -> IroncladResult<(
 
     // Step 2: Extract IDL if configured
     if project.config.build.generate_idl {
-        println!("  {} Extracting IDL from source...", "→".dimmed());
+        dchat_log::out!("  {} Extracting IDL from source...", "→".dimmed());
 
         match extract_idl(&project) {
             Ok(idl) => {
                 let idl_path = project.idl_path();
                 std::fs::create_dir_all(idl_path.parent().unwrap())?;
                 std::fs::write(&idl_path, idl)?;
-                println!(
+                dchat_log::out!(
                     "  {} IDL generated: {}",
                     "✓".green(),
                     idl_path.display().to_string().dimmed()
                 );
             }
             Err(e) => {
-                println!(
+                dchat_log::out!(
                     "  {} IDL extraction failed: {}",
                     "⚠".yellow(),
                     e.to_string().dimmed()
@@ -109,7 +109,7 @@ pub async fn run(release: bool, verify: bool, verbose: bool) -> IroncladResult<(
 
     // Step 3: Verify manifest if requested
     if verify {
-        println!("  {} Verifying manifest...", "→".dimmed());
+        dchat_log::out!("  {} Verifying manifest...", "→".dimmed());
 
         let verify_output = Command::new("dchat")
             .arg("program")
@@ -120,18 +120,18 @@ pub async fn run(release: bool, verify: bool, verbose: bool) -> IroncladResult<(
 
         match verify_output {
             Ok(output) if output.status.success() => {
-                println!("  {} Manifest verified", "✓".green());
+                dchat_log::out!("  {} Manifest verified", "✓".green());
             }
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                println!(
+                dchat_log::out!(
                     "  {} Manifest verification failed: {}",
                     "✗".red(),
                     stderr.trim()
                 );
             }
             Err(e) => {
-                println!(
+                dchat_log::out!(
                     "  {} Could not verify manifest: {}",
                     "⚠".yellow(),
                     e.to_string().dimmed()
@@ -142,8 +142,8 @@ pub async fn run(release: bool, verify: bool, verbose: bool) -> IroncladResult<(
 
     // Print summary
     let elapsed = start.elapsed();
-    println!();
-    println!(
+    dchat_log::out!();
+    dchat_log::out!(
         "{}",
         format!("✅ Built in {:.2}s", elapsed.as_secs_f64())
             .green()
@@ -151,11 +151,11 @@ pub async fn run(release: bool, verify: bool, verbose: bool) -> IroncladResult<(
     );
 
     if verbose {
-        println!();
-        println!("  {}", "Build artifacts:".cyan());
-        println!("    WASM: {}", wasm_path.display());
+        dchat_log::out!();
+        dchat_log::out!("  {}", "Build artifacts:".cyan());
+        dchat_log::out!("    WASM: {}", wasm_path.display());
         if project.config.build.generate_idl {
-            println!("    IDL:  {}", project.idl_path().display());
+            dchat_log::out!("    IDL:  {}", project.idl_path().display());
         }
     }
 

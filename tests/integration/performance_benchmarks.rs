@@ -27,9 +27,9 @@ mod tests {
         let elapsed = start.elapsed().as_millis();
         let avg_per_msg = elapsed / 100;
 
-        println!("Encryption benchmark:");
-        println!("  Total time: {}ms for 100 messages", elapsed);
-        println!("  Average per message: {}ms", avg_per_msg);
+        dchat_log::out!("Encryption benchmark:");
+        dchat_log::out!("  Total time: {}ms for 100 messages", elapsed);
+        dchat_log::out!("  Average per message: {}ms", avg_per_msg);
 
         // Average should be well under threshold
         assert!(avg_per_msg < ENCRYPTION_MS_THRESHOLD);
@@ -47,9 +47,9 @@ mod tests {
         let elapsed = start.elapsed().as_millis();
         let avg_per_msg = elapsed / 100;
 
-        println!("Decryption benchmark:");
-        println!("  Total time: {}ms for 100 messages", elapsed);
-        println!("  Average per message: {}ms", avg_per_msg);
+        dchat_log::out!("Decryption benchmark:");
+        dchat_log::out!("  Total time: {}ms for 100 messages", elapsed);
+        dchat_log::out!("  Average per message: {}ms", avg_per_msg);
 
         assert!(avg_per_msg < ENCRYPTION_MS_THRESHOLD);
     }
@@ -66,9 +66,9 @@ mod tests {
         let elapsed = start.elapsed().as_millis();
         let avg_per_lookup = elapsed / 50;
 
-        println!("DHT lookup benchmark:");
-        println!("  Total time: {}ms for 50 lookups", elapsed);
-        println!("  Average per lookup: {}ms", avg_per_lookup);
+        dchat_log::out!("DHT lookup benchmark:");
+        dchat_log::out!("  Total time: {}ms for 50 lookups", elapsed);
+        dchat_log::out!("  Average per lookup: {}ms", avg_per_lookup);
 
         assert!(avg_per_lookup < DHT_LOOKUP_MS_THRESHOLD);
     }
@@ -85,9 +85,9 @@ mod tests {
         let elapsed = start.elapsed().as_millis();
         let avg_per_tx = elapsed / 20;
 
-        println!("Transaction submission benchmark:");
-        println!("  Total time: {}ms for 20 TXs", elapsed);
-        println!("  Average per TX: {}ms", avg_per_tx);
+        dchat_log::out!("Transaction submission benchmark:");
+        dchat_log::out!("  Total time: {}ms for 20 TXs", elapsed);
+        dchat_log::out!("  Average per TX: {}ms", avg_per_tx);
 
         assert!(avg_per_tx < TX_SUBMISSION_MS_THRESHOLD);
     }
@@ -104,9 +104,9 @@ mod tests {
         let elapsed = start.elapsed().as_millis();
         let avg_per_check = elapsed / 50;
 
-        println!("Confirmation check benchmark:");
-        println!("  Total time: {}ms for 50 checks", elapsed);
-        println!("  Average per check: {}ms", avg_per_check);
+        dchat_log::out!("Confirmation check benchmark:");
+        dchat_log::out!("  Total time: {}ms for 50 checks", elapsed);
+        dchat_log::out!("  Average per check: {}ms", avg_per_check);
 
         assert!(avg_per_check < CONFIRMATION_CHECK_MS_THRESHOLD);
     }
@@ -123,9 +123,9 @@ mod tests {
         let elapsed = start.elapsed().as_millis();
         let avg_per_discovery = elapsed / 10;
 
-        println!("Peer discovery benchmark:");
-        println!("  Total time: {}ms for 10 discoveries", elapsed);
-        println!("  Average per discovery: {}ms", avg_per_discovery);
+        dchat_log::out!("Peer discovery benchmark:");
+        dchat_log::out!("  Total time: {}ms for 10 discoveries", elapsed);
+        dchat_log::out!("  Average per discovery: {}ms", avg_per_discovery);
 
         assert!(avg_per_discovery < PEER_DISCOVERY_MS_THRESHOLD);
     }
@@ -142,9 +142,9 @@ mod tests {
         let elapsed = start.elapsed().as_millis();
         let avg_per_rotation = elapsed / 100;
 
-        println!("Key rotation benchmark:");
-        println!("  Total time: {}ms for 100 rotations", elapsed);
-        println!("  Average per rotation: {}ms", avg_per_rotation);
+        dchat_log::out!("Key rotation benchmark:");
+        dchat_log::out!("  Total time: {}ms for 100 rotations", elapsed);
+        dchat_log::out!("  Average per rotation: {}ms", avg_per_rotation);
 
         // Key rotation should be fast
         assert!(avg_per_rotation < 5);
@@ -162,9 +162,9 @@ mod tests {
         let elapsed = start.elapsed().as_millis();
         let avg_per_verify = elapsed / 50;
 
-        println!("Signature verification benchmark:");
-        println!("  Total time: {}ms for 50 verifications", elapsed);
-        println!("  Average per verification: {}ms", avg_per_verify);
+        dchat_log::out!("Signature verification benchmark:");
+        dchat_log::out!("  Total time: {}ms for 50 verifications", elapsed);
+        dchat_log::out!("  Average per verification: {}ms", avg_per_verify);
 
         // ED25519 verification should be fast
         assert!(avg_per_verify < 10);
@@ -203,8 +203,8 @@ mod tests {
         }
 
         let avg_per_peer = total_size / PEERS_TO_TRACK;
-        println!("Memory benchmark:");
-        println!("  Average per peer: ~{} bytes", avg_per_peer);
+        dchat_log::out!("Memory benchmark:");
+        dchat_log::out!("  Average per peer: ~{} bytes", avg_per_peer);
 
         // Should be around 200-400 bytes per peer
         assert!(avg_per_peer < 500);
@@ -225,8 +225,8 @@ mod tests {
         let elapsed = start.elapsed().as_millis();
         let throughput = (message_count as u128 * 1000) / elapsed;
 
-        println!("Message throughput benchmark:");
-        println!("  Messages/second: {}", throughput);
+        dchat_log::out!("Message throughput benchmark:");
+        dchat_log::out!("  Messages/second: {}", throughput);
 
         // Should handle at least 100 messages/second
         assert!(throughput > 100);
@@ -245,9 +245,9 @@ mod tests {
         let elapsed = start.elapsed().as_millis();
         let avg_per_insert = elapsed / 1000;
 
-        println!("DHT insert benchmark:");
-        println!("  Total time: {}ms for 1000 inserts", elapsed);
-        println!("  Average per insert: {}ms", avg_per_insert);
+        dchat_log::out!("DHT insert benchmark:");
+        dchat_log::out!("  Total time: {}ms for 1000 inserts", elapsed);
+        dchat_log::out!("  Average per insert: {}ms", avg_per_insert);
 
         // Should handle 1000 inserts in reasonable time
         assert!(avg_per_insert < 1);
@@ -265,9 +265,9 @@ mod tests {
         let elapsed = start.elapsed().as_millis();
         let avg_per_verify = elapsed / 100;
 
-        println!("PoD verification benchmark:");
-        println!("  Total time: {}ms for 100 verifications", elapsed);
-        println!("  Average per verification: {}ms", avg_per_verify);
+        dchat_log::out!("PoD verification benchmark:");
+        dchat_log::out!("  Total time: {}ms for 100 verifications", elapsed);
+        dchat_log::out!("  Average per verification: {}ms", avg_per_verify);
 
         // Should verify proofs quickly
         assert!(avg_per_verify < 5);

@@ -19,7 +19,7 @@ pub async fn run(
         .get(network)
         .ok_or_else(|| IroncladError::ConfigError(format!("Unknown network: {}", network)))?;
 
-    println!(
+    dchat_log::out!(
         "{} {} {}",
         "⬆️".bold(),
         "Upgrading".cyan().bold(),
@@ -41,7 +41,7 @@ pub async fn run(
 
     // Verify before upgrade
     if !skip_verify {
-        println!("  {} Verifying new program...", "→".dimmed());
+        dchat_log::out!("  {} Verifying new program...", "→".dimmed());
 
         let wasm_bytes = std::fs::read(&wasm_path)?;
         let has_manifest = wasm_bytes.windows(4).any(|w| w == b"DPLM");
@@ -52,28 +52,28 @@ pub async fn run(
             ));
         }
 
-        println!("  {} Verification passed", "✓".green());
+        dchat_log::out!("  {} Verification passed", "✓".green());
     }
 
     if verbose {
-        println!("  {} RPC: {}", "→".dimmed(), network_config.url.dimmed());
+        dchat_log::out!("  {} RPC: {}", "→".dimmed(), network_config.url.dimmed());
     }
 
     // Simulate upgrade (in production, would use RPC client)
-    println!("  {} Uploading new program...", "→".dimmed());
+    dchat_log::out!("  {} Uploading new program...", "→".dimmed());
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    println!("  {} Program uploaded", "✓".green());
+    dchat_log::out!("  {} Program uploaded", "✓".green());
 
-    println!("  {} Executing upgrade...", "→".dimmed());
+    dchat_log::out!("  {} Executing upgrade...", "→".dimmed());
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    println!("  {} Upgrade executed", "✓".green());
+    dchat_log::out!("  {} Upgrade executed", "✓".green());
 
-    println!();
-    println!("{}", "✅ Upgrade successful!".green().bold());
-    println!();
-    println!("  Program: {}", program_id);
-    println!("  Network: {}", network);
-    println!("  New WASM: {}", wasm_path.display());
+    dchat_log::out!();
+    dchat_log::out!("{}", "✅ Upgrade successful!".green().bold());
+    dchat_log::out!();
+    dchat_log::out!("  Program: {}", program_id);
+    dchat_log::out!("  Network: {}", network);
+    dchat_log::out!("  New WASM: {}", wasm_path.display());
 
     Ok(())
 }

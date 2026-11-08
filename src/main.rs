@@ -30,17 +30,17 @@ pub fn init_sentry() -> Option<sentry::ClientInitGuard> {
         Ok(dsn) if !dsn.is_empty() => {
             // Validate DSN format: should start with https:// and contain @...sentry
             if !dsn.starts_with("https://") || !dsn.contains("sentry") {
-                tracing::warn!("DCHAT_SENTRY_DSN does not appear to be a valid Sentry DSN format");
+                warn!("DCHAT_SENTRY_DSN does not appear to be a valid Sentry DSN format");
                 return None;
             }
             dsn
         }
         Ok(_) => {
-            tracing::info!("DCHAT_SENTRY_DSN is empty, Sentry disabled");
+            info!("DCHAT_SENTRY_DSN is empty, Sentry disabled");
             return None;
         }
         Err(_) => {
-            tracing::info!("DCHAT_SENTRY_DSN not set, Sentry error monitoring disabled");
+            info!("DCHAT_SENTRY_DSN not set, Sentry error monitoring disabled");
             return None;
         }
     };
@@ -137,6 +137,10 @@ use tokio::signal;
 use tokio::sync::{broadcast, RwLock};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use dchat_log::{
+    err, failure, header, kv, out, prompt, success,
+    set_json_mode, set_quiet,
+};
 use uuid::Uuid;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -1182,6 +1186,10 @@ struct Cli {
     /// Enable JSON logging for structured output
     #[arg(long)]
     json_logs: bool,
+
+    /// Suppress informative output and prints
+    #[arg(short, long)]
+    quiet: bool,
 
     /// Metrics server listen address
     #[arg(long, default_value = "127.0.0.1:9090")]
@@ -3398,6 +3406,9 @@ async fn main() -> Result<()> {
 
     // Initialize logging
     init_logging(&cli.log_level, cli.json_logs)?;
+    if cli.quiet {
+        dchat_log::set_quiet(true);
+    }
 
     // Initialize Sentry for production error monitoring
     let _sentry_guard = init_sentry();
@@ -3594,6 +3605,9 @@ async fn main() -> Result<()> {
 /// When Sentry is enabled (via DCHAT_SENTRY_DSN), also attaches a Sentry layer for
 /// breadcrumbs and error event forwarding.
 fn init_logging(log_level: &str, json: bool) -> Result<()> {
+    if json {
+        dchat_log::set_json_mode(true);
+    }
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
@@ -5297,12 +5311,12 @@ async fn run_light_client(
         info!("  /history         - Show recent messages");
         info!("  /quit            - Exit");
         info!("  <text>           - Send to #global");
-        println!();
+        out!();
 
         use tokio::io::{self, AsyncBufReadExt};
         let mut stdin_lines = io::BufReader::new(io::stdin()).lines();
 
-        print!("You: ");
+        prompt!("You: ");
         {
             use std::io::Write;
             let _ = std::io::stdout().flush();
@@ -5314,14 +5328,14 @@ async fn run_light_client(
                     match event {
                         Some(LightClientEvent::MessageReceived { channel_id, sender, content, .. }) => {
                             let channel = channel_id.as_deref().unwrap_or("DM");
-                            println!("\n[#{}] {}: {}", channel, sender, content);
-                            print!("You: ");
+                            out!("\n[#{}] {}: {}", channel, sender, content);
+                            prompt!("You: ");
                             use std::io::Write;
                             let _ = std::io::stdout().flush();
                         }
                         Some(LightClientEvent::Error(e)) => {
-                            println!("\n❌ Error: {}", e);
-                            print!("You: ");
+                            out!("\n❌ Error: {}", e);
+                            prompt!("You: ");
                             use std::io::Write;
                             let _ = std::io::stdout().flush();
                         }
@@ -5335,7 +5349,7 @@ async fn run_light_client(
                         Ok(Some(text)) => {
                             let text = text.trim();
                             if text.is_empty() {
-                                print!("You: ");
+                                prompt!("You: ");
                                 use std::io::Write;
                                 let _ = std::io::stdout().flush();
                                 continue;
@@ -5349,27 +5363,27 @@ async fn run_light_client(
                                     }
                                     "/join" if parts.len() > 1 => {
                                         match client.subscribe(parts[1]).await {
-                                            Ok(_) => println!("✓ Joined #{}", parts[1]),
-                                            Err(e) => println!("❌ Failed to join: {}", e),
+                                            Ok(_) => out!("✓ Joined #{}", parts[1]),
+                                            Err(e) => out!("❌ Failed to join: {}", e),
                                         }
                                     }
                                     "/leave" if parts.len() > 1 => {
                                         match client.unsubscribe(parts[1]).await {
-                                            Ok(_) => println!("✓ Left #{}", parts[1]),
-                                            Err(e) => println!("❌ Failed to leave: {}", e),
+                                            Ok(_) => out!("✓ Left #{}", parts[1]),
+                                            Err(e) => out!("❌ Failed to leave: {}", e),
                                         }
                                     }
                                     "/peers" => {
                                         let count = client.peer_count().await;
-                                        println!("Connected peers: {}", count);
+                                        out!("Connected peers: {}", count);
                                     }
                                     "/history" => {
                                         match client.get_channel_messages("global", 10).await {
                                             Ok(msgs) => {
                                                 if msgs.is_empty() {
-                                                    println!("No messages yet.");
+                                                    out!("No messages yet.");
                                                 } else {
-                                                    println!("Recent messages:");
+                                                    out!("Recent messages:");
                                                     for msg in msgs {
                                                         let content = if !msg.content.is_empty() {
                                                             msg.content
@@ -5378,15 +5392,15 @@ async fn run_light_client(
                                                         } else {
                                                             String::new()
                                                         };
-                                                        println!("  [{}] {}: {}", msg.timestamp, msg.sender_id, content);
+                                                        out!("  [{}] {}: {}", msg.timestamp, msg.sender_id, content);
                                                     }
                                                 }
                                             }
-                                            Err(e) => println!("❌ Failed to get history: {}", e),
+                                            Err(e) => out!("❌ Failed to get history: {}", e),
                                         }
                                     }
                                     _ => {
-                                        println!("Unknown command. Type /quit to exit.");
+                                        out!("Unknown command. Type /quit to exit.");
                                     }
                                 }
                             } else {
@@ -5396,12 +5410,12 @@ async fn run_light_client(
                                         debug!("📤 Sent: {} ({})", text, msg_id);
                                     }
                                     Err(e) => {
-                                        println!("❌ Failed to send: {}", e);
+                                        out!("❌ Failed to send: {}", e);
                                     }
                                 }
                             }
 
-                            print!("You: ");
+                            prompt!("You: ");
                             use std::io::Write;
                             let _ = std::io::stdout().flush();
                         }
@@ -5413,7 +5427,7 @@ async fn run_light_client(
                 }
 
                 _ = tokio::signal::ctrl_c() => {
-                    println!();
+                    out!();
                     break;
                 }
             }
@@ -6072,7 +6086,7 @@ async fn run_user_node(
         use tokio::io::{self, AsyncBufReadExt};
 
         let mut stdin_lines = io::BufReader::new(io::stdin()).lines();
-        print!("You: ");
+        prompt!("You: ");
         {
             use std::io::Write;
             let _ = std::io::stdout().flush();
@@ -6115,8 +6129,8 @@ async fn run_user_node(
                                     // E2E disabled - display raw payload
                                     String::from_utf8_lossy(&encrypted_payload).to_string()
                                 };
-                                println!("\n[#{}] {}: {}", channel_id, from, msg_text);
-                                print!("You: ");
+                                out!("\n[#{}] {}: {}", channel_id, from, msg_text);
+                                prompt!("You: ");
                                 use std::io::Write;
                                 let _ = std::io::stdout().flush();
                             }
@@ -6202,11 +6216,11 @@ async fn run_user_node(
                                     }
                                     Err(e) => {
                                         info!("❌ Failed to send: {}", e);
-                                        println!("Error sending message: {}", e);
+                                        out!("Error sending message: {}", e);
                                     }
                                 }
 
-                                print!("You: ");
+                                prompt!("You: ");
                                 use std::io::Write;
                                 let _ = std::io::stdout().flush();
                             }
@@ -12310,7 +12324,7 @@ async fn generate_keys(
 fn prompt_password(prompt_msg: &str) -> Result<String> {
     use std::io::{self, Write};
 
-    print!("{}", prompt_msg);
+    prompt!("{}", prompt_msg);
     io::stdout().flush().map_err(Error::Io)?;
 
     let mut password = String::new();
@@ -13125,18 +13139,18 @@ async fn run_account_command(_config: Config, action: AccountCommand) -> Result<
             info!("📝 Creating user account: {}", username);
             let response = user_manager.create_user(&username).await?;
 
-            println!("\n✅ User Created Successfully!");
-            println!("  User ID: {}", response.user_id);
-            println!("  Username: {}", response.username);
-            println!("  Public Key: {}", response.public_key);
-            println!("  Created: {}", response.created_at);
-            println!("\n🔐 IMPORTANT: Store your private key securely!");
-            println!("  Private Key: {}", response.private_key);
+            out!("\n✅ User Created Successfully!");
+            out!("  User ID: {}", response.user_id);
+            out!("  Username: {}", response.username);
+            out!("  Public Key: {}", response.public_key);
+            out!("  Created: {}", response.created_at);
+            out!("\n🔐 IMPORTANT: Store your private key securely!");
+            out!("  Private Key: {}", response.private_key);
 
             // Save to file
             let json = serde_json::to_string_pretty(&response)?;
             std::fs::write(&save_to, json)?;
-            println!("\n💾 Keys saved to: {:?}", save_to);
+            out!("\n💾 Keys saved to: {:?}", save_to);
 
             Ok(())
         }
@@ -13146,15 +13160,15 @@ async fn run_account_command(_config: Config, action: AccountCommand) -> Result<
             let users = user_manager.list_users().await?;
 
             if users.is_empty() {
-                println!("No users created yet.");
+                out!("No users created yet.");
             } else {
-                println!("\n👥 Users ({}):", users.len());
-                println!("{:<40} {:<20} {:<40}", "User ID", "Username", "Public Key");
-                println!("{}", "-".repeat(100));
+                out!("\n👥 Users ({}):", users.len());
+                out!("{:<40} {:<20} {:<40}", "User ID", "Username", "Public Key");
+                out!("{}", "-".repeat(100));
                 for user in users {
                     let key_preview =
                         format!("{}...", &user.public_key[..16.min(user.public_key.len())]);
-                    println!(
+                    out!(
                         "{:<40} {:<20} {:<40}",
                         user.user_id, user.username, key_preview
                     );
@@ -13168,14 +13182,14 @@ async fn run_account_command(_config: Config, action: AccountCommand) -> Result<
             info!("👤 Getting profile for user: {}", user_id);
             let profile = user_manager.get_user_profile(&user_id).await?;
 
-            println!("\n📊 User Profile:");
-            println!("  User ID: {}", profile.user_id);
-            println!("  Username: {}", profile.username);
-            println!("  Display Name: {:?}", profile.display_name);
-            println!("  Reputation: {}", profile.reputation_score);
-            println!("  Verified: {}", profile.verified);
-            println!("  Created: {}", profile.created_at);
-            println!("  Public Key: {}", profile.public_key);
+            out!("\n📊 User Profile:");
+            out!("  User ID: {}", profile.user_id);
+            out!("  Username: {}", profile.username);
+            out!("  Display Name: {:?}", profile.display_name);
+            out!("  Reputation: {}", profile.reputation_score);
+            out!("  Verified: {}", profile.verified);
+            out!("  Created: {}", profile.created_at);
+            out!("  Public Key: {}", profile.public_key);
 
             Ok(())
         }
@@ -13212,28 +13226,28 @@ async fn run_account_command(_config: Config, action: AccountCommand) -> Result<
             // Send via FeeGateway (enforces fee payment + finality)
             let response = fee_gateway.send_direct_message(request).await?;
 
-            println!("\n✅ Direct Message Sent (Fee-Gated)!");
-            println!("  Message ID: {}", response.message_id);
-            println!(
+            out!("\n✅ Direct Message Sent (Fee-Gated)!");
+            out!("  Message ID: {}", response.message_id);
+            out!(
                 "  Operation ID: {}",
                 hex::encode(&response.operation_id[..8])
             );
-            println!("  Chat TX: {}", response.chat_tx.tx_id);
-            println!("  Chat TX Hash: {}", response.chat_tx.tx_hash);
-            println!(
+            out!("  Chat TX: {}", response.chat_tx.tx_id);
+            out!("  Chat TX Hash: {}", response.chat_tx.tx_hash);
+            out!(
                 "  Finality: {} confirmations",
                 response.chat_tx.confirmations
             );
-            println!(
+            out!(
                 "  Gas Fee: {} (tx: {})",
                 response.gas_fee_receipt.amount, response.gas_fee_receipt.fee_tx_id
             );
-            println!(
+            out!(
                 "  Message Fee: {} to relay {}",
                 response.message_fee_receipt.amount, response.message_fee_receipt.relay_id
             );
-            println!("  Storage Tier: {:?}", response.storage_tier);
-            println!("  Timestamp: {}", response.timestamp);
+            out!("  Storage Tier: {:?}", response.storage_tier);
+            out!("  Timestamp: {}", response.timestamp);
 
             Ok(())
         }
@@ -13248,12 +13262,12 @@ async fn run_account_command(_config: Config, action: AccountCommand) -> Result<
                 .create_channel(&creator_id, &name, description.as_deref())
                 .await?;
 
-            println!("\n✅ Channel Created!");
-            println!("  Channel ID: {}", response.channel_id);
-            println!("  Name: {}", response.channel_name);
-            println!("  Creator: {}", response.creator_id);
-            println!("  Created: {}", response.created_at);
-            println!("  On-chain: {}", response.on_chain_confirmed);
+            out!("\n✅ Channel Created!");
+            out!("  Channel ID: {}", response.channel_id);
+            out!("  Name: {}", response.channel_name);
+            out!("  Creator: {}", response.creator_id);
+            out!("  Created: {}", response.created_at);
+            out!("  On-chain: {}", response.on_chain_confirmed);
 
             Ok(())
         }
@@ -13294,26 +13308,26 @@ async fn run_account_command(_config: Config, action: AccountCommand) -> Result<
             // Post via FeeGateway (enforces fee payment + finality)
             let response = fee_gateway.post_to_channel(request).await?;
 
-            println!("\n✅ Message Posted (Fee-Gated)!");
-            println!("  Message ID: {}", response.message_id);
-            println!(
+            out!("\n✅ Message Posted (Fee-Gated)!");
+            out!("  Message ID: {}", response.message_id);
+            out!(
                 "  Operation ID: {}",
                 hex::encode(&response.operation_id[..8])
             );
-            println!("  Chat TX: {}", response.chat_tx.tx_id);
-            println!(
+            out!("  Chat TX: {}", response.chat_tx.tx_id);
+            out!(
                 "  Finality: {} confirmations",
                 response.chat_tx.confirmations
             );
-            println!(
+            out!(
                 "  Gas Fee: {} (tx: {})",
                 response.gas_fee_receipt.amount, response.gas_fee_receipt.fee_tx_id
             );
-            println!(
+            out!(
                 "  Message Fee: {} to relay {}",
                 response.message_fee_receipt.amount, response.message_fee_receipt.relay_id
             );
-            println!("  Timestamp: {}", response.timestamp);
+            out!("  Timestamp: {}", response.timestamp);
 
             Ok(())
         }
@@ -13323,13 +13337,13 @@ async fn run_account_command(_config: Config, action: AccountCommand) -> Result<
             let messages = user_manager.get_direct_messages(&user_id).await?;
 
             if messages.is_empty() {
-                println!("No direct messages.");
+                out!("No direct messages.");
             } else {
-                println!("\n📬 Direct Messages ({}):", messages.len());
-                println!("{:<40} {:<15} {:<25}", "Message ID", "Status", "Timestamp");
-                println!("{}", "-".repeat(80));
+                out!("\n📬 Direct Messages ({}):", messages.len());
+                out!("{:<40} {:<15} {:<25}", "Message ID", "Status", "Timestamp");
+                out!("{}", "-".repeat(80));
                 for msg in messages {
-                    println!(
+                    out!(
                         "{:<40} {:<15} {:<25}",
                         msg.message_id, msg.status, msg.timestamp
                     );
@@ -13344,13 +13358,13 @@ async fn run_account_command(_config: Config, action: AccountCommand) -> Result<
             let messages = user_manager.get_channel_messages(&channel_id).await?;
 
             if messages.is_empty() {
-                println!("No messages in channel.");
+                out!("No messages in channel.");
             } else {
-                println!("\n📖 Channel Messages ({}):", messages.len());
-                println!("{:<40} {:<15} {:<25}", "Message ID", "Status", "Timestamp");
-                println!("{}", "-".repeat(80));
+                out!("\n📖 Channel Messages ({}):", messages.len());
+                out!("{:<40} {:<15} {:<25}", "Message ID", "Status", "Timestamp");
+                out!("{}", "-".repeat(80));
                 for msg in messages {
-                    println!(
+                    out!(
                         "{:<40} {:<15} {:<25}",
                         msg.message_id, msg.status, msg.timestamp
                     );
@@ -13407,17 +13421,17 @@ async fn run_bot_command(_config: Config, action: BotCommand) -> Result<()> {
 
             let bot = bot_father.create_bot(owner, request)?;
 
-            println!("\n✅ Bot created successfully!");
-            println!("Bot ID: {}", bot.id);
-            println!("Username: @{}", bot.username);
-            println!("Name: {}", bot.display_name);
+            out!("\n✅ Bot created successfully!");
+            out!("Bot ID: {}", bot.id);
+            out!("Username: @{}", bot.username);
+            out!("Name: {}", bot.display_name);
             if reveal_token {
-                println!("Token: {}", bot.token);
+                out!("Token: {}", bot.token);
             } else {
-                println!("Token: {}", mask_secret_for_display(&bot.token));
-                println!("(Use --reveal-token to print the full token)");
+                out!("Token: {}", mask_secret_for_display(&bot.token));
+                out!("(Use --reveal-token to print the full token)");
             }
-            println!("\n⚠️  Keep this token secret! It cannot be recovered.");
+            out!("\n⚠️  Keep this token secret! It cannot be recovered.");
 
             Ok(())
         }
@@ -13431,12 +13445,12 @@ async fn run_bot_command(_config: Config, action: BotCommand) -> Result<()> {
                     );
                     let bots = bot_father.get_user_bots(&owner);
 
-                    println!("\n🤖 Bots owned by {}:", id);
+                    out!("\n🤖 Bots owned by {}:", id);
                     if bots.is_empty() {
-                        println!("No bots found.");
+                        out!("No bots found.");
                     } else {
                         for bot in bots {
-                            println!(
+                            out!(
                                 "  • {} (@{}) - {}",
                                 bot.display_name,
                                 bot.username,
@@ -13448,7 +13462,7 @@ async fn run_bot_command(_config: Config, action: BotCommand) -> Result<()> {
                 None => {
                     let count = bot_father.get_all_bots_count();
                     let active = bot_father.get_active_bots_count();
-                    println!("\n🤖 Total bots: {} (Active: {})", count, active);
+                    out!("\n🤖 Total bots: {} (Active: {})", count, active);
                 }
             }
 
@@ -13461,18 +13475,18 @@ async fn run_bot_command(_config: Config, action: BotCommand) -> Result<()> {
 
             match bot_father.get_bot(&bot_uuid) {
                 Some(bot) => {
-                    println!("\n🤖 Bot Information:");
-                    println!("ID: {}", bot.id);
-                    println!("Username: @{}", bot.username);
-                    println!("Name: {}", bot.display_name);
-                    println!("Description: {:?}", bot.description);
-                    println!("Owner: {}", bot.owner_id);
-                    println!("Active: {}", bot.is_active);
-                    println!("Created: {}", bot.created_at);
-                    println!("Commands: {}", bot.commands.len());
+                    out!("\n🤖 Bot Information:");
+                    out!("ID: {}", bot.id);
+                    out!("Username: @{}", bot.username);
+                    out!("Name: {}", bot.display_name);
+                    out!("Description: {:?}", bot.description);
+                    out!("Owner: {}", bot.owner_id);
+                    out!("Active: {}", bot.is_active);
+                    out!("Created: {}", bot.created_at);
+                    out!("Commands: {}", bot.commands.len());
                 }
                 None => {
-                    println!("❌ Bot not found");
+                    out!("❌ Bot not found");
                 }
             }
 
@@ -13493,14 +13507,14 @@ async fn run_bot_command(_config: Config, action: BotCommand) -> Result<()> {
 
             let new_token = bot_father.regenerate_token(&bot_uuid, &owner)?;
 
-            println!("\n✅ Token regenerated successfully!");
+            out!("\n✅ Token regenerated successfully!");
             if reveal_token {
-                println!("New token: {}", new_token);
+                out!("New token: {}", new_token);
             } else {
-                println!("New token: {}", mask_secret_for_display(&new_token));
-                println!("(Use --reveal-token to print the full token)");
+                out!("New token: {}", mask_secret_for_display(&new_token));
+                out!("(Use --reveal-token to print the full token)");
             }
-            println!("\n⚠️  Keep this token secret! Old token is now invalid.");
+            out!("\n⚠️  Keep this token secret! Old token is now invalid.");
 
             Ok(())
         }
@@ -13510,12 +13524,12 @@ async fn run_bot_command(_config: Config, action: BotCommand) -> Result<()> {
             url,
             secret,
         } => {
-            println!("\n🔗 Setting webhook for bot {}", bot_id);
-            println!("URL: {}", url);
+            out!("\n🔗 Setting webhook for bot {}", bot_id);
+            out!("URL: {}", url);
             if let Some(s) = secret {
-                println!("Secret: {}", "*".repeat(s.len()));
+                out!("Secret: {}", "*".repeat(s.len()));
             }
-            println!("\n✅ Webhook configured (in-memory only)");
+            out!("\n✅ Webhook configured (in-memory only)");
 
             Ok(())
         }
@@ -13525,10 +13539,10 @@ async fn run_bot_command(_config: Config, action: BotCommand) -> Result<()> {
             chat_id,
             text,
         } => {
-            println!("\n📤 Sending message as bot...");
-            println!("Chat: {}", chat_id);
-            println!("Text: {}", text);
-            println!("\n✅ Message sent (simulated)");
+            out!("\n📤 Sending message as bot...");
+            out!("Chat: {}", chat_id);
+            out!("Text: {}", text);
+            out!("\n✅ Message sent (simulated)");
 
             Ok(())
         }
@@ -13620,7 +13634,7 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
 
     match action {
         MarketplaceCommand::List { item_type, db_path } => {
-            println!("\n🏪 Marketplace Listings:");
+            out!("\n🏪 Marketplace Listings:");
 
             let store = open_store(db_path).await?;
             let type_filter = if let Some(t) = item_type.as_deref() {
@@ -13631,14 +13645,14 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
 
             let listings = store.list_listings(type_filter).await?;
             if listings.is_empty() {
-                println!("(no listings)");
+                out!("(no listings)");
                 return Ok(());
             }
 
             for l in listings {
-                println!("- {} ({})", l.title, l.id);
-                println!("  type: {:?}  price: {:?}", l.good_type, l.pricing);
-                println!("  creator: {}", l.creator);
+                out!("- {} ({})", l.title, l.id);
+                out!("  type: {:?}  price: {:?}", l.good_type, l.pricing);
+                out!("  creator: {}", l.creator);
             }
 
             Ok(())
@@ -13698,20 +13712,20 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
                 )
                 .await?;
 
-            println!("\n✅ Listing created successfully!");
-            println!("Listing ID: {}", listing_id);
-            println!("Title: {}", title);
-            println!("Item Type: {}", item_type);
-            println!("Storage: {:?}", storage_type);
+            out!("\n✅ Listing created successfully!");
+            out!("Listing ID: {}", listing_id);
+            out!("Title: {}", title);
+            out!("Item Type: {}", item_type);
+            out!("Storage: {:?}", storage_type);
 
             if let Some(bot) = bot_uuid {
-                println!("Bot ID: {}", bot);
+                out!("Bot ID: {}", bot);
             }
             if let Some(channel) = channel_uuid {
-                println!("Channel ID: {}", channel);
+                out!("Channel ID: {}", channel);
             }
             if let Some(duration) = membership_duration {
-                println!("Membership Duration: {} days", duration);
+                out!("Membership Duration: {} days", duration);
             }
 
             Ok(())
@@ -13840,19 +13854,19 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
 
                 store.record_purchase(&purchase).await?;
 
-                println!("\n✅ Purchase recorded (free listing)");
-                println!("Purchase ID: {}", purchase.id);
-                println!("Listing: {}", listing_title);
-                println!("Creator: {}", listing_creator);
+                out!("\n✅ Purchase recorded (free listing)");
+                out!("Purchase ID: {}", purchase.id);
+                out!("Listing: {}", listing_title);
+                out!("Creator: {}", listing_creator);
                 return Ok(());
             }
 
-            println!("\n✅ Payment submitted and verified");
-            println!("Listing: {}", listing_title);
-            println!("Creator: {}", listing_creator);
-            println!("Currency-chain tx: {}", tx_hash);
-            println!("\nNext: obtain an EscrowLocked marketplace attestation and run:");
-            println!("  dchat marketplace mint-entitlement --attestation <file.json> --validator-set <validators.json>");
+            out!("\n✅ Payment submitted and verified");
+            out!("Listing: {}", listing_title);
+            out!("Creator: {}", listing_creator);
+            out!("Currency-chain tx: {}", tx_hash);
+            out!("\nNext: obtain an EscrowLocked marketplace attestation and run:");
+            out!("  dchat marketplace mint-entitlement --attestation <file.json> --validator-set <validators.json>");
 
             Ok(())
         }
@@ -13878,12 +13892,12 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
             };
             store.record_purchase(&purchase).await?;
 
-            println!("\n✅ Entitlement minted and purchase recorded");
-            println!("Escrow ID: {}", entitlement.escrow_id);
-            println!("Listing ID: {}", entitlement.listing_id);
-            println!("Buyer: {}", entitlement.buyer);
-            println!("Seller: {}", entitlement.seller);
-            println!("Amount: {}", entitlement.amount);
+            out!("\n✅ Entitlement minted and purchase recorded");
+            out!("Escrow ID: {}", entitlement.escrow_id);
+            out!("Listing ID: {}", entitlement.listing_id);
+            out!("Buyer: {}", entitlement.buyer);
+            out!("Seller: {}", entitlement.seller);
+            out!("Amount: {}", entitlement.amount);
 
             Ok(())
         }
@@ -13901,11 +13915,11 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
                 .finalize_settlement_from_attestation(&att, &set)
                 .await?;
 
-            println!("\n✅ Escrow settlement recorded");
-            println!("Escrow ID: {}", settlement.escrow_id);
-            println!("Outcome: {:?}", settlement.outcome);
-            println!("Settlement tx: {}", settlement.settlement_tx_hash);
-            println!(
+            out!("\n✅ Escrow settlement recorded");
+            out!("Escrow ID: {}", settlement.escrow_id);
+            out!("Outcome: {:?}", settlement.outcome);
+            out!("Settlement tx: {}", settlement.settlement_tx_hash);
+            out!(
                 "Block: {} @ {}",
                 settlement.settlement_block_hash, settlement.settlement_block_number
             );
@@ -13925,13 +13939,13 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
             let store = open_store(db_path).await?;
             let stats = store.get_creator_stats(&creator).await?;
 
-            println!("\n📊 Creator Statistics:");
-            println!("Creator: {}", stats.creator);
-            println!("Total Sales: {}", stats.total_sales);
-            println!("Total Earnings: {} tokens", stats.total_earnings);
-            println!("Active Listings: {}", stats.active_listings);
-            println!("Total Downloads: {}", stats.total_downloads);
-            println!("Average Rating: {:.2}⭐", stats.average_rating);
+            out!("\n📊 Creator Statistics:");
+            out!("Creator: {}", stats.creator);
+            out!("Total Sales: {}", stats.total_sales);
+            out!("Total Earnings: {} tokens", stats.total_earnings);
+            out!("Active Listings: {}", stats.active_listings);
+            out!("Total Downloads: {}", stats.total_downloads);
+            out!("Average Rating: {:.2}⭐", stats.average_rating);
 
             Ok(())
         }
@@ -13963,12 +13977,12 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
             let expires_at =
                 chrono::Utc::now() + chrono::Duration::seconds(lock_duration_secs as i64);
 
-            println!("\n✅ Escrow created successfully!");
-            println!("Escrow ID: {}", escrow_id);
-            println!("Buyer: {}", buyer);
-            println!("Seller: {}", seller);
-            println!("Amount: {} tokens", amount);
-            println!("Expires: {}", expires_at);
+            out!("\n✅ Escrow created successfully!");
+            out!("Escrow ID: {}", escrow_id);
+            out!("Buyer: {}", buyer);
+            out!("Seller: {}", seller);
+            out!("Amount: {} tokens", amount);
+            out!("Expires: {}", expires_at);
 
             Ok(())
         }
@@ -13988,10 +14002,10 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
             let on_chain_address =
                 marketplace.register_bot_ownership(bot_uuid, username.clone(), owner_id)?;
 
-            println!("\n✅ Bot registered for marketplace trading!");
-            println!("Bot ID: {}", bot_id);
-            println!("Username: {}", username);
-            println!("On-Chain Address: {}", on_chain_address);
+            out!("\n✅ Bot registered for marketplace trading!");
+            out!("Bot ID: {}", bot_id);
+            out!("Username: {}", username);
+            out!("On-Chain Address: {}", on_chain_address);
 
             Ok(())
         }
@@ -14016,11 +14030,11 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
                 member_count,
             )?;
 
-            println!("\n✅ Channel registered for marketplace trading!");
-            println!("Channel ID: {}", channel_id);
-            println!("Name: {}", name);
-            println!("Member Count: {}", member_count);
-            println!("On-Chain Address: {}", on_chain_address);
+            out!("\n✅ Channel registered for marketplace trading!");
+            out!("Channel ID: {}", channel_id);
+            out!("Name: {}", name);
+            out!("Member Count: {}", member_count);
+            out!("On-Chain Address: {}", on_chain_address);
 
             Ok(())
         }
@@ -14031,21 +14045,21 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
                 uuid::Uuid::parse_str(&bot_id).map_err(|_| Error::validation("Invalid bot ID"))?;
 
             if let Some(ownership) = marketplace.get_bot_ownership(bot_uuid) {
-                println!("\n🤖 Bot Ownership Information:");
-                println!("Bot ID: {}", ownership.bot_id);
-                println!("Username: {}", ownership.bot_username);
-                println!("Current Owner: {}", ownership.current_owner);
-                println!("On-Chain Address: {}", ownership.on_chain_address);
-                println!("Transfer Count: {}", ownership.transfer_count);
+                out!("\n🤖 Bot Ownership Information:");
+                out!("Bot ID: {}", ownership.bot_id);
+                out!("Username: {}", ownership.bot_username);
+                out!("Current Owner: {}", ownership.current_owner);
+                out!("On-Chain Address: {}", ownership.on_chain_address);
+                out!("Transfer Count: {}", ownership.transfer_count);
 
                 if !ownership.previous_owners.is_empty() {
-                    println!("\n📜 Ownership History:");
+                    out!("\n📜 Ownership History:");
                     for (i, (owner, timestamp)) in ownership.previous_owners.iter().enumerate() {
-                        println!("  {}. {} at {}", i + 1, owner, timestamp);
+                        out!("  {}. {} at {}", i + 1, owner, timestamp);
                     }
                 }
             } else {
-                println!("❌ Bot ownership not found");
+                out!("❌ Bot ownership not found");
             }
 
             Ok(())
@@ -14057,22 +14071,22 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
                 .map_err(|_| Error::validation("Invalid channel ID"))?;
 
             if let Some(ownership) = marketplace.get_channel_ownership(channel_uuid) {
-                println!("\n📺 Channel Ownership Information:");
-                println!("Channel ID: {}", ownership.channel_id);
-                println!("Name: {}", ownership.channel_name);
-                println!("Current Owner: {}", ownership.current_owner);
-                println!("Member Count: {}", ownership.member_count);
-                println!("On-Chain Address: {}", ownership.on_chain_address);
-                println!("Transfer Count: {}", ownership.transfer_count);
+                out!("\n📺 Channel Ownership Information:");
+                out!("Channel ID: {}", ownership.channel_id);
+                out!("Name: {}", ownership.channel_name);
+                out!("Current Owner: {}", ownership.current_owner);
+                out!("Member Count: {}", ownership.member_count);
+                out!("On-Chain Address: {}", ownership.on_chain_address);
+                out!("Transfer Count: {}", ownership.transfer_count);
 
                 if !ownership.previous_owners.is_empty() {
-                    println!("\n📜 Ownership History:");
+                    out!("\n📜 Ownership History:");
                     for (i, (owner, timestamp)) in ownership.previous_owners.iter().enumerate() {
-                        println!("  {}. {} at {}", i + 1, owner, timestamp);
+                        out!("  {}. {} at {}", i + 1, owner, timestamp);
                     }
                 }
             } else {
-                println!("❌ Channel ownership not found");
+                out!("❌ Channel ownership not found");
             }
 
             Ok(())
@@ -14087,13 +14101,13 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
 
             let bots = marketplace.get_bots_by_owner(&user_uuid);
 
-            println!("\n🤖 Your Bots:");
+            out!("\n🤖 Your Bots:");
             if bots.is_empty() {
-                println!("No bots owned");
+                out!("No bots owned");
             } else {
                 for bot in bots {
-                    println!("\n  • {} ({})", bot.bot_username, bot.bot_id);
-                    println!("    Transfers: {}", bot.transfer_count);
+                    out!("\n  • {} ({})", bot.bot_username, bot.bot_id);
+                    out!("    Transfers: {}", bot.transfer_count);
                 }
             }
 
@@ -14109,14 +14123,14 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
 
             let channels = marketplace.get_channels_by_owner(&user_uuid);
 
-            println!("\n📺 Your Channels:");
+            out!("\n📺 Your Channels:");
             if channels.is_empty() {
-                println!("No channels owned");
+                out!("No channels owned");
             } else {
                 for channel in channels {
-                    println!("\n  • {} ({})", channel.channel_name, channel.channel_id);
-                    println!("    Members: {}", channel.member_count);
-                    println!("    Transfers: {}", channel.transfer_count);
+                    out!("\n  • {} ({})", channel.channel_name, channel.channel_id);
+                    out!("    Members: {}", channel.member_count);
+                    out!("    Transfers: {}", channel.transfer_count);
                 }
             }
 
@@ -14147,11 +14161,11 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
                 animated,
             )?;
 
-            println!("\n✅ Emoji pack created!");
-            println!("Pack ID: {}", pack_id);
-            println!("Name: {}", name);
-            println!("Emoji Count: {}", emoji_count);
-            println!("Animated: {}", animated);
+            out!("\n✅ Emoji pack created!");
+            out!("Pack ID: {}", pack_id);
+            out!("Name: {}", name);
+            out!("Emoji Count: {}", emoji_count);
+            out!("Animated: {}", animated);
 
             Ok(())
         }
@@ -14195,12 +14209,12 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
                 license_type,
             )?;
 
-            println!("\n✅ Image registered!");
-            println!("Image ID: {}", image_id);
-            println!("Title: {}", title);
-            println!("Dimensions: {}x{}", width, height);
-            println!("Format: {}", format);
-            println!("License: {}", license);
+            out!("\n✅ Image registered!");
+            out!("Image ID: {}", image_id);
+            out!("Title: {}", title);
+            out!("Dimensions: {}x{}", width, height);
+            out!("Format: {}", format);
+            out!("License: {}", license);
 
             Ok(())
         }
@@ -14220,9 +14234,9 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
             let has_membership = marketplace.has_active_membership(channel_uuid, &user_uuid);
 
             if has_membership {
-                println!("\n✅ User has active membership");
+                out!("\n✅ User has active membership");
             } else {
-                println!("\n❌ User does not have active membership");
+                out!("\n❌ User does not have active membership");
             }
 
             Ok(())
@@ -14237,15 +14251,15 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
 
             let memberships = marketplace.get_memberships_by_holder(&user_uuid);
 
-            println!("\n🎫 Your Memberships:");
+            out!("\n🎫 Your Memberships:");
             if memberships.is_empty() {
-                println!("No active memberships");
+                out!("No active memberships");
             } else {
                 for membership in memberships {
-                    println!("\n  • Channel: {}", membership.channel_id);
-                    println!("    Access Level: {:?}", membership.access_level);
-                    println!("    Expires: {}", membership.expires_at);
-                    println!("    Transferable: {}", membership.is_transferable);
+                    out!("\n  • Channel: {}", membership.channel_id);
+                    out!("    Access Level: {:?}", membership.access_level);
+                    out!("    Expires: {}", membership.expires_at);
+                    out!("    Transferable: {}", membership.is_transferable);
                 }
             }
 
@@ -14266,8 +14280,8 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
 
             marketplace.transfer_membership(membership_uuid, new_holder_id)?;
 
-            println!("\n✅ Membership transferred successfully!");
-            println!("New Holder: {}", new_holder);
+            out!("\n✅ Membership transferred successfully!");
+            out!("New Holder: {}", new_holder);
 
             Ok(())
         }
@@ -14279,14 +14293,14 @@ async fn run_marketplace_command(_config: Config, action: MarketplaceCommand) ->
 
             let members = marketplace.get_memberships_by_channel(channel_uuid);
 
-            println!("\n👥 Channel Members:");
-            println!("Channel ID: {}", channel_id);
-            println!("Active Members: {}", members.len());
+            out!("\n👥 Channel Members:");
+            out!("Channel ID: {}", channel_id);
+            out!("Active Members: {}", members.len());
 
             for (i, membership) in members.iter().enumerate() {
-                println!("\n  {}. User: {}", i + 1, membership.holder);
-                println!("     Access Level: {:?}", membership.access_level);
-                println!("     Expires: {}", membership.expires_at);
+                out!("\n  {}. User: {}", i + 1, membership.holder);
+                out!("     Access Level: {:?}", membership.access_level);
+                out!("     Expires: {}", membership.expires_at);
             }
 
             Ok(())
@@ -14320,30 +14334,30 @@ async fn run_accessibility_command(action: AccessibilityCommand) -> Result<()> {
             let contrast = AccessibilityManager::contrast_ratio(&fg, &bg);
             let passes = AccessibilityManager::check_contrast(&fg, &bg, target_level, false); // false = normal text size
 
-            println!("\n🎨 Color Contrast Analysis:");
-            println!("Foreground: {}", fg_color);
-            println!("Background: {}", bg_color);
-            println!("Contrast Ratio: {:.2}:1", contrast);
-            println!(
+            out!("\n🎨 Color Contrast Analysis:");
+            out!("Foreground: {}", fg_color);
+            out!("Background: {}", bg_color);
+            out!("Contrast Ratio: {:.2}:1", contrast);
+            out!(
                 "WCAG {} Compliance: {}",
                 level,
                 if passes { "✅ PASS" } else { "❌ FAIL" }
             );
 
-            println!("\nWCAG Requirements:");
-            println!(
+            out!("\nWCAG Requirements:");
+            out!(
                 "  AA (normal text): 4.5:1 {}",
                 if contrast >= 4.5 { "✅" } else { "❌" }
             );
-            println!(
+            out!(
                 "  AA (large text): 3.0:1 {}",
                 if contrast >= 3.0 { "✅" } else { "❌" }
             );
-            println!(
+            out!(
                 "  AAA (normal text): 7.0:1 {}",
                 if contrast >= 7.0 { "✅" } else { "❌" }
             );
-            println!(
+            out!(
                 "  AAA (large text): 4.5:1 {}",
                 if contrast >= 4.5 { "✅" } else { "❌" }
             );
@@ -14352,26 +14366,26 @@ async fn run_accessibility_command(action: AccessibilityCommand) -> Result<()> {
         }
 
         AccessibilityCommand::TtsSpeak { text, language } => {
-            println!("\n🔊 Text-to-Speech:");
-            println!("Text: {}", text);
-            println!("Language: {}", language);
-            println!("\n✅ TTS would speak: \"{}\"", text);
-            println!("(Actual TTS playback requires audio output device)");
+            out!("\n🔊 Text-to-Speech:");
+            out!("Text: {}", text);
+            out!("Language: {}", language);
+            out!("\n✅ TTS would speak: \"{}\"", text);
+            out!("(Actual TTS playback requires audio output device)");
 
             Ok(())
         }
 
         AccessibilityCommand::ValidateElement { element_id } => {
-            println!("\n♿ Validating Element: {}", element_id);
+            out!("\n♿ Validating Element: {}", element_id);
 
             let issues = manager.validate_element(&element_id);
 
             if issues.is_empty() {
-                println!("✅ No accessibility issues found!");
+                out!("✅ No accessibility issues found!");
             } else {
-                println!("⚠️  Accessibility Issues Found:");
+                out!("⚠️  Accessibility Issues Found:");
                 for issue in issues {
-                    println!("  • {}", issue);
+                    out!("  • {}", issue);
                 }
             }
 
@@ -14402,12 +14416,12 @@ async fn run_chaos_command(action: ChaosCommand) -> Result<()> {
                 ("clock-skew", "Introduce clock drift between nodes", 60),
             ];
 
-            println!("\n🌪️  Available Chaos Scenarios ({}):", scenarios.len());
-            println!("{:<30} {:<60} {:>10}s", "Name", "Description", "Duration");
-            println!("{}", "-".repeat(105));
+            out!("\n🌪️  Available Chaos Scenarios ({}):", scenarios.len());
+            out!("{:<30} {:<60} {:>10}s", "Name", "Description", "Duration");
+            out!("{}", "-".repeat(105));
 
             for (name, desc, duration) in scenarios {
-                println!(
+                out!(
                     "{:<30} {:<60} {:>10}",
                     name,
                     if desc.len() > 60 {
@@ -14423,8 +14437,8 @@ async fn run_chaos_command(action: ChaosCommand) -> Result<()> {
         }
 
         ChaosCommand::Execute { scenario, duration } => {
-            println!("\n🌪️  Executing Chaos Scenario: {}", scenario);
-            println!("Duration: {}s", duration);
+            out!("\n🌪️  Executing Chaos Scenario: {}", scenario);
+            out!("Duration: {}s", duration);
 
             // Try to parse as experiment type
             let exp_type = match scenario.to_lowercase().as_str() {
@@ -14435,7 +14449,7 @@ async fn run_chaos_command(action: ChaosCommand) -> Result<()> {
                 "resource-exhaustion" => ChaosExperimentType::ResourceExhaustion,
                 "clock-skew" => ChaosExperimentType::ClockSkew,
                 _ => {
-                    println!("❌ Unknown scenario. Use list-scenarios to see available options.");
+                    out!("❌ Unknown scenario. Use list-scenarios to see available options.");
                     return Ok(());
                 }
             };
@@ -14443,18 +14457,18 @@ async fn run_chaos_command(action: ChaosCommand) -> Result<()> {
             let exp_id = format!("exp_{}", uuid::Uuid::new_v4());
             orchestrator.start_experiment(exp_id.clone(), exp_type)?;
 
-            println!("✅ Experiment started: {}", exp_id);
-            println!("⏳ Running for {} seconds...", duration);
+            out!("✅ Experiment started: {}", exp_id);
+            out!("⏳ Running for {} seconds...", duration);
 
             // Simulate duration
             tokio::time::sleep(tokio::time::Duration::from_secs(duration)).await;
 
             orchestrator.end_experiment(&exp_id, true)?;
 
-            println!("✅ Experiment completed successfully!");
+            out!("✅ Experiment completed successfully!");
 
             let rate = orchestrator.calculate_success_rate();
-            println!("Success rate: {:.1}%", rate * 100.0);
+            out!("Success rate: {:.1}%", rate * 100.0);
 
             Ok(())
         }
@@ -14465,14 +14479,14 @@ async fn run_chaos_command(action: ChaosCommand) -> Result<()> {
             severity,
             duration,
         } => {
-            println!("\n💉 Injecting Fault:");
-            println!("Target: {}", node);
-            println!("Type: {}", fault_type);
-            println!("Severity: {:.1}%", severity * 100.0);
-            println!("Duration: {}s", duration);
+            out!("\n💉 Injecting Fault:");
+            out!("Target: {}", node);
+            out!("Type: {}", fault_type);
+            out!("Severity: {:.1}%", severity * 100.0);
+            out!("Duration: {}s", duration);
 
-            println!("\n✅ Fault injection simulated");
-            println!("(Actual fault injection requires infrastructure integration)");
+            out!("\n✅ Fault injection simulated");
+            out!("(Actual fault injection requires infrastructure integration)");
 
             Ok(())
         }
@@ -14491,13 +14505,13 @@ async fn run_chaos_command(action: ChaosCommand) -> Result<()> {
                 .map(|s| s.trim().to_string())
                 .collect();
 
-            println!("\n🌐 Simulating Network Partition:");
-            println!("Partition A: {:?}", nodes_a);
-            println!("Partition B: {:?}", nodes_b);
-            println!("Duration: {}s", duration);
+            out!("\n🌐 Simulating Network Partition:");
+            out!("Partition A: {:?}", nodes_a);
+            out!("Partition B: {:?}", nodes_b);
+            out!("Duration: {}s", duration);
 
-            println!("\n✅ Network partition simulated");
-            println!("(Actual partition requires network infrastructure control)");
+            out!("\n✅ Network partition simulated");
+            out!("(Actual partition requires network infrastructure control)");
 
             Ok(())
         }
@@ -14568,7 +14582,7 @@ async fn run_governance_command(action: GovernanceCommand) -> Result<()> {
             voting_days,
             quorum,
         } => {
-            println!("\n📜 Submitting Protocol Upgrade Proposal");
+            out!("\n📜 Submitting Protocol Upgrade Proposal");
 
             let proposer_id = UserId(
                 uuid::Uuid::parse_str(&proposer)
@@ -14622,12 +14636,12 @@ async fn run_governance_command(action: GovernanceCommand) -> Result<()> {
             // Persist state after modification
             persist_manager(&manager)?;
 
-            println!("✅ Proposal submitted successfully!");
-            println!("Proposal ID: {}", proposal_id);
-            println!("Title: {}", title);
-            println!("Target Version: {}", target_version);
-            println!("Voting Deadline: {} days from now", voting_days);
-            println!("Required Quorum: {}%", quorum);
+            out!("✅ Proposal submitted successfully!");
+            out!("Proposal ID: {}", proposal_id);
+            out!("Title: {}", title);
+            out!("Target Version: {}", target_version);
+            out!("Voting Deadline: {} days from now", voting_days);
+            out!("Required Quorum: {}%", quorum);
 
             Ok(())
         }
@@ -14636,10 +14650,10 @@ async fn run_governance_command(action: GovernanceCommand) -> Result<()> {
             // Use existing manager
             let proposals = manager.get_active_proposals();
 
-            println!("\n📊 Upgrade Proposals ({}):", proposals.len());
+            out!("\n📊 Upgrade Proposals ({}):", proposals.len());
 
             if proposals.is_empty() {
-                println!("No active proposals found.");
+                out!("No active proposals found.");
                 return Ok(());
             }
 
@@ -14661,27 +14675,27 @@ async fn run_governance_command(action: GovernanceCommand) -> Result<()> {
                     }
                 }
 
-                println!("\n{}", "-".repeat(80));
-                println!("ID: {}", proposal.id);
-                println!("Title: {}", proposal.title);
-                println!(
+                out!("\n{}", "-".repeat(80));
+                out!("ID: {}", proposal.id);
+                out!("Title: {}", proposal.title);
+                out!(
                     "Version: {} → {}",
                     proposal.current_version, proposal.target_version
                 );
-                println!("Type: {:?}", proposal.upgrade_type);
-                println!("Status: {:?}", proposal.status);
-                println!(
+                out!("Type: {:?}", proposal.upgrade_type);
+                out!("Status: {:?}", proposal.status);
+                out!(
                     "Votes: {} for, {} against",
                     proposal.votes_for, proposal.votes_against
                 );
-                println!("Quorum: {:.2}%", proposal.quorum_bps as f64 / 100.0);
-                println!(
+                out!("Quorum: {:.2}%", proposal.quorum_bps as f64 / 100.0);
+                out!(
                     "Deadline: {}",
                     proposal.voting_deadline.format("%Y-%m-%d %H:%M:%S UTC")
                 );
 
                 if let Some(ref url) = proposal.spec_url {
-                    println!("Spec: {}", url);
+                    out!("Spec: {}", url);
                 }
             }
 
@@ -14695,38 +14709,38 @@ async fn run_governance_command(action: GovernanceCommand) -> Result<()> {
 
             match manager.get_proposal(&id) {
                 Some(proposal) => {
-                    println!("\n📋 Proposal Details");
-                    println!("{}", "=".repeat(80));
-                    println!("ID: {}", proposal.id);
-                    println!("Proposer: {}", proposal.proposer);
-                    println!("Title: {}", proposal.title);
-                    println!("Description:\n{}", proposal.description);
-                    println!(
+                    out!("\n📋 Proposal Details");
+                    out!("{}", "=".repeat(80));
+                    out!("ID: {}", proposal.id);
+                    out!("Proposer: {}", proposal.proposer);
+                    out!("Title: {}", proposal.title);
+                    out!("Description:\n{}", proposal.description);
+                    out!(
                         "\nVersion: {} → {}",
                         proposal.current_version, proposal.target_version
                     );
-                    println!("Type: {:?}", proposal.upgrade_type);
-                    println!("Status: {:?}", proposal.status);
-                    println!("\nVoting:");
-                    println!("  For: {}", proposal.votes_for);
-                    println!("  Against: {}", proposal.votes_against);
-                    println!("  Quorum: {:.2}%", proposal.quorum_bps as f64 / 100.0);
-                    println!(
+                    out!("Type: {:?}", proposal.upgrade_type);
+                    out!("Status: {:?}", proposal.status);
+                    out!("\nVoting:");
+                    out!("  For: {}", proposal.votes_for);
+                    out!("  Against: {}", proposal.votes_against);
+                    out!("  Quorum: {:.2}%", proposal.quorum_bps as f64 / 100.0);
+                    out!(
                         "  Deadline: {}",
                         proposal.voting_deadline.format("%Y-%m-%d %H:%M:%S UTC")
                     );
 
                     if let Some(ref url) = proposal.spec_url {
-                        println!("\nSpecification: {}", url);
+                        out!("\nSpecification: {}", url);
                     }
 
                     if !proposal.validator_signatures.is_empty() {
-                        println!(
+                        out!(
                             "\nValidator Signatures: {}",
                             proposal.validator_signatures.len()
                         );
                         for (i, sig) in proposal.validator_signatures.iter().enumerate() {
-                            println!(
+                            out!(
                                 "  {}. {} (stake: {})",
                                 i + 1,
                                 sig.validator_id,
@@ -14736,16 +14750,16 @@ async fn run_governance_command(action: GovernanceCommand) -> Result<()> {
                     }
 
                     if let Some(height) = proposal.activation_height {
-                        println!("\nActivation Height: {}", height);
+                        out!("\nActivation Height: {}", height);
                     }
                     if let Some(time) = proposal.activation_time {
-                        println!("Activation Time: {}", time.format("%Y-%m-%d %H:%M:%S UTC"));
+                        out!("Activation Time: {}", time.format("%Y-%m-%d %H:%M:%S UTC"));
                     }
 
                     Ok(())
                 }
                 None => {
-                    println!("❌ Proposal not found: {}", proposal_id);
+                    out!("❌ Proposal not found: {}", proposal_id);
                     Ok(())
                 }
             }
@@ -14766,11 +14780,11 @@ async fn run_governance_command(action: GovernanceCommand) -> Result<()> {
             // Use existing manager
             manager.cast_upgrade_vote(id, voter_id, vote_for, voting_power)?;
 
-            println!("\n✅ Vote cast successfully!");
-            println!("Proposal: {}", proposal_id);
-            println!("Voter: {}", voter);
-            println!("Vote: {}", if vote_for { "FOR" } else { "AGAINST" });
-            println!("Voting Power: {}", voting_power);
+            out!("\n✅ Vote cast successfully!");
+            out!("Proposal: {}", proposal_id);
+            out!("Voter: {}", voter);
+            out!("Vote: {}", if vote_for { "FOR" } else { "AGAINST" });
+            out!("Voting Power: {}", voting_power);
 
             Ok(())
         }
@@ -14788,11 +14802,11 @@ async fn run_governance_command(action: GovernanceCommand) -> Result<()> {
                     .map_err(|_| Error::validation("Invalid validator ID"))?,
             );
 
-            println!("\n🔑 Validator Signing Upgrade Approval");
-            println!("Proposal: {}", proposal_id);
-            println!("Validator: {}", validator_id);
-            println!("Stake: {}", stake);
-            println!("Key File: {}", key_file.display());
+            out!("\n🔑 Validator Signing Upgrade Approval");
+            out!("Proposal: {}", proposal_id);
+            out!("Validator: {}", validator_id);
+            out!("Stake: {}", stake);
+            out!("Key File: {}", key_file.display());
 
             // Production: Load validator key and sign proposal commitment
             let validator_keypair = load_validator_key(&key_file).await?;
@@ -14841,7 +14855,7 @@ async fn run_governance_command(action: GovernanceCommand) -> Result<()> {
                 hex::encode(&signature.to_bytes()[..8])
             );
 
-            println!("✅ Validator signature added!");
+            out!("✅ Validator signature added!");
 
             Ok(())
         }
@@ -14852,9 +14866,9 @@ async fn run_governance_command(action: GovernanceCommand) -> Result<()> {
 
             let passed = manager.finalize_proposal(id)?;
 
-            println!("\n📊 Proposal Finalized");
-            println!("Proposal ID: {}", proposal_id);
-            println!(
+            out!("\n📊 Proposal Finalized");
+            out!("Proposal ID: {}", proposal_id);
+            out!(
                 "Result: {}",
                 if passed {
                     "✅ APPROVED"
@@ -14864,9 +14878,9 @@ async fn run_governance_command(action: GovernanceCommand) -> Result<()> {
             );
 
             if let Some(proposal) = manager.get_proposal(&id) {
-                println!("Votes For: {}", proposal.votes_for);
-                println!("Votes Against: {}", proposal.votes_against);
-                println!("Quorum: {:.2}%", proposal.quorum_bps as f64 / 100.0);
+                out!("Votes For: {}", proposal.votes_for);
+                out!("Votes Against: {}", proposal.votes_against);
+                out!("Quorum: {:.2}%", proposal.quorum_bps as f64 / 100.0);
             }
 
             Ok(())
@@ -14886,10 +14900,10 @@ async fn run_governance_command(action: GovernanceCommand) -> Result<()> {
             // Use existing manager
             manager.schedule_upgrade(id, activation_height, time)?;
 
-            println!("\n⏰ Upgrade Scheduled");
-            println!("Proposal ID: {}", proposal_id);
-            println!("Activation Height: {}", activation_height);
-            println!("Activation Time: {}", time.format("%Y-%m-%d %H:%M:%S UTC"));
+            out!("\n⏰ Upgrade Scheduled");
+            out!("Proposal ID: {}", proposal_id);
+            out!("Activation Height: {}", activation_height);
+            out!("Activation Time: {}", time.format("%Y-%m-%d %H:%M:%S UTC"));
 
             Ok(())
         }
@@ -14907,10 +14921,10 @@ async fn run_governance_command(action: GovernanceCommand) -> Result<()> {
             // Persist state after modification
             persist_manager(&manager)?;
 
-            println!("\n🚀 Upgrade Activated!");
-            println!("Proposal ID: {}", proposal_id);
-            println!("Block Height: {}", current_height);
-            println!("New Version: {}", manager.current_version());
+            out!("\n🚀 Upgrade Activated!");
+            out!("Proposal ID: {}", proposal_id);
+            out!("Block Height: {}", current_height);
+            out!("New Version: {}", manager.current_version());
 
             Ok(())
         }
@@ -14922,15 +14936,15 @@ async fn run_governance_command(action: GovernanceCommand) -> Result<()> {
             // Use existing manager
             manager.cancel_upgrade(id)?;
 
-            println!("\n❌ Upgrade Cancelled");
-            println!("Proposal ID: {}", proposal_id);
+            out!("\n❌ Upgrade Cancelled");
+            out!("Proposal ID: {}", proposal_id);
 
             Ok(())
         }
 
         GovernanceCommand::Version => {
             // Use existing manager
-            println!(
+            out!(
                 "\n🔖 Current Protocol Version: {}",
                 manager.current_version()
             );
@@ -14941,26 +14955,26 @@ async fn run_governance_command(action: GovernanceCommand) -> Result<()> {
             // Use existing manager
             let forks = manager.get_fork_history();
 
-            println!("\n🌿 Fork History ({} forks):", forks.len());
+            out!("\n🌿 Fork History ({} forks):", forks.len());
 
             if forks.is_empty() {
-                println!("No forks recorded yet.");
+                out!("No forks recorded yet.");
                 return Ok(());
             }
 
             for fork in forks {
-                println!("\n{}", "-".repeat(80));
-                println!("Fork ID: {}", fork.fork_id);
-                println!("Parent Version: {}", fork.parent_version);
-                println!("Fork Version: {}", fork.fork_version);
-                println!("Fork Height: {}", fork.fork_height);
-                println!(
+                out!("\n{}", "-".repeat(80));
+                out!("Fork ID: {}", fork.fork_id);
+                out!("Parent Version: {}", fork.parent_version);
+                out!("Fork Version: {}", fork.fork_version);
+                out!("Fork Height: {}", fork.fork_height);
+                out!(
                     "Fork Time: {}",
                     fork.fork_time.format("%Y-%m-%d %H:%M:%S UTC")
                 );
-                println!("Supporting Nodes: {}", fork.supporting_nodes.len());
-                println!("Total Stake: {}", fork.total_stake);
-                println!(
+                out!("Supporting Nodes: {}", fork.supporting_nodes.len());
+                out!("Total Stake: {}", fork.total_stake);
+                out!(
                     "Canonical: {}",
                     if fork.is_canonical { "Yes" } else { "No" }
                 );
@@ -14975,16 +14989,16 @@ async fn run_governance_command(action: GovernanceCommand) -> Result<()> {
 
             let compatible = manager.is_compatible_version(&peer_ver);
 
-            println!("\n🔍 Version Compatibility Check");
-            println!("Current Version: {}", manager.current_version());
-            println!("Peer Version: {}", peer_ver);
-            println!(
+            out!("\n🔍 Version Compatibility Check");
+            out!("Current Version: {}", manager.current_version());
+            out!("Peer Version: {}", peer_ver);
+            out!(
                 "Compatible: {}",
                 if compatible { "✅ Yes" } else { "❌ No" }
             );
 
             if !compatible {
-                println!("\n⚠️  Warning: Incompatible versions may not be able to communicate!");
+                out!("\n⚠️  Warning: Incompatible versions may not be able to communicate!");
             }
 
             Ok(())
@@ -14998,15 +15012,15 @@ async fn run_governance_command(action: GovernanceCommand) -> Result<()> {
 
             if let Some(threshold) = hard_fork_threshold {
                 manager.set_hard_fork_threshold(threshold)?;
-                println!("✅ Hard fork threshold set to {}%", threshold);
+                out!("✅ Hard fork threshold set to {}%", threshold);
             }
 
             if let Some(stake) = total_stake {
                 manager.update_total_stake(stake);
-                println!("✅ Total stake updated to {}", stake);
+                out!("✅ Total stake updated to {}", stake);
             }
 
-            println!("\n⚙️  Governance Configuration Updated");
+            out!("\n⚙️  Governance Configuration Updated");
 
             Ok(())
         }
@@ -15072,54 +15086,54 @@ async fn run_token_command(app_config: Config, action: TokenCommand) -> Result<(
             });
             let stats = manager.get_statistics();
 
-            println!("\n💰 Token Supply Statistics");
-            println!("{}", "=".repeat(60));
-            println!(
+            out!("\n💰 Token Supply Statistics");
+            out!("{}", "=".repeat(60));
+            out!(
                 "Circulating Supply: {:>20}",
                 format_tokens(stats.circulating_supply)
             );
-            println!(
+            out!(
                 "Total Minted:       {:>20}",
                 format_tokens(stats.total_minted)
             );
-            println!(
+            out!(
                 "Total Burned:       {:>20}",
                 format_tokens(stats.total_burned)
             );
-            println!(
+            out!(
                 "Effective Supply:   {:>20}",
                 format_tokens(stats.effective_supply)
             );
 
             if let Some(max) = stats.max_supply {
                 let percentage = (stats.circulating_supply as f64 / max as f64) * 100.0;
-                println!(
+                out!(
                     "Max Supply:         {:>20} ({:.2}% issued)",
                     format_tokens(max),
                     percentage
                 );
             } else {
-                println!("Max Supply:         {:>20}", "Unlimited");
+                out!("Max Supply:         {:>20}", "Unlimited");
             }
 
-            println!("\n📊 Economics");
-            println!("{}", "=".repeat(60));
-            println!(
+            out!("\n📊 Economics");
+            out!("{}", "=".repeat(60));
+            out!(
                 "Inflation Rate:     {:>20}",
                 format!("{}%", stats.inflation_rate_bps as f64 / 100.0)
             );
-            println!(
+            out!(
                 "Burn Rate:          {:>20}",
                 format!("{}%", stats.burn_rate_bps as f64 / 100.0)
             );
 
-            println!("\n🏪 Marketplace Liquidity");
-            println!("{}", "=".repeat(60));
-            println!(
+            out!("\n🏪 Marketplace Liquidity");
+            out!("{}", "=".repeat(60));
+            out!(
                 "Total Pool Liquidity: {:>18}",
                 format_tokens(stats.total_pool_liquidity)
             );
-            println!("Active Pools:         {:>18}", stats.active_pools);
+            out!("Active Pools:         {:>18}", stats.active_pools);
 
             Ok(())
         }
@@ -15160,10 +15174,10 @@ async fn run_token_command(app_config: Config, action: TokenCommand) -> Result<(
 
             let mint_id = manager.mint_tokens(amount, mint_reason, recipient_id)?;
 
-            println!("\n✅ Tokens Minted Successfully");
-            println!("Mint ID: {}", mint_id);
-            println!("Amount: {}", format_tokens(amount));
-            println!(
+            out!("\n✅ Tokens Minted Successfully");
+            out!("Mint ID: {}", mint_id);
+            out!("Amount: {}", format_tokens(amount));
+            out!(
                 "New Supply: {}",
                 format_tokens(manager.get_circulating_supply())
             );
@@ -15200,14 +15214,14 @@ async fn run_token_command(app_config: Config, action: TokenCommand) -> Result<(
 
             let burn_id = manager.burn_tokens(amount, burn_reason, user)?;
 
-            println!("\n🔥 Tokens Burned Successfully");
-            println!("Burn ID: {}", burn_id);
-            println!("Amount: {}", format_tokens(amount));
-            println!(
+            out!("\n🔥 Tokens Burned Successfully");
+            out!("Burn ID: {}", burn_id);
+            out!("Amount: {}", format_tokens(amount));
+            out!(
                 "New Supply: {}",
                 format_tokens(manager.get_circulating_supply())
             );
-            println!(
+            out!(
                 "Total Burned: {}",
                 format_tokens(manager.get_total_burned())
             );
@@ -15225,10 +15239,10 @@ async fn run_token_command(app_config: Config, action: TokenCommand) -> Result<(
             });
             let pool_id = manager.create_liquidity_pool(name.clone(), initial_amount)?;
 
-            println!("\n🏊 Liquidity Pool Created");
-            println!("Pool ID: {}", pool_id);
-            println!("Name: {}", name);
-            println!("Initial Tokens: {}", format_tokens(initial_amount));
+            out!("\n🏊 Liquidity Pool Created");
+            out!("Pool ID: {}", pool_id);
+            out!("Name: {}", name);
+            out!("Initial Tokens: {}", format_tokens(initial_amount));
 
             Ok(())
         }
@@ -15240,16 +15254,16 @@ async fn run_token_command(app_config: Config, action: TokenCommand) -> Result<(
             });
             let pools = manager.get_all_pools();
 
-            println!("\n🏪 Marketplace Liquidity Pools ({}):", pools.len());
-            println!("{}", "=".repeat(100));
-            println!(
+            out!("\n🏪 Marketplace Liquidity Pools ({}):", pools.len());
+            out!("{}", "=".repeat(100));
+            out!(
                 "{:<40} {:<20} {:<20} {:<20}",
                 "Name", "Total", "Available", "Reserved"
             );
-            println!("{}", "=".repeat(100));
+            out!("{}", "=".repeat(100));
 
             for pool in pools {
-                println!(
+                out!(
                     "{:<40} {:>19} {:>19} {:>19}",
                     pool.name,
                     format_tokens(pool.total_tokens),
@@ -15272,21 +15286,21 @@ async fn run_token_command(app_config: Config, action: TokenCommand) -> Result<(
                 .get_pool(&id)
                 .ok_or_else(|| Error::NotFound("Pool not found".to_string()))?;
 
-            println!("\n🏊 Pool Details: {}", pool.name);
-            println!("{}", "=".repeat(60));
-            println!("Pool ID: {}", pool.id);
-            println!("Total Tokens: {}", format_tokens(pool.total_tokens));
-            println!("Available: {}", format_tokens(pool.available_tokens));
-            println!("Reserved: {}", format_tokens(pool.reserved_tokens));
-            println!(
+            out!("\n🏊 Pool Details: {}", pool.name);
+            out!("{}", "=".repeat(60));
+            out!("Pool ID: {}", pool.id);
+            out!("Total Tokens: {}", format_tokens(pool.total_tokens));
+            out!("Available: {}", format_tokens(pool.available_tokens));
+            out!("Reserved: {}", format_tokens(pool.reserved_tokens));
+            out!(
                 "Pending Allocations: {}",
                 format_tokens(pool.pending_allocations)
             );
-            println!(
+            out!(
                 "Created: {}",
                 pool.created_at.format("%Y-%m-%d %H:%M:%S UTC")
             );
-            println!(
+            out!(
                 "Last Replenish: {}",
                 pool.last_replenish.format("%Y-%m-%d %H:%M:%S UTC")
             );
@@ -15298,7 +15312,7 @@ async fn run_token_command(app_config: Config, action: TokenCommand) -> Result<(
             } else {
                 0.0
             };
-            println!("Utilization: {:.2}%", utilization);
+            out!("Utilization: {:.2}%", utilization);
 
             Ok(())
         }
@@ -15312,9 +15326,9 @@ async fn run_token_command(app_config: Config, action: TokenCommand) -> Result<(
 
             manager.replenish_pool(&id, amount)?;
 
-            println!("\n💧 Pool Replenished");
-            println!("Pool ID: {}", pool_id);
-            println!("Amount Added: {}", format_tokens(amount));
+            out!("\n💧 Pool Replenished");
+            out!("Pool ID: {}", pool_id);
+            out!("Amount Added: {}", format_tokens(amount));
 
             Ok(())
         }
@@ -15326,13 +15340,13 @@ async fn run_token_command(app_config: Config, action: TokenCommand) -> Result<(
             });
             let history = manager.get_mint_history(limit);
 
-            println!("\n📜 Mint History (last {}):", limit);
-            println!("{}", "=".repeat(120));
-            println!(
+            out!("\n📜 Mint History (last {}):", limit);
+            out!("{}", "=".repeat(120));
+            out!(
                 "{:<38} {:<20} {:<20} {:<25} {:<15}",
                 "Event ID", "Amount", "Reason", "Recipient", "Block"
             );
-            println!("{}", "=".repeat(120));
+            out!("{}", "=".repeat(120));
 
             for event in history {
                 let recipient_str = event
@@ -15340,7 +15354,7 @@ async fn run_token_command(app_config: Config, action: TokenCommand) -> Result<(
                     .map(|u| u.0.to_string()[..8].to_string())
                     .unwrap_or_else(|| "N/A".to_string());
 
-                println!(
+                out!(
                     "{:<38} {:>19} {:<20} {:<25} {:>14}",
                     event.id.to_string(),
                     format_tokens(event.amount),
@@ -15360,18 +15374,18 @@ async fn run_token_command(app_config: Config, action: TokenCommand) -> Result<(
             });
             let history = manager.get_burn_history(limit);
 
-            println!("\n🔥 Burn History (last {}):", limit);
-            println!("{}", "=".repeat(120));
-            println!(
+            out!("\n🔥 Burn History (last {}):", limit);
+            out!("{}", "=".repeat(120));
+            out!(
                 "{:<38} {:<20} {:<20} {:<25} {:<15}",
                 "Event ID", "Amount", "Reason", "Burner", "Block"
             );
-            println!("{}", "=".repeat(120));
+            out!("{}", "=".repeat(120));
 
             for event in history {
                 let burner_str = event.burner.0.to_string()[..8].to_string();
 
-                println!(
+                out!(
                     "{:<38} {:>19} {:<20} {:<25} {:>14}",
                     event.id.to_string(),
                     format_tokens(event.amount),
@@ -15416,15 +15430,15 @@ async fn run_token_command(app_config: Config, action: TokenCommand) -> Result<(
                 duration_blocks,
             )?;
 
-            println!("\n📅 Distribution Schedule Created");
-            println!("Schedule ID: {}", schedule_id);
-            println!("Recipient Type: {}", recipient_type);
-            println!("Amount per Interval: {}", format_tokens(amount));
-            println!("Interval: {} blocks", interval_blocks);
+            out!("\n📅 Distribution Schedule Created");
+            out!("Schedule ID: {}", schedule_id);
+            out!("Recipient Type: {}", recipient_type);
+            out!("Amount per Interval: {}", format_tokens(amount));
+            out!("Interval: {} blocks", interval_blocks);
             if let Some(duration) = duration_blocks {
-                println!("Duration: {} blocks", duration);
+                out!("Duration: {} blocks", duration);
             } else {
-                println!("Duration: Indefinite");
+                out!("Duration: Indefinite");
             }
 
             Ok(())
@@ -15437,10 +15451,10 @@ async fn run_token_command(app_config: Config, action: TokenCommand) -> Result<(
             });
             let mint_ids = manager.process_block_inflation()?;
 
-            println!("\n⚡ Block Inflation Processed");
-            println!("Minted {} events", mint_ids.len());
-            println!("Current Block: {}", manager.get_current_block());
-            println!(
+            out!("\n⚡ Block Inflation Processed");
+            out!("Minted {} events", mint_ids.len());
+            out!("Current Block: {}", manager.get_current_block());
+            out!(
                 "Current Supply: {}",
                 format_tokens(manager.get_circulating_supply())
             );
@@ -15503,17 +15517,17 @@ async fn run_token_command(app_config: Config, action: TokenCommand) -> Result<(
 
             let tx_id = client.transfer(&from_id, &to_id, amount)?;
 
-            println!("\n💸 Transfer Completed");
-            println!("Transaction ID: {}", tx_id);
-            println!("From: {}", from);
-            println!("To: {}", to);
-            println!("Amount: {}", format_tokens(amount));
+            out!("\n💸 Transfer Completed");
+            out!("Transaction ID: {}", tx_id);
+            out!("From: {}", from);
+            out!("To: {}", to);
+            out!("Amount: {}", format_tokens(amount));
 
             let from_balance = client.get_balance(&from_id)?;
             let to_balance = client.get_balance(&to_id)?;
-            println!("\nNew Balances:");
-            println!("  From: {}", format_tokens(from_balance));
-            println!("  To: {}", format_tokens(to_balance));
+            out!("\nNew Balances:");
+            out!("  From: {}", format_tokens(from_balance));
+            out!("  To: {}", format_tokens(to_balance));
 
             Ok(())
         }
@@ -15573,13 +15587,13 @@ async fn run_token_command(app_config: Config, action: TokenCommand) -> Result<(
                 .get_wallet(&id)?
                 .ok_or_else(|| Error::NotFound("Wallet not found".to_string()))?;
 
-            println!("\n💰 Wallet Balance");
-            println!("{}", "=".repeat(60));
-            println!("User ID: {}", user_id);
-            println!("Balance: {}", format_tokens(wallet.balance));
-            println!("Staked: {}", format_tokens(wallet.staked));
-            println!("Pending Rewards: {}", format_tokens(wallet.rewards_pending));
-            println!(
+            out!("\n💰 Wallet Balance");
+            out!("{}", "=".repeat(60));
+            out!("User ID: {}", user_id);
+            out!("Balance: {}", format_tokens(wallet.balance));
+            out!("Staked: {}", format_tokens(wallet.staked));
+            out!("Pending Rewards: {}", format_tokens(wallet.rewards_pending));
+            out!(
                 "Total Assets: {}",
                 format_tokens(wallet.balance + wallet.staked + wallet.rewards_pending)
             );
@@ -15636,7 +15650,7 @@ async fn run_update_command(action: UpdateCommand) -> Result<()> {
     match action {
         UpdateCommand::Check { current_version } => {
             let current = current_version.unwrap_or_else(|| VERSION.to_string());
-            println!("🔍 Checking for updates (current version: {})", current);
+            out!("🔍 Checking for updates (current version: {})", current);
 
             // Discover available versions via gossip
             let versions = manager
@@ -15645,43 +15659,43 @@ async fn run_update_command(action: UpdateCommand) -> Result<()> {
                 .map_err(|e| Error::Network(e.to_string()))?;
 
             if versions.is_empty() {
-                println!("No versions found. Add mirrors with `dchat update add-mirror`");
+                out!("No versions found. Add mirrors with `dchat update add-mirror`");
                 return Ok(());
             }
 
-            println!("\n📦 Available versions:");
+            out!("\n📦 Available versions:");
             for version in versions {
                 if version == current {
-                    println!("  {} (current)", version);
+                    out!("  {} (current)", version);
                 } else {
-                    println!("  {}", version);
+                    out!("  {}", version);
                 }
             }
         }
 
         UpdateCommand::ListVersions => {
-            println!("📋 Discovering available versions...");
+            out!("📋 Discovering available versions...");
             let versions = manager
                 .discover_versions()
                 .await
                 .map_err(|e| Error::Network(e.to_string()))?;
 
             if versions.is_empty() {
-                println!("No versions available yet.");
-                println!("Versions are discovered via:");
-                println!("  1. Gossip protocol (from connected peers)");
-                println!("  2. Configured mirrors (add with `add-mirror`)");
-                println!("  3. IPFS content-addressed storage");
+                out!("No versions available yet.");
+                out!("Versions are discovered via:");
+                out!("  1. Gossip protocol (from connected peers)");
+                out!("  2. Configured mirrors (add with `add-mirror`)");
+                out!("  3. IPFS content-addressed storage");
                 return Ok(());
             }
 
             for version in versions {
                 if let Some(metadata) = manager.get_package_metadata(&version) {
-                    println!("\n📦 Version {}", version);
-                    println!("   Type: {:?}", metadata.package_type);
-                    println!("   Platform: {}", metadata.platform);
-                    println!("   Size: {} MB", metadata.size_bytes / 1_000_000);
-                    println!("   Release: {}", metadata.release_date);
+                    out!("\n📦 Version {}", version);
+                    out!("   Type: {:?}", metadata.package_type);
+                    out!("   Platform: {}", metadata.platform);
+                    out!("   Size: {} MB", metadata.size_bytes / 1_000_000);
+                    out!("   Release: {}", metadata.release_date);
                 }
             }
         }
@@ -15690,58 +15704,58 @@ async fn run_update_command(action: UpdateCommand) -> Result<()> {
             let target_platform =
                 platform.unwrap_or_else(|| format!("{}-{}", env::consts::OS, env::consts::ARCH));
 
-            println!(
+            out!(
                 "⬇️  Downloading version {} for {}",
                 version, target_platform
             );
 
             match manager.download_version(&version).await {
                 Ok(path) => {
-                    println!("✅ Downloaded to: {:?}", path);
-                    println!(
+                    out!("✅ Downloaded to: {:?}", path);
+                    out!(
                         "Verify with: dchat update verify --package {:?} --version {}",
                         path, version
                     );
                 }
                 Err(e) => {
-                    eprintln!("❌ Download failed: {}", e);
-                    eprintln!("\nTroubleshooting:");
-                    eprintln!("  1. Check your mirrors: dchat update list-mirrors");
-                    eprintln!("  2. Test mirror connectivity: dchat update test-mirrors");
-                    eprintln!("  3. Add more mirrors: dchat update add-mirror --url <URL> --mirror-type https");
+                    eout!("❌ Download failed: {}", e);
+                    eout!("\nTroubleshooting:");
+                    eout!("  1. Check your mirrors: dchat update list-mirrors");
+                    eout!("  2. Test mirror connectivity: dchat update test-mirrors");
+                    eout!("  3. Add more mirrors: dchat update add-mirror --url <URL> --mirror-type https");
                     return Err(Error::Network(e.to_string()));
                 }
             }
         }
 
         UpdateCommand::Verify { package, version } => {
-            println!("🔒 Verifying package: {:?}", package);
+            out!("🔒 Verifying package: {:?}", package);
 
             let bytes = std::fs::read(&package)?;
 
             if let Some(metadata) = manager.get_package_metadata(&version) {
                 match manager.verify_hash(metadata, &bytes) {
-                    Ok(_) => println!("✅ Hash verification passed"),
+                    Ok(_) => out!("✅ Hash verification passed"),
                     Err(e) => {
-                        eprintln!("❌ Hash verification failed: {}", e);
+                        eout!("❌ Hash verification failed: {}", e);
                         return Err(Error::Crypto(e.to_string()));
                     }
                 }
 
                 match manager.verify_signature(metadata, &bytes) {
-                    Ok(_) => println!("✅ Signature verification passed"),
+                    Ok(_) => out!("✅ Signature verification passed"),
                     Err(e) => {
-                        eprintln!("❌ Signature verification failed: {}", e);
-                        eprintln!(
+                        eout!("❌ Signature verification failed: {}", e);
+                        eout!(
                             "⚠️  WARNING: This package may be tampered or from untrusted source!"
                         );
                         return Err(Error::Crypto(e.to_string()));
                     }
                 }
 
-                println!("✅ Package verified successfully");
+                out!("✅ Package verified successfully");
             } else {
-                eprintln!("❌ No metadata found for version {}", version);
+                eout!("❌ No metadata found for version {}", version);
                 return Err(Error::NotFound("Version metadata not found".to_string()));
             }
         }
@@ -15757,8 +15771,8 @@ async fn run_update_command(action: UpdateCommand) -> Result<()> {
                 "ipfs" => SourceType::Ipfs,
                 "bittorrent" => SourceType::BitTorrent,
                 _ => {
-                    eprintln!("❌ Unknown mirror type: {}", mirror_type);
-                    eprintln!("   Supported: https, ipfs, bittorrent");
+                    eout!("❌ Unknown mirror type: {}", mirror_type);
+                    eout!("   Supported: https, ipfs, bittorrent");
                     return Err(Error::validation("Invalid mirror type".to_string()));
                 }
             };
@@ -15774,34 +15788,34 @@ async fn run_update_command(action: UpdateCommand) -> Result<()> {
             };
 
             manager.add_source(source);
-            println!("✅ Added mirror: {}", url);
-            println!("   Type: {:?}", source_type);
-            println!("   Priority: {}", priority);
+            out!("✅ Added mirror: {}", url);
+            out!("   Type: {:?}", source_type);
+            out!("   Priority: {}", priority);
         }
 
         UpdateCommand::ListMirrors => {
-            println!("📍 Configured download sources:");
-            println!();
+            out!("📍 Configured download sources:");
+            out!();
 
             // This would read from persistent config in production
-            println!("Default mirrors:");
-            println!("  1. https://releases.dchat.network (priority: 10)");
-            println!("  2. ipfs://QmExample... (priority: 20)");
-            println!("  3. Gossip discovery (priority: 30)");
-            println!();
-            println!("Add custom mirrors with: dchat update add-mirror");
+            out!("Default mirrors:");
+            out!("  1. https://releases.dchat.network (priority: 10)");
+            out!("  2. ipfs://QmExample... (priority: 20)");
+            out!("  3. Gossip discovery (priority: 30)");
+            out!();
+            out!("Add custom mirrors with: dchat update add-mirror");
         }
 
         UpdateCommand::TestMirrors => {
-            println!("🔍 Testing mirror connectivity...");
-            println!();
+            out!("🔍 Testing mirror connectivity...");
+            out!();
 
             // In production, this would actually test each mirror
-            println!("✅ https://releases.dchat.network - 120ms");
-            println!("✅ ipfs://Qm... - 450ms");
-            println!("❌ https://mirror2.example.com - timeout");
-            println!();
-            println!("2/3 mirrors operational");
+            out!("✅ https://releases.dchat.network - 120ms");
+            out!("✅ ipfs://Qm... - 450ms");
+            out!("❌ https://mirror2.example.com - timeout");
+            out!();
+            out!("2/3 mirrors operational");
         }
 
         UpdateCommand::ConfigureAutoUpdate {
@@ -15830,13 +15844,13 @@ async fn run_update_command(action: UpdateCommand) -> Result<()> {
             let config_path = cache_dir.join("auto_update_config.json");
             std::fs::write(&config_path, config_json)?;
 
-            println!("✅ Auto-update configuration saved to: {:?}", config_path);
-            println!();
-            println!("Current settings:");
-            println!("  Enabled: {}", config.enabled);
-            println!("  Security only: {}", config.security_only);
-            println!("  Check interval: {} hours", config.check_interval_hours);
-            println!("  Auto-restart: {}", config.auto_restart);
+            out!("✅ Auto-update configuration saved to: {:?}", config_path);
+            out!();
+            out!("Current settings:");
+            out!("  Enabled: {}", config.enabled);
+            out!("  Security only: {}", config.security_only);
+            out!("  Check interval: {} hours", config.check_interval_hours);
+            out!("  Auto-restart: {}", config.auto_restart);
         }
 
         UpdateCommand::ShowConfig => {
@@ -15849,17 +15863,17 @@ async fn run_update_command(action: UpdateCommand) -> Result<()> {
                 AutoUpdateConfig::default()
             };
 
-            println!("⚙️  Auto-Update Configuration:");
-            println!();
-            println!("  Enabled: {}", config.enabled);
-            println!("  Security patches only: {}", config.security_only);
-            println!("  Check interval: {} hours", config.check_interval_hours);
-            println!("  Auto-restart after update: {}", config.auto_restart);
-            println!("  Background download: {}", config.background_download);
-            println!();
+            out!("⚙️  Auto-Update Configuration:");
+            out!();
+            out!("  Enabled: {}", config.enabled);
+            out!("  Security patches only: {}", config.security_only);
+            out!("  Check interval: {} hours", config.check_interval_hours);
+            out!("  Auto-restart after update: {}", config.auto_restart);
+            out!("  Background download: {}", config.background_download);
+            out!();
 
             if !config.enabled {
-                println!("💡 Enable with: dchat update configure-auto-update --enabled true");
+                out!("💡 Enable with: dchat update configure-auto-update --enabled true");
             }
         }
     }
@@ -15954,11 +15968,11 @@ async fn run_staking_command(config: Config, action: StakingCommand) -> Result<(
                 Uuid::parse_str(&user_id).map_err(|_| Error::validation("Invalid user ID"))?,
             );
 
-            println!("\n💎 Staking Tokens:");
-            println!("══════════════════════════════════════════════════════════");
-            println!("User ID: {}", user_id);
-            println!("Amount: {} DCHAT", format_tokens(amount));
-            println!("Lock Period: {} days", duration_days);
+            out!("\n💎 Staking Tokens:");
+            out!("══════════════════════════════════════════════════════════");
+            out!("User ID: {}", user_id);
+            out!("Amount: {} DCHAT", format_tokens(amount));
+            out!("Lock Period: {} days", duration_days);
 
             // Validate minimum requirements
             if amount < 1000 {
@@ -15997,24 +16011,24 @@ async fn run_staking_command(config: Config, action: StakingCommand) -> Result<(
                 )));
             };
 
-            println!("\n⏳ Submitting stake transaction to currency chain...");
-            println!("   RPC: {}", currency_rpc_url);
+            out!("\n⏳ Submitting stake transaction to currency chain...");
+            out!("   RPC: {}", currency_rpc_url);
 
             // Submit stake via StakingManager (on-chain)
             let tx_id = staking_manager
                 .submit_validator_stake(uid.clone(), amount, validator_pubkey)
                 .await?;
 
-            println!();
-            println!("✅ Stake submitted successfully!");
-            println!("   Transaction ID: {}", tx_id);
-            println!("   Expected APY: ~12%");
-            println!(
+            out!();
+            out!("✅ Stake submitted successfully!");
+            out!("   Transaction ID: {}", tx_id);
+            out!("   Expected APY: ~12%");
+            out!(
                 "   Unlock Date: {}",
                 chrono::Utc::now() + chrono::Duration::days(duration_days as i64)
             );
-            println!();
-            println!(
+            out!();
+            out!(
                 "Check status with: dchat staking status --user-id {}",
                 user_id
             );
@@ -16038,24 +16052,24 @@ async fn run_staking_command(config: Config, action: StakingCommand) -> Result<(
                 amount
             };
 
-            println!("\n🔓 Unstaking Tokens:");
-            println!("══════════════════════════════════════════════════════════");
-            println!("User ID: {}", user_id);
-            println!("Amount: {} DCHAT", format_tokens(unstake_amount));
-            println!();
-            println!("⏳ Submitting unstake transaction...");
-            println!("   RPC: {}", currency_rpc_url);
+            out!("\n🔓 Unstaking Tokens:");
+            out!("══════════════════════════════════════════════════════════");
+            out!("User ID: {}", user_id);
+            out!("Amount: {} DCHAT", format_tokens(unstake_amount));
+            out!();
+            out!("⏳ Submitting unstake transaction...");
+            out!("   RPC: {}", currency_rpc_url);
 
             // Submit unstake via StakingManager (on-chain)
             let tx_id = staking_manager
                 .submit_validator_unstake(&uid, unstake_amount)
                 .await?;
 
-            println!();
-            println!("⏳ Unbonding period: 21 days");
-            println!("✅ Unstake request submitted!");
-            println!("   Transaction ID: {}", tx_id);
-            println!(
+            out!();
+            out!("⏳ Unbonding period: 21 days");
+            out!("✅ Unstake request submitted!");
+            out!("   Transaction ID: {}", tx_id);
+            out!(
                 "   Funds will be available: {}",
                 (chrono::Utc::now() + chrono::Duration::days(21)).format("%Y-%m-%d")
             );
@@ -16068,66 +16082,66 @@ async fn run_staking_command(config: Config, action: StakingCommand) -> Result<(
                 Uuid::parse_str(&user_id).map_err(|_| Error::validation("Invalid user ID"))?,
             );
 
-            println!("\n📊 Staking Status:");
-            println!("══════════════════════════════════════════════════════════");
-            println!("User ID: {}", user_id);
-            println!("RPC: {}", currency_rpc_url);
-            println!();
+            out!("\n📊 Staking Status:");
+            out!("══════════════════════════════════════════════════════════");
+            out!("User ID: {}", user_id);
+            out!("RPC: {}", currency_rpc_url);
+            out!();
 
             // Query wallet for staking info using the already-initialized currency_chain
             match currency_chain.get_wallet(&uid) {
                 Ok(Some(wallet)) => {
-                    println!("Active Stakes:");
+                    out!("Active Stakes:");
                     if wallet.staked > 0 {
-                        println!("  💎 {} DCHAT staked", format_tokens(wallet.staked));
+                        out!("  💎 {} DCHAT staked", format_tokens(wallet.staked));
                     } else {
-                        println!("  (none)");
+                        out!("  (none)");
                     }
-                    println!();
+                    out!();
 
                     // Query unbonding queue
                     let unbonding_records = currency_chain.get_unbonding_records(&uid);
-                    println!("Unbonding:");
+                    out!("Unbonding:");
                     if unbonding_records.is_empty() {
-                        println!("  (none)");
+                        out!("  (none)");
                     } else {
                         for record in &unbonding_records {
                             let available_time =
                                 chrono::DateTime::from_timestamp(record.available_at, 0)
                                     .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
                                     .unwrap_or_else(|| "unknown".to_string());
-                            println!(
+                            out!(
                                 "  ⏳ {} DCHAT (available {})",
                                 format_tokens(record.amount),
                                 available_time
                             );
                         }
                     }
-                    println!();
-                    println!("Total Staked: {} DCHAT", format_tokens(wallet.staked));
-                    println!(
+                    out!();
+                    out!("Total Staked: {} DCHAT", format_tokens(wallet.staked));
+                    out!(
                         "Pending Rewards: {} DCHAT",
                         format_tokens(wallet.rewards_pending)
                     );
                 }
                 Ok(None) => {
-                    println!("Active Stakes:");
-                    println!("  (none)");
-                    println!();
-                    println!("Unbonding:");
-                    println!("  (none)");
-                    println!();
-                    println!("Total Staked: 0 DCHAT");
-                    println!("Pending Rewards: 0 DCHAT");
+                    out!("Active Stakes:");
+                    out!("  (none)");
+                    out!();
+                    out!("Unbonding:");
+                    out!("  (none)");
+                    out!();
+                    out!("Total Staked: 0 DCHAT");
+                    out!("Pending Rewards: 0 DCHAT");
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to query staking from chain: {}", e);
-                    println!("⚠️  Unable to query blockchain: {}", e);
+                    warn!("Failed to query staking from chain: {}", e);
+                    out!("⚠️  Unable to query blockchain: {}", e);
                 }
             }
 
-            println!();
-            println!(
+            out!();
+            out!(
                 "💡 Stake tokens with: dchat staking stake --user-id {} --amount <AMOUNT>",
                 user_id
             );
@@ -16136,14 +16150,14 @@ async fn run_staking_command(config: Config, action: StakingCommand) -> Result<(
         }
 
         StakingCommand::Validators => {
-            println!("\n✅ Active Validators:");
-            println!("══════════════════════════════════════════════════════════");
-            println!(
+            out!("\n✅ Active Validators:");
+            out!("══════════════════════════════════════════════════════════");
+            out!(
                 "{:<20} {:>15} {:>10} {:>15}",
                 "Validator", "Stake", "APY", "Commission"
             );
-            println!("{}", "-".repeat(65));
-            println!("RPC: {}", currency_rpc_url);
+            out!("{}", "-".repeat(65));
+            out!("RPC: {}", currency_rpc_url);
 
             // Query validator set from blockchain using already-initialized currency_chain
             match currency_chain.get_validators().await {
@@ -16152,7 +16166,7 @@ async fn run_staking_command(config: Config, action: StakingCommand) -> Result<(
                     for validator in &validators {
                         let apy_display = format!("{:.1}%", validator.apy_estimate);
                         let commission_display = format!("{:.1}%", validator.commission_rate);
-                        println!(
+                        out!(
                             "{:<20} {:>12} DCHAT {:>10} {:>15}",
                             truncate_str(&validator.name, 18),
                             format_tokens(validator.total_stake),
@@ -16161,13 +16175,13 @@ async fn run_staking_command(config: Config, action: StakingCommand) -> Result<(
                         );
                         total_stake += validator.total_stake;
                     }
-                    println!();
-                    println!("Total validators: {}", validators.len());
-                    println!("Total staked: {} DCHAT", format_tokens(total_stake));
+                    out!();
+                    out!("Total validators: {}", validators.len());
+                    out!("Total staked: {} DCHAT", format_tokens(total_stake));
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to query validators: {}", e);
-                    println!("⚠️  Unable to query validators: {}", e);
+                    warn!("Failed to query validators: {}", e);
+                    out!("⚠️  Unable to query validators: {}", e);
                 }
             }
 
@@ -16183,12 +16197,12 @@ async fn run_staking_command(config: Config, action: StakingCommand) -> Result<(
                 Uuid::parse_str(&user_id).map_err(|_| Error::validation("Invalid user ID"))?,
             );
 
-            println!("\n🤝 Delegating Stake:");
-            println!("══════════════════════════════════════════════════════════");
-            println!("Delegator: {}", user_id);
-            println!("Validator: {}", validator_id);
-            println!("Amount: {} DCHAT", format_tokens(amount));
-            println!("RPC: {}", currency_rpc_url);
+            out!("\n🤝 Delegating Stake:");
+            out!("══════════════════════════════════════════════════════════");
+            out!("Delegator: {}", user_id);
+            out!("Validator: {}", validator_id);
+            out!("Amount: {} DCHAT", format_tokens(amount));
+            out!("RPC: {}", currency_rpc_url);
 
             // Execute delegation via blockchain using already-initialized currency_chain
             match currency_chain
@@ -16196,14 +16210,14 @@ async fn run_staking_command(config: Config, action: StakingCommand) -> Result<(
                 .await
             {
                 Ok(tx_hash) => {
-                    println!();
-                    println!("✅ Delegation successful!");
-                    println!("   Transaction: {}", tx_hash);
-                    println!("   Your rewards will be distributed based on validator performance.");
+                    out!();
+                    out!("✅ Delegation successful!");
+                    out!("   Transaction: {}", tx_hash);
+                    out!("   Your rewards will be distributed based on validator performance.");
                 }
                 Err(e) => {
-                    println!();
-                    println!("❌ Delegation failed: {}", e);
+                    out!();
+                    out!("❌ Delegation failed: {}", e);
                 }
             }
 
@@ -16225,12 +16239,12 @@ async fn run_staking_command(config: Config, action: StakingCommand) -> Result<(
                 format!("{} DCHAT", format_tokens(amount))
             };
 
-            println!("\n🔄 Undelegating Stake:");
-            println!("══════════════════════════════════════════════════════════");
-            println!("Delegator: {}", user_id);
-            println!("Validator: {}", validator_id);
-            println!("Amount: {}", amount_str);
-            println!("RPC: {}", currency_rpc_url);
+            out!("\n🔄 Undelegating Stake:");
+            out!("══════════════════════════════════════════════════════════");
+            out!("Delegator: {}", user_id);
+            out!("Validator: {}", validator_id);
+            out!("Amount: {}", amount_str);
+            out!("RPC: {}", currency_rpc_url);
 
             // Execute undelegation via blockchain using already-initialized currency_chain
             let actual_amount = if amount == 0 {
@@ -16249,20 +16263,20 @@ async fn run_staking_command(config: Config, action: StakingCommand) -> Result<(
                     let cooldown_seconds =
                         (unbonding_record.available_at - unbonding_record.initiated_at) as u64;
                     let cooldown_days = cooldown_seconds / 86400;
-                    println!();
-                    println!("⏳ Unbonding period: {} days", cooldown_days);
-                    println!();
-                    println!("✅ Undelegation submitted!");
-                    println!("   Unbonding ID: {}", unbonding_record.id);
+                    out!();
+                    out!("⏳ Unbonding period: {} days", cooldown_days);
+                    out!();
+                    out!("✅ Undelegation submitted!");
+                    out!("   Unbonding ID: {}", unbonding_record.id);
                     let available_time =
                         chrono::DateTime::from_timestamp(unbonding_record.available_at, 0)
                             .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
                             .unwrap_or_else(|| "unknown".to_string());
-                    println!("   Available: {}", available_time);
+                    out!("   Available: {}", available_time);
                 }
                 Err(e) => {
-                    println!();
-                    println!("❌ Undelegation failed: {}", e);
+                    out!();
+                    out!("❌ Undelegation failed: {}", e);
                 }
             }
 
@@ -16279,9 +16293,9 @@ async fn run_rewards_command(_config: Config, action: RewardsCommand) -> Result<
                 Uuid::parse_str(&user_id).map_err(|_| Error::validation("Invalid user ID"))?,
             );
 
-            println!("\n🎁 Claiming Rewards:");
-            println!("══════════════════════════════════════════════════════════");
-            println!("User ID: {}", user_id);
+            out!("\n🎁 Claiming Rewards:");
+            out!("══════════════════════════════════════════════════════════");
+            out!("User ID: {}", user_id);
 
             // Claim rewards from blockchain
             let rpc_url = std::env::var("DCHAT_CURRENCY_RPC_URL")
@@ -16298,54 +16312,54 @@ async fn run_rewards_command(_config: Config, action: RewardsCommand) -> Result<
                     match currency_chain.get_wallet(&uid) {
                         Ok(Some(wallet)) => {
                             if wallet.rewards_pending == 0 {
-                                println!();
-                                println!("Pending Rewards: 0 DCHAT");
-                                println!();
-                                println!("No rewards to claim at this time.");
-                                println!(
+                                out!();
+                                out!("Pending Rewards: 0 DCHAT");
+                                out!();
+                                out!("No rewards to claim at this time.");
+                                out!(
                                     "💡 Earn rewards by staking tokens or running a relay node!"
                                 );
                             } else {
-                                println!();
-                                println!(
+                                out!();
+                                out!(
                                     "Pending Rewards: {} DCHAT",
                                     format_tokens(wallet.rewards_pending)
                                 );
 
                                 match currency_chain.claim_rewards(&uid) {
                                     Ok(tx_hash) => {
-                                        println!();
-                                        println!("✅ Rewards claimed successfully!");
-                                        println!("   Transaction: {}", tx_hash);
-                                        println!(
+                                        out!();
+                                        out!("✅ Rewards claimed successfully!");
+                                        out!("   Transaction: {}", tx_hash);
+                                        out!(
                                             "   Amount: {} DCHAT",
                                             format_tokens(wallet.rewards_pending)
                                         );
                                     }
                                     Err(e) => {
-                                        println!();
-                                        println!("❌ Failed to claim rewards: {}", e);
+                                        out!();
+                                        out!("❌ Failed to claim rewards: {}", e);
                                     }
                                 }
                             }
                         }
                         Ok(None) => {
-                            println!();
-                            println!("Pending Rewards: 0 DCHAT");
-                            println!();
-                            println!("No rewards to claim at this time.");
-                            println!("💡 Earn rewards by staking tokens or running a relay node!");
+                            out!();
+                            out!("Pending Rewards: 0 DCHAT");
+                            out!();
+                            out!("No rewards to claim at this time.");
+                            out!("💡 Earn rewards by staking tokens or running a relay node!");
                         }
                         Err(e) => {
-                            println!();
-                            println!("⚠️  Unable to query rewards: {}", e);
+                            out!();
+                            out!("⚠️  Unable to query rewards: {}", e);
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to connect to currency chain: {}", e);
-                    println!();
-                    println!("⚠️  Cannot connect to currency chain: {}", e);
+                    warn!("Failed to connect to currency chain: {}", e);
+                    out!();
+                    out!("⚠️  Cannot connect to currency chain: {}", e);
                 }
             }
 
@@ -16357,10 +16371,10 @@ async fn run_rewards_command(_config: Config, action: RewardsCommand) -> Result<
                 Uuid::parse_str(&user_id).map_err(|_| Error::validation("Invalid user ID"))?,
             );
 
-            println!("\n📜 Reward History (last {}):", limit);
-            println!("══════════════════════════════════════════════════════════");
-            println!("{:<24} {:<20} {:>15}", "Date", "Type", "Amount");
-            println!("{}", "-".repeat(65));
+            out!("\n📜 Reward History (last {}):", limit);
+            out!("══════════════════════════════════════════════════════════");
+            out!("{:<24} {:<20} {:>15}", "Date", "Type", "Amount");
+            out!("{}", "-".repeat(65));
 
             // Query reward history from blockchain
             let rpc_url = std::env::var("DCHAT_CURRENCY_RPC_URL")
@@ -16378,19 +16392,19 @@ async fn run_rewards_command(_config: Config, action: RewardsCommand) -> Result<
                         .await
                     {
                         Ok(history) if history.is_empty() => {
-                            println!("No reward history found.");
-                            println!();
-                            println!("Rewards are distributed:");
-                            println!("  • Staking rewards: Every epoch (~24 hours)");
-                            println!("  • Relay rewards: Per message delivered");
-                            println!("  • Validator rewards: Per block produced");
+                            out!("No reward history found.");
+                            out!();
+                            out!("Rewards are distributed:");
+                            out!("  • Staking rewards: Every epoch (~24 hours)");
+                            out!("  • Relay rewards: Per message delivered");
+                            out!("  • Validator rewards: Per block produced");
                         }
                         Ok(history) => {
                             for entry in history {
                                 let date = chrono::DateTime::from_timestamp(entry.timestamp, 0)
                                     .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
                                     .unwrap_or_else(|| "unknown".to_string());
-                                println!(
+                                out!(
                                     "{:<24} {:<20} {:>12} DCHAT",
                                     date,
                                     entry.reward_type,
@@ -16399,14 +16413,14 @@ async fn run_rewards_command(_config: Config, action: RewardsCommand) -> Result<
                             }
                         }
                         Err(e) => {
-                            tracing::warn!("Failed to query reward history: {}", e);
-                            println!("⚠️  Unable to query history: {}", e);
+                            warn!("Failed to query reward history: {}", e);
+                            out!("⚠️  Unable to query history: {}", e);
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to connect to currency chain: {}", e);
-                    println!("⚠️  Cannot connect to currency chain: {}", e);
+                    warn!("Failed to connect to currency chain: {}", e);
+                    out!("⚠️  Cannot connect to currency chain: {}", e);
                 }
             }
 
@@ -16418,10 +16432,10 @@ async fn run_rewards_command(_config: Config, action: RewardsCommand) -> Result<
                 Uuid::parse_str(&user_id).map_err(|_| Error::validation("Invalid user ID"))?,
             );
 
-            println!("\n⏳ Pending Rewards:");
-            println!("══════════════════════════════════════════════════════════");
-            println!("User ID: {}", user_id);
-            println!();
+            out!("\n⏳ Pending Rewards:");
+            out!("══════════════════════════════════════════════════════════");
+            out!("User ID: {}", user_id);
+            out!();
 
             // Query pending rewards breakdown from blockchain
             let rpc_url = std::env::var("DCHAT_CURRENCY_RPC_URL")
@@ -16436,62 +16450,62 @@ async fn run_rewards_command(_config: Config, action: RewardsCommand) -> Result<
                 Ok(currency_chain) => {
                     match currency_chain.get_pending_rewards_breakdown(&uid).await {
                         Ok(breakdown) => {
-                            println!(
+                            out!(
                                 "Staking Rewards:    {} DCHAT",
                                 format_tokens(breakdown.staking_rewards)
                             );
-                            println!(
+                            out!(
                                 "Relay Rewards:      {} DCHAT",
                                 format_tokens(breakdown.relay_rewards)
                             );
-                            println!(
+                            out!(
                                 "Referral Rewards:   {} DCHAT",
                                 format_tokens(breakdown.referral_rewards)
                             );
-                            println!("──────────────────────────");
+                            out!("──────────────────────────");
                             let total = breakdown.staking_rewards
                                 + breakdown.relay_rewards
                                 + breakdown.referral_rewards;
-                            println!("Total Pending:      {} DCHAT", format_tokens(total));
-                            println!();
+                            out!("Total Pending:      {} DCHAT", format_tokens(total));
+                            out!();
                             if total > 0 {
-                                println!("Claim with: dchat rewards claim --user-id {}", user_id);
+                                out!("Claim with: dchat rewards claim --user-id {}", user_id);
                             }
                         }
                         Err(e) => {
-                            tracing::warn!("Failed to query pending rewards: {}", e);
+                            warn!("Failed to query pending rewards: {}", e);
                             // Fallback to wallet query
                             match currency_chain.get_wallet(&uid) {
                                 Ok(Some(wallet)) => {
-                                    println!(
+                                    out!(
                                         "Staking Rewards:    {} DCHAT",
                                         format_tokens(wallet.rewards_pending)
                                     );
-                                    println!("Relay Rewards:      0 DCHAT");
-                                    println!("Referral Rewards:   0 DCHAT");
-                                    println!("──────────────────────────");
-                                    println!(
+                                    out!("Relay Rewards:      0 DCHAT");
+                                    out!("Referral Rewards:   0 DCHAT");
+                                    out!("──────────────────────────");
+                                    out!(
                                         "Total Pending:      {} DCHAT",
                                         format_tokens(wallet.rewards_pending)
                                     );
-                                    println!();
+                                    out!();
                                     if wallet.rewards_pending > 0 {
-                                        println!(
+                                        out!(
                                             "Claim with: dchat rewards claim --user-id {}",
                                             user_id
                                         );
                                     }
                                 }
                                 _ => {
-                                    println!("⚠️  Unable to query rewards: {}", e);
+                                    out!("⚠️  Unable to query rewards: {}", e);
                                 }
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to connect to currency chain: {}", e);
-                    println!("⚠️  Cannot connect to currency chain: {}", e);
+                    warn!("Failed to connect to currency chain: {}", e);
+                    out!("⚠️  Cannot connect to currency chain: {}", e);
                 }
             }
 
@@ -16503,10 +16517,10 @@ async fn run_rewards_command(_config: Config, action: RewardsCommand) -> Result<
                 Uuid::parse_str(&user_id).map_err(|_| Error::validation("Invalid user ID"))?,
             );
 
-            println!("\n📊 Reward Breakdown:");
-            println!("══════════════════════════════════════════════════════════");
-            println!("User ID: {}", user_id);
-            println!();
+            out!("\n📊 Reward Breakdown:");
+            out!("══════════════════════════════════════════════════════════");
+            out!("User ID: {}", user_id);
+            out!();
 
             // Query all-time reward breakdown from blockchain
             let rpc_url = std::env::var("DCHAT_CURRENCY_RPC_URL")
@@ -16545,53 +16559,53 @@ async fn run_rewards_command(_config: Config, action: RewardsCommand) -> Result<
                             0.0
                         };
 
-                        println!("All-Time Earnings:");
-                        println!(
+                        out!("All-Time Earnings:");
+                        out!(
                             "  Staking:     {} DCHAT ({:.1}%)",
                             format_tokens(breakdown.staking),
                             staking_pct
                         );
-                        println!(
+                        out!(
                             "  Relaying:    {} DCHAT ({:.1}%)",
                             format_tokens(breakdown.relaying),
                             relaying_pct
                         );
-                        println!(
+                        out!(
                             "  Referrals:   {} DCHAT ({:.1}%)",
                             format_tokens(breakdown.referrals),
                             referral_pct
                         );
-                        println!(
+                        out!(
                             "  Governance:  {} DCHAT ({:.1}%)",
                             format_tokens(breakdown.governance),
                             governance_pct
                         );
-                        println!("──────────────────────────");
-                        println!("  Total:       {} DCHAT", format_tokens(total));
-                        println!();
-                        println!("Current APY Estimate:");
-                        println!("  Staking APY:    {:.1}%", breakdown.current_staking_apy);
-                        println!(
+                        out!("──────────────────────────");
+                        out!("  Total:       {} DCHAT", format_tokens(total));
+                        out!();
+                        out!("Current APY Estimate:");
+                        out!("  Staking APY:    {:.1}%", breakdown.current_staking_apy);
+                        out!(
                             "  Combined APY:   ~{:.1}% (with active relaying)",
                             breakdown.combined_apy_estimate
                         );
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to query reward breakdown: {}", e);
-                        println!("All-Time Earnings:");
-                        println!("  Staking:     0 DCHAT (0%)");
-                        println!("  Relaying:    0 DCHAT (0%)");
-                        println!("  Referrals:   0 DCHAT (0%)");
-                        println!("  Governance:  0 DCHAT (0%)");
-                        println!("──────────────────────────");
-                        println!("  Total:       0 DCHAT");
-                        println!();
-                        println!("⚠️  Could not retrieve full breakdown: {}", e);
+                        warn!("Failed to query reward breakdown: {}", e);
+                        out!("All-Time Earnings:");
+                        out!("  Staking:     0 DCHAT (0%)");
+                        out!("  Relaying:    0 DCHAT (0%)");
+                        out!("  Referrals:   0 DCHAT (0%)");
+                        out!("  Governance:  0 DCHAT (0%)");
+                        out!("──────────────────────────");
+                        out!("  Total:       0 DCHAT");
+                        out!();
+                        out!("⚠️  Could not retrieve full breakdown: {}", e);
                     }
                 },
                 Err(e) => {
-                    tracing::warn!("Failed to connect to currency chain: {}", e);
-                    println!("⚠️  Cannot connect to currency chain: {}", e);
+                    warn!("Failed to connect to currency chain: {}", e);
+                    out!("⚠️  Cannot connect to currency chain: {}", e);
                 }
             }
 
@@ -16603,10 +16617,10 @@ async fn run_rewards_command(_config: Config, action: RewardsCommand) -> Result<
                 Uuid::parse_str(&user_id).map_err(|_| Error::validation("Invalid user ID"))?,
             );
 
-            println!("\n🔄 Auto-Compound Settings:");
-            println!("══════════════════════════════════════════════════════════");
-            println!("User ID: {}", user_id);
-            println!(
+            out!("\n🔄 Auto-Compound Settings:");
+            out!("══════════════════════════════════════════════════════════");
+            out!("User ID: {}", user_id);
+            out!(
                 "Auto-Compound: {}",
                 if enable { "ENABLED" } else { "DISABLED" }
             );
@@ -16625,36 +16639,36 @@ async fn run_rewards_command(_config: Config, action: RewardsCommand) -> Result<
                     match currency_chain.set_auto_compound(&uid, enable).await {
                         Ok(_) => {
                             if enable {
-                                println!();
-                                println!("✅ Auto-compounding enabled!");
-                                println!(
+                                out!();
+                                out!("✅ Auto-compounding enabled!");
+                                out!(
                                     "   Your rewards will be automatically restaked each epoch."
                                 );
-                                println!("   This maximizes your long-term earnings through compound interest.");
+                                out!("   This maximizes your long-term earnings through compound interest.");
                             } else {
-                                println!();
-                                println!("✅ Auto-compounding disabled.");
-                                println!("   Rewards will accumulate as pending balance.");
-                                println!(
+                                out!();
+                                out!("✅ Auto-compounding disabled.");
+                                out!("   Rewards will accumulate as pending balance.");
+                                out!(
                                     "   Claim manually with: dchat rewards claim --user-id {}",
                                     user_id
                                 );
                             }
                         }
                         Err(e) => {
-                            println!();
-                            println!("⚠️  Failed to update preference: {}", e);
+                            out!();
+                            out!("⚠️  Failed to update preference: {}", e);
                             // Still show what they requested
                             if enable {
-                                println!("   Retry to enable auto-compounding.");
+                                out!("   Retry to enable auto-compounding.");
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to connect to currency chain: {}", e);
-                    println!();
-                    println!("⚠️  Cannot connect to currency chain: {}", e);
+                    warn!("Failed to connect to currency chain: {}", e);
+                    out!();
+                    out!("⚠️  Cannot connect to currency chain: {}", e);
                 }
             }
 
@@ -16677,8 +16691,8 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
             yes,
         } => {
             let rpc_url = rpc_url.unwrap_or(resolve_required_chat_chain_rpc_url(&config)?);
-            println!("\n🚀 DCHAT PROGRAM DEPLOYMENT");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n🚀 DCHAT PROGRAM DEPLOYMENT");
+            out!("══════════════════════════════════════════════════════════════════");
 
             // 1. Read and validate WASM
             if !wasm.exists() {
@@ -16691,22 +16705,22 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
             let wasm_bytes = std::fs::read(&wasm)
                 .map_err(|e| Error::storage(format!("Failed to read WASM file: {}", e)))?;
 
-            println!("📦 WASM File: {:?}", wasm);
-            println!(
+            out!("📦 WASM File: {:?}", wasm);
+            out!(
                 "   Size: {} bytes ({:.2} KB)",
                 wasm_bytes.len(),
                 wasm_bytes.len() as f64 / 1024.0
             );
 
             // 2. Validate bytecode
-            println!("\n🔍 Validating bytecode...");
+            out!("\n🔍 Validating bytecode...");
             let validator = dchat_programs::validation::BytecodeValidator::new();
             let validated = validator
                 .validate(&wasm_bytes)
                 .map_err(|e| Error::validation(format!("WASM validation failed: {:?}", e)))?;
 
-            println!("   ✅ Bytecode validation passed");
-            println!("   Code Hash: {}", hex::encode(&validated.code_hash[..16]));
+            out!("   ✅ Bytecode validation passed");
+            out!("   Code Hash: {}", hex::encode(&validated.code_hash[..16]));
 
             // 3. Load deployer keypair
             if !keypair.exists() {
@@ -16726,7 +16740,7 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| Error::validation("Missing public_key in keypair file"))?;
 
-            println!("\n👤 Deployer: 0x{}...", &deployer_pubkey[..16]);
+            out!("\n👤 Deployer: 0x{}...", &deployer_pubkey[..16]);
 
             // 4. Determine upgrade authority
             let authority_pubkey = if let Some(auth_path) = &upgrade_authority {
@@ -16752,22 +16766,22 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
                 deployer_pubkey.to_string()
             };
 
-            println!("🔑 Upgrade Authority: 0x{}...", &authority_pubkey[..16]);
+            out!("🔑 Upgrade Authority: 0x{}...", &authority_pubkey[..16]);
 
             // 5. Calculate costs
             let max_len = max_data_len.unwrap_or(wasm_bytes.len() * 2); // Allow 2x growth
             let rent_exempt_balance = ((wasm_bytes.len() + 128) as u64 * 2) / 1000; // Simplified
 
-            println!("\n💰 Estimated Costs:");
-            println!("   Program Size: {} bytes", wasm_bytes.len());
-            println!("   Max Data Length: {} bytes", max_len);
-            println!("   Rent-Exempt Deposit: ~{} DCHAT", rent_exempt_balance);
-            println!("   Transaction Fees: ~0.001 DCHAT");
+            out!("\n💰 Estimated Costs:");
+            out!("   Program Size: {} bytes", wasm_bytes.len());
+            out!("   Max Data Length: {} bytes", max_len);
+            out!("   Rent-Exempt Deposit: ~{} DCHAT", rent_exempt_balance);
+            out!("   Transaction Fees: ~0.001 DCHAT");
 
             // 6. Confirmation
             if !yes {
-                println!("\n⚠️  This will deploy a program to the blockchain.");
-                print!("   Continue? [y/N] ");
+                out!("\n⚠️  This will deploy a program to the blockchain.");
+                prompt!("   Continue? [y/N] ");
                 io::stdout()
                     .flush()
                     .map_err(|e| Error::internal(format!("Failed to flush stdout: {}", e)))?;
@@ -16777,12 +16791,12 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
                     .read_line(&mut input)
                     .map_err(|e| Error::internal(format!("Failed to read stdin: {}", e)))?;
                 if !input.trim().eq_ignore_ascii_case("y") {
-                    println!("❌ Deployment cancelled.");
+                    out!("❌ Deployment cancelled.");
                     return Ok(());
                 }
             }
 
-            println!("\n📤 Deploying program...");
+            out!("\n📤 Deploying program...");
 
             // 7. Generate program ID (derived from deployer + nonce)
             let program_id = {
@@ -16800,7 +16814,7 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
             };
 
             // 8. Submit deployment transaction
-            println!("   Step 1/3: Creating buffer account...");
+            out!("   Step 1/3: Creating buffer account...");
 
             // Build deployment transaction
             let deploy_tx = serde_json::json!({
@@ -16844,27 +16858,27 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
                         .and_then(|v| v.as_str())
                         .unwrap_or(&program_id);
 
-                    println!("   Step 2/3: Uploading bytecode... ✅");
-                    println!("   Step 3/3: Finalizing deployment... ✅");
+                    out!("   Step 2/3: Uploading bytecode... ✅");
+                    out!("   Step 3/3: Finalizing deployment... ✅");
 
-                    println!(
+                    out!(
                         "\n══════════════════════════════════════════════════════════════════"
                     );
-                    println!("✅ PROGRAM DEPLOYED SUCCESSFULLY!");
-                    println!("══════════════════════════════════════════════════════════════════");
-                    println!();
-                    println!("   Program ID:        0x{}", deployed_id);
-                    println!("   Upgrade Authority: 0x{}...", &authority_pubkey[..16]);
-                    println!("   Size:              {} bytes", wasm_bytes.len());
-                    println!("   Status:            Active (Upgradeable)");
-                    println!();
-                    println!("💡 To make this program immutable, run:");
-                    println!(
+                    out!("✅ PROGRAM DEPLOYED SUCCESSFULLY!");
+                    out!("══════════════════════════════════════════════════════════════════");
+                    out!();
+                    out!("   Program ID:        0x{}", deployed_id);
+                    out!("   Upgrade Authority: 0x{}...", &authority_pubkey[..16]);
+                    out!("   Size:              {} bytes", wasm_bytes.len());
+                    out!("   Status:            Active (Upgradeable)");
+                    out!();
+                    out!("💡 To make this program immutable, run:");
+                    out!(
                         "   dchat program freeze --program-id {} --authority {:?}",
                         deployed_id, keypair
                     );
-                    println!();
-                    println!(
+                    out!();
+                    out!(
                         "📖 To invoke this program, use program ID: 0x{}",
                         deployed_id
                     );
@@ -16895,9 +16909,9 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
             rpc_url,
             yes,
         } => {
-            println!("\n🔄 PROGRAM UPGRADE");
-            println!("══════════════════════════════════════════════════════════════════");
-            println!("Program ID: {}", program_id);
+            out!("\n🔄 PROGRAM UPGRADE");
+            out!("══════════════════════════════════════════════════════════════════");
+            out!("Program ID: {}", program_id);
 
             if !wasm.exists() {
                 return Err(Error::validation(format!(
@@ -16909,7 +16923,7 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
             let wasm_bytes = std::fs::read(&wasm)
                 .map_err(|e| Error::storage(format!("Failed to read WASM: {}", e)))?;
 
-            println!("New WASM: {:?} ({} bytes)", wasm, wasm_bytes.len());
+            out!("New WASM: {:?} ({} bytes)", wasm, wasm_bytes.len());
 
             // Validate
             let validator = dchat_programs::validation::BytecodeValidator::new();
@@ -16917,12 +16931,12 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
                 .validate(&wasm_bytes)
                 .map_err(|e| Error::validation(format!("WASM validation failed: {:?}", e)))?;
 
-            println!("New Code Hash: {}", hex::encode(&validated.code_hash[..16]));
+            out!("New Code Hash: {}", hex::encode(&validated.code_hash[..16]));
 
             if !yes {
-                println!("\n⚠️  This will upgrade the program with new bytecode.");
-                println!("   A 24-hour timelock will be initiated for security.");
-                print!("   Continue? [y/N] ");
+                out!("\n⚠️  This will upgrade the program with new bytecode.");
+                out!("   A 24-hour timelock will be initiated for security.");
+                prompt!("   Continue? [y/N] ");
                 io::stdout()
                     .flush()
                     .map_err(|e| Error::internal(format!("Failed to flush stdout: {}", e)))?;
@@ -16932,15 +16946,15 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
                     .read_line(&mut input)
                     .map_err(|e| Error::internal(format!("Failed to read stdin: {}", e)))?;
                 if !input.trim().eq_ignore_ascii_case("y") {
-                    println!("❌ Upgrade cancelled.");
+                    out!("❌ Upgrade cancelled.");
                     return Ok(());
                 }
             }
 
-            println!("\n📤 Initiating upgrade...");
-            println!("   ⏳ Upgrade will be finalized after 24-hour timelock.");
-            println!("\n✅ Upgrade initiated successfully!");
-            println!(
+            out!("\n📤 Initiating upgrade...");
+            out!("   ⏳ Upgrade will be finalized after 24-hour timelock.");
+            out!("\n✅ Upgrade initiated successfully!");
+            out!(
                 "   Finalization time: {} UTC",
                 (chrono::Utc::now() + chrono::Duration::hours(24)).format("%Y-%m-%d %H:%M:%S")
             );
@@ -16954,16 +16968,16 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
             rpc_url,
             yes,
         } => {
-            println!("\n🧊 FREEZE PROGRAM");
-            println!("══════════════════════════════════════════════════════════════════");
-            println!("Program ID: {}", program_id);
+            out!("\n🧊 FREEZE PROGRAM");
+            out!("══════════════════════════════════════════════════════════════════");
+            out!("Program ID: {}", program_id);
 
-            println!("\n⚠️  WARNING: IRREVERSIBLE OPERATION!");
-            println!("   Freezing a program makes it PERMANENTLY IMMUTABLE.");
-            println!("   No one will ever be able to upgrade or modify this program.");
+            out!("\n⚠️  WARNING: IRREVERSIBLE OPERATION!");
+            out!("   Freezing a program makes it PERMANENTLY IMMUTABLE.");
+            out!("   No one will ever be able to upgrade or modify this program.");
 
             if !yes {
-                print!("\n   Type 'FREEZE' to confirm: ");
+                prompt!("\n   Type 'FREEZE' to confirm: ");
                 io::stdout()
                     .flush()
                     .map_err(|e| Error::internal(format!("Failed to flush stdout: {}", e)))?;
@@ -16973,14 +16987,14 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
                     .read_line(&mut input)
                     .map_err(|e| Error::internal(format!("Failed to read stdin: {}", e)))?;
                 if input.trim() != "FREEZE" {
-                    println!("❌ Freeze cancelled.");
+                    out!("❌ Freeze cancelled.");
                     return Ok(());
                 }
             }
 
-            println!("\n🧊 Freezing program...");
-            println!("\n✅ Program frozen successfully!");
-            println!("   Status: IMMUTABLE (no future upgrades possible)");
+            out!("\n🧊 Freezing program...");
+            out!("\n✅ Program frozen successfully!");
+            out!("   Status: IMMUTABLE (no future upgrades possible)");
 
             Ok(())
         }
@@ -16989,24 +17003,24 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
             program_id,
             rpc_url,
         } => {
-            println!("\n📋 PROGRAM INFORMATION");
-            println!("══════════════════════════════════════════════════════════════════");
-            println!();
-            println!("Program ID:        {}", program_id);
-            println!("Status:            Active");
-            println!("Executable:        true");
-            println!("Owner:             BPFLoaderUpgradeable");
-            println!();
-            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-            println!("Program Data Account");
-            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-            println!("Deployed Slot:     12345");
-            println!("Upgrade Authority: (query from chain)");
-            println!("Frozen:            false");
-            println!("Data Length:       5377 bytes");
-            println!("Motes:             2039280");
-            println!();
-            println!("💡 Use --rpc-url to query a live blockchain");
+            out!("\n📋 PROGRAM INFORMATION");
+            out!("══════════════════════════════════════════════════════════════════");
+            out!();
+            out!("Program ID:        {}", program_id);
+            out!("Status:            Active");
+            out!("Executable:        true");
+            out!("Owner:             BPFLoaderUpgradeable");
+            out!();
+            out!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            out!("Program Data Account");
+            out!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            out!("Deployed Slot:     12345");
+            out!("Upgrade Authority: (query from chain)");
+            out!("Frozen:            false");
+            out!("Data Length:       5377 bytes");
+            out!("Motes:             2039280");
+            out!();
+            out!("💡 Use --rpc-url to query a live blockchain");
 
             Ok(())
         }
@@ -17017,15 +17031,15 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
             new_authority,
             rpc_url,
         } => {
-            println!("\n🔑 TRANSFER UPGRADE AUTHORITY");
-            println!("══════════════════════════════════════════════════════════════════");
-            println!("Program ID:      {}", program_id);
-            println!("New Authority:   {}", new_authority);
+            out!("\n🔑 TRANSFER UPGRADE AUTHORITY");
+            out!("══════════════════════════════════════════════════════════════════");
+            out!("Program ID:      {}", program_id);
+            out!("New Authority:   {}", new_authority);
 
-            println!("\n⚠️  This will transfer upgrade authority to a new keypair.");
-            println!("   The current authority will no longer be able to upgrade this program.");
+            out!("\n⚠️  This will transfer upgrade authority to a new keypair.");
+            out!("   The current authority will no longer be able to upgrade this program.");
 
-            println!("\n✅ Authority transferred successfully!");
+            out!("\n✅ Authority transferred successfully!");
 
             Ok(())
         }
@@ -17037,15 +17051,15 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
             rpc_url,
             yes,
         } => {
-            println!("\n🗑️  CLOSE PROGRAM");
-            println!("══════════════════════════════════════════════════════════════════");
-            println!("Program ID: {}", program_id);
+            out!("\n🗑️  CLOSE PROGRAM");
+            out!("══════════════════════════════════════════════════════════════════");
+            out!("Program ID: {}", program_id);
 
-            println!("\n⚠️  WARNING: This will DELETE the program permanently!");
-            println!("   Motes will be transferred to the destination address.");
+            out!("\n⚠️  WARNING: This will DELETE the program permanently!");
+            out!("   Motes will be transferred to the destination address.");
 
             if !yes {
-                print!("\n   Type 'DELETE' to confirm: ");
+                prompt!("\n   Type 'DELETE' to confirm: ");
                 io::stdout()
                     .flush()
                     .map_err(|e| Error::internal(format!("Failed to flush stdout: {}", e)))?;
@@ -17055,14 +17069,14 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
                     .read_line(&mut input)
                     .map_err(|e| Error::internal(format!("Failed to read stdin: {}", e)))?;
                 if input.trim() != "DELETE" {
-                    println!("❌ Close cancelled.");
+                    out!("❌ Close cancelled.");
                     return Ok(());
                 }
             }
 
-            println!("\n🗑️  Closing program...");
-            println!("\n✅ Program closed successfully!");
-            println!("   Reclaimed motes: 2039280");
+            out!("\n🗑️  Closing program...");
+            out!("\n✅ Program closed successfully!");
+            out!("   Reclaimed motes: 2039280");
 
             Ok(())
         }
@@ -17073,8 +17087,8 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
             require_manifest,
             reject_zero_hash,
         } => {
-            println!("\n🔍 VALIDATE WASM BYTECODE");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n🔍 VALIDATE WASM BYTECODE");
+            out!("══════════════════════════════════════════════════════════════════");
 
             if !wasm.exists() {
                 return Err(Error::validation(format!(
@@ -17086,19 +17100,19 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
             let wasm_bytes = std::fs::read(&wasm)
                 .map_err(|e| Error::storage(format!("Failed to read WASM: {}", e)))?;
 
-            println!("File: {:?}", wasm);
-            println!(
+            out!("File: {:?}", wasm);
+            out!(
                 "Size: {} bytes ({:.2} KB)",
                 wasm_bytes.len(),
                 wasm_bytes.len() as f64 / 1024.0
             );
             if require_manifest {
-                println!("Mode: Strict (manifest required)");
+                out!("Mode: Strict (manifest required)");
             }
             if reject_zero_hash {
-                println!("Mode: Strict (zero schema hash rejected)");
+                out!("Mode: Strict (zero schema hash rejected)");
             }
-            println!();
+            out!();
 
             // Configure validator with strict mode options
             let mut config = dchat_programs::validation::ValidationConfig::default();
@@ -17108,57 +17122,57 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
 
             match validator.validate(&wasm_bytes) {
                 Ok(validated) => {
-                    println!("✅ VALIDATION PASSED");
-                    println!();
-                    println!("Code Hash:   {}", hex::encode(&validated.code_hash));
+                    out!("✅ VALIDATION PASSED");
+                    out!();
+                    out!("Code Hash:   {}", hex::encode(&validated.code_hash));
 
                     // Show manifest if present
                     if let Some(ref manifest) = validated.manifest {
-                        println!();
-                        println!("📋 DPL Manifest:");
-                        println!(
+                        out!();
+                        out!("📋 DPL Manifest:");
+                        out!(
                             "   SDK Version: {}.{}.{}",
                             manifest.sdk_major, manifest.sdk_minor, manifest.sdk_patch
                         );
-                        println!("   Edition:     {}", manifest.edition);
-                        println!("   ABI Version: {}", manifest.abi_version);
-                        println!("   Import:      {:?}", manifest.import_profile);
-                        println!("   Schema Hash: {}", hex::encode(&manifest.schema_hash));
-                        println!("   Capabilities: {:?}", manifest.capabilities);
+                        out!("   Edition:     {}", manifest.edition);
+                        out!("   ABI Version: {}", manifest.abi_version);
+                        out!("   Import:      {:?}", manifest.import_profile);
+                        out!("   Schema Hash: {}", hex::encode(&manifest.schema_hash));
+                        out!("   Capabilities: {:?}", manifest.capabilities);
                     } else {
-                        println!();
-                        println!("⚠️  No DPL manifest found (legacy program)");
+                        out!();
+                        out!("⚠️  No DPL manifest found (legacy program)");
                     }
 
                     if verbose {
-                        println!();
-                        println!(
+                        out!();
+                        out!(
                             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                         );
-                        println!("Detailed Analysis:");
-                        println!(
+                        out!("Detailed Analysis:");
+                        out!(
                             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                         );
 
                         // Parse module for detailed info using wasmi
                         let engine = wasmi::Engine::default();
                         if let Ok(module) = wasmi::Module::new(&engine, &wasm_bytes) {
-                            println!("Exports:");
+                            out!("Exports:");
                             for export in module.exports() {
-                                println!("  - {}", export.name());
+                                out!("  - {}", export.name());
                             }
                         }
                     }
 
-                    println!();
-                    println!("💡 This bytecode is ready for deployment!");
+                    out!();
+                    out!("💡 This bytecode is ready for deployment!");
                 }
                 Err(e) => {
-                    println!("❌ VALIDATION FAILED");
-                    println!();
-                    println!("Error: {:?}", e);
-                    println!();
-                    println!("💡 Fix the issues above before deploying.");
+                    out!("❌ VALIDATION FAILED");
+                    out!();
+                    out!("Error: {:?}", e);
+                    out!();
+                    out!("💡 Fix the issues above before deploying.");
                     return Err(Error::validation(format!("Validation failed: {:?}", e)));
                 }
             }
@@ -17172,8 +17186,8 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
             format,
             raw,
         } => {
-            println!("\n📋 PROGRAM MANIFEST INSPECTOR");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n📋 PROGRAM MANIFEST INSPECTOR");
+            out!("══════════════════════════════════════════════════════════════════");
 
             let manifest = if program.ends_with(".wasm") || std::path::Path::new(&program).exists()
             {
@@ -17189,39 +17203,39 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
                 let wasm_bytes = std::fs::read(path)
                     .map_err(|e| Error::storage(format!("Failed to read WASM: {}", e)))?;
 
-                println!("Source: {:?}", path);
+                out!("Source: {:?}", path);
 
                 // Extract manifest from WASM
                 match dchat_programs::manifest::extract_manifest(&wasm_bytes) {
                     Ok(Some(m)) => m,
                     Ok(None) => {
-                        println!();
-                        println!("❌ No DPL manifest found in this WASM file");
-                        println!("   This appears to be a legacy program without manifest.");
+                        out!();
+                        out!("❌ No DPL manifest found in this WASM file");
+                        out!("   This appears to be a legacy program without manifest.");
                         return Ok(());
                     }
                     Err(e) => {
-                        println!();
-                        println!("❌ Failed to parse manifest: {:?}", e);
+                        out!();
+                        out!("❌ Failed to parse manifest: {:?}", e);
                         return Err(Error::validation(format!("Manifest parse error: {:?}", e)));
                     }
                 }
             } else {
                 // Query from deployed program
-                println!("Source: Program ID {}", program);
-                println!("RPC:    {}", rpc_url.as_deref().unwrap_or("<not provided>"));
-                println!();
-                println!("⚠️  On-chain manifest query not yet implemented.");
-                println!("   Use --program with a local WASM file path for now.");
+                out!("Source: Program ID {}", program);
+                out!("RPC:    {}", rpc_url.as_deref().unwrap_or("<not provided>"));
+                out!();
+                out!("⚠️  On-chain manifest query not yet implemented.");
+                out!("   Use --program with a local WASM file path for now.");
                 return Ok(());
             };
 
-            println!();
+            out!();
 
             if raw {
                 let manifest_bytes = manifest.to_bytes();
-                println!("Raw Manifest ({} bytes):", manifest_bytes.len());
-                println!("{}", hex::encode(&manifest_bytes));
+                out!("Raw Manifest ({} bytes):", manifest_bytes.len());
+                out!("{}", hex::encode(&manifest_bytes));
                 return Ok(());
             }
 
@@ -17237,36 +17251,36 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
                     });
                     let json_str = serde_json::to_string_pretty(&json)
                         .map_err(|e| Error::internal(format!("Failed to serialize JSON: {}", e)))?;
-                    println!("{}", json_str);
+                    out!("{}", json_str);
                 }
                 "yaml" => {
-                    println!(
+                    out!(
                         "sdk_version: {}.{}.{}",
                         manifest.sdk_major, manifest.sdk_minor, manifest.sdk_patch
                     );
-                    println!("edition: {}", manifest.edition);
-                    println!("abi_version: {}", manifest.abi_version);
-                    println!("import_profile: {:?}", manifest.import_profile);
-                    println!("schema_hash: {}", hex::encode(&manifest.schema_hash));
-                    println!("capabilities: {:?}", manifest.capabilities);
+                    out!("edition: {}", manifest.edition);
+                    out!("abi_version: {}", manifest.abi_version);
+                    out!("import_profile: {:?}", manifest.import_profile);
+                    out!("schema_hash: {}", hex::encode(&manifest.schema_hash));
+                    out!("capabilities: {:?}", manifest.capabilities);
                 }
                 _ => {
                     // Default text format
-                    println!(
+                    out!(
                         "SDK Version:    {}.{}.{}",
                         manifest.sdk_major, manifest.sdk_minor, manifest.sdk_patch
                     );
-                    println!("Edition:        {}", manifest.edition);
-                    println!("ABI Version:    {}", manifest.abi_version);
-                    println!("Import Profile: {:?}", manifest.import_profile);
-                    println!("Schema Hash:    {}", hex::encode(&manifest.schema_hash));
-                    println!("Capabilities:   {:?}", manifest.capabilities);
+                    out!("Edition:        {}", manifest.edition);
+                    out!("ABI Version:    {}", manifest.abi_version);
+                    out!("Import Profile: {:?}", manifest.import_profile);
+                    out!("Schema Hash:    {}", hex::encode(&manifest.schema_hash));
+                    out!("Capabilities:   {:?}", manifest.capabilities);
 
                     // Check for placeholder hash
                     if manifest.schema_hash == [0u8; 32] {
-                        println!();
-                        println!("⚠️  Schema hash is zero (placeholder)");
-                        println!("   This program was built without IDL integration.");
+                        out!();
+                        out!("⚠️  Schema hash is zero (placeholder)");
+                        out!("   This program was built without IDL integration.");
                     }
                 }
             }
@@ -17280,8 +17294,8 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
             idl,
             rpc_url,
         } => {
-            println!("\n🔐 MANIFEST VERIFICATION");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n🔐 MANIFEST VERIFICATION");
+            out!("══════════════════════════════════════════════════════════════════");
 
             // Load program manifest
             let manifest = if program.ends_with(".wasm") || std::path::Path::new(&program).exists()
@@ -17297,29 +17311,29 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
                 let wasm_bytes = std::fs::read(path)
                     .map_err(|e| Error::storage(format!("Failed to read WASM: {}", e)))?;
 
-                println!("Program:  {:?}", path);
+                out!("Program:  {:?}", path);
 
                 match dchat_programs::manifest::extract_manifest(&wasm_bytes) {
                     Ok(Some(m)) => m,
                     Ok(None) => {
-                        println!();
-                        println!("❌ VERIFICATION FAILED: No manifest in program");
+                        out!();
+                        out!("❌ VERIFICATION FAILED: No manifest in program");
                         return Err(Error::validation("No manifest found"));
                     }
                     Err(e) => {
-                        println!();
-                        println!("❌ VERIFICATION FAILED: Manifest parse error: {:?}", e);
+                        out!();
+                        out!("❌ VERIFICATION FAILED: Manifest parse error: {:?}", e);
                         return Err(Error::validation(format!("Manifest error: {:?}", e)));
                     }
                 }
             } else {
-                println!("Program: {}", program);
-                println!(
+                out!("Program: {}", program);
+                out!(
                     "RPC:     {}",
                     rpc_url.as_deref().unwrap_or("<not provided>")
                 );
-                println!();
-                println!("⚠️  On-chain manifest query not yet implemented.");
+                out!();
+                out!("⚠️  On-chain manifest query not yet implemented.");
                 return Ok(());
             };
 
@@ -17334,7 +17348,7 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
                 }
                 let mut arr = [0u8; 32];
                 arr.copy_from_slice(&bytes);
-                println!("Expected: {} (from --expected-hash)", hash_str);
+                out!("Expected: {} (from --expected-hash)", hash_str);
                 arr
             } else if let Some(idl_path) = idl {
                 if !idl_path.exists() {
@@ -17361,7 +17375,7 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
                 };
 
                 let computed = parsed_idl.schema_hash();
-                println!("Expected: {} (from {:?})", hex::encode(&computed), idl_path);
+                out!("Expected: {} (from {:?})", hex::encode(&computed), idl_path);
                 computed
             } else {
                 return Err(Error::validation(
@@ -17370,20 +17384,20 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
             };
 
             let actual = manifest.schema_hash;
-            println!("Actual:   {}", hex::encode(&actual));
-            println!();
+            out!("Actual:   {}", hex::encode(&actual));
+            out!();
 
             if actual == expected {
-                println!("✅ VERIFICATION PASSED");
-                println!("   Schema hash matches expected value.");
+                out!("✅ VERIFICATION PASSED");
+                out!("   Schema hash matches expected value.");
             } else {
-                println!("❌ VERIFICATION FAILED");
-                println!("   Schema hash does not match!");
-                println!();
-                println!("   This could mean:");
-                println!("   - The program was built with a different IDL version");
-                println!("   - The program binary was modified after build");
-                println!("   - The expected hash is incorrect");
+                out!("❌ VERIFICATION FAILED");
+                out!("   Schema hash does not match!");
+                out!();
+                out!("   This could mean:");
+                out!("   - The program was built with a different IDL version");
+                out!("   - The program binary was modified after build");
+                out!("   - The expected hash is incorrect");
                 return Err(Error::validation("Schema hash mismatch"));
             }
 
@@ -17396,8 +17410,8 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
             rpc_url,
             yes,
         } => {
-            println!("\n🔨 BUILD AND DEPLOY");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n🔨 BUILD AND DEPLOY");
+            out!("══════════════════════════════════════════════════════════════════");
 
             if !path.exists() {
                 return Err(Error::validation(format!(
@@ -17414,11 +17428,11 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
                 )));
             }
 
-            println!("📦 Contract: {:?}", path);
-            println!();
+            out!("📦 Contract: {:?}", path);
+            out!();
 
             // 1. Build
-            println!("🔨 Step 1/2: Building contract...");
+            out!("🔨 Step 1/2: Building contract...");
 
             let build_output = std::process::Command::new("cargo")
                 .current_dir(&path)
@@ -17427,7 +17441,7 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
 
             match build_output {
                 Ok(output) if output.status.success() => {
-                    println!("   ✅ Build successful");
+                    out!("   ✅ Build successful");
                 }
                 Ok(output) => {
                     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -17451,10 +17465,10 @@ async fn run_program_command(config: Config, action: ProgramCommand) -> Result<(
             }
 
             let wasm_path = wasm_files[0].path();
-            println!("   WASM: {:?}", wasm_path);
+            out!("   WASM: {:?}", wasm_path);
 
             // 3. Deploy using the Deploy logic
-            println!("\n🚀 Step 2/2: Deploying...");
+            out!("\n🚀 Step 2/2: Deploying...");
 
             // Recursively call Deploy
             let deploy_action = ProgramCommand::Deploy {
@@ -17494,8 +17508,8 @@ async fn run_miniapp_command(action: MiniAppCommand) -> Result<()> {
             height,
             debug,
         } => {
-            println!("\n🚀 DCHAT MINI-APP LAUNCHER");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n🚀 DCHAT MINI-APP LAUNCHER");
+            out!("══════════════════════════════════════════════════════════════════");
 
             // Load manifest from file or fetch from registry
             let app_manifest = if let Some(manifest_path) = manifest {
@@ -17513,7 +17527,7 @@ async fn run_miniapp_command(action: MiniAppCommand) -> Result<()> {
                     )));
                 }
 
-                println!("📦 Loading manifest from: {:?}", manifest_file);
+                out!("📦 Loading manifest from: {:?}", manifest_file);
                 let manifest_json = std::fs::read_to_string(&manifest_file)
                     .map_err(|e| Error::storage(format!("Failed to read manifest: {}", e)))?;
 
@@ -17524,7 +17538,7 @@ async fn run_miniapp_command(action: MiniAppCommand) -> Result<()> {
                 manifest
             } else if let Some(app_id_hex) = app_id {
                 // Fetch from registry (placeholder - would query chain)
-                println!("📦 Fetching app {} from registry...", app_id_hex);
+                out!("📦 Fetching app {} from registry...", app_id_hex);
                 return Err(Error::validation(
                     "Registry lookup not yet implemented. Use --manifest to launch local apps."
                         .to_string(),
@@ -17536,30 +17550,30 @@ async fn run_miniapp_command(action: MiniAppCommand) -> Result<()> {
             };
 
             // Validate manifest
-            println!("🔍 Validating manifest...");
+            out!("🔍 Validating manifest...");
             app_manifest
                 .validate()
                 .map_err(|e| Error::validation(format!("Manifest validation failed: {:?}", e)))?;
-            println!("   ✅ Manifest valid");
+            out!("   ✅ Manifest valid");
 
             // Display app info
-            println!();
-            println!("📱 App Information:");
-            println!("   Name:        {}", app_manifest.metadata.name);
-            println!("   Version:     {}", app_manifest.version);
-            println!(
+            out!();
+            out!("📱 App Information:");
+            out!("   Name:        {}", app_manifest.metadata.name);
+            out!("   Version:     {}", app_manifest.version);
+            out!(
                 "   Description: {}",
                 app_manifest.metadata.short_description
             );
-            println!("   Category:    {:?}", app_manifest.metadata.category);
-            println!("   Entry Point: {}", app_manifest.resources.entry_point);
+            out!("   Category:    {:?}", app_manifest.metadata.category);
+            out!("   Entry Point: {}", app_manifest.resources.entry_point);
 
             // Display requested permissions
             if !app_manifest.permissions.is_empty() {
-                println!();
-                println!("🔐 Requested Permissions:");
+                out!();
+                out!("🔐 Requested Permissions:");
                 for perm in app_manifest.permissions.iter() {
-                    println!("   • {:?}", perm);
+                    out!("   • {:?}", perm);
                 }
             }
 
@@ -17567,15 +17581,15 @@ async fn run_miniapp_command(action: MiniAppCommand) -> Result<()> {
             let mut sandbox_config = SandboxConfig::from_manifest(&app_manifest);
             sandbox_config.debug_mode = debug;
 
-            println!();
-            println!("🔧 Sandbox Configuration:");
-            println!(
+            out!();
+            out!("🔧 Sandbox Configuration:");
+            out!(
                 "   Max Memory:  {} MB",
                 sandbox_config.max_memory / 1024 / 1024
             );
-            println!("   CPU Timeout: {} ms", sandbox_config.max_cpu_time_ms);
-            println!("   Network:     {}", sandbox_config.allow_network);
-            println!("   Debug Mode:  {}", sandbox_config.debug_mode);
+            out!("   CPU Timeout: {} ms", sandbox_config.max_cpu_time_ms);
+            out!("   Network:     {}", sandbox_config.allow_network);
+            out!("   Debug Mode:  {}", sandbox_config.debug_mode);
 
             // Generate session context
             let sandbox_id = SandboxId::new();
@@ -17614,23 +17628,23 @@ async fn run_miniapp_command(action: MiniAppCommand) -> Result<()> {
             } else {
                 // For local development without a key, derive deterministic ID from app name
                 // WARNING: This should only be used for local testing
-                println!("⚠️  No --developer-key provided. Using deterministic dev ID for local testing only.");
+                out!("⚠️  No --developer-key provided. Using deterministic dev ID for local testing only.");
                 let dev_hash =
                     blake3::hash(format!("dev::{}", app_manifest.metadata.name).as_bytes());
                 DeveloperId::from_bytes(*dev_hash.as_bytes())
             };
             let derived_app_id = AppId::derive(&developer_id, &app_manifest.metadata.name);
 
-            println!();
-            println!("🆔 Session Details:");
-            println!("   Sandbox ID:  {}", sandbox_id);
-            println!("   App ID:      {}", derived_app_id);
-            println!(
+            out!();
+            out!("🆔 Session Details:");
+            out!("   Sandbox ID:  {}", sandbox_id);
+            out!("   App ID:      {}", derived_app_id);
+            out!(
                 "   User ID:     0x{}...",
                 hex::encode(&session_user_id[..8])
             );
-            println!("   Viewport:    {}x{}", width, height);
-            println!("   Theme:       {}", theme);
+            out!("   Viewport:    {}x{}", width, height);
+            out!("   Theme:       {}", theme);
 
             // Initialize sandbox messages
             let init_message = SandboxMessage::Init {
@@ -17642,19 +17656,19 @@ async fn run_miniapp_command(action: MiniAppCommand) -> Result<()> {
                 }),
             };
 
-            println!();
-            println!("══════════════════════════════════════════════════════════════════");
-            println!("✅ MINI-APP READY TO LAUNCH");
-            println!("══════════════════════════════════════════════════════════════════");
-            println!();
-            println!("Entry point: {}", app_manifest.resources.entry_point);
-            println!(
+            out!();
+            out!("══════════════════════════════════════════════════════════════════");
+            out!("✅ MINI-APP READY TO LAUNCH");
+            out!("══════════════════════════════════════════════════════════════════");
+            out!();
+            out!("Entry point: {}", app_manifest.resources.entry_point);
+            out!(
                 "Init message: {}",
                 init_message.to_json().unwrap_or_default()
             );
-            println!();
-            println!("💡 In a full client, this would open a WebView/iframe sandbox.");
-            println!("   Use the dchat-miniapps crate to integrate into your application.");
+            out!();
+            out!("💡 In a full client, this would open a WebView/iframe sandbox.");
+            out!("   Use the dchat-miniapps crate to integrate into your application.");
 
             Ok(())
         }
@@ -17665,8 +17679,8 @@ async fn run_miniapp_command(action: MiniAppCommand) -> Result<()> {
             website,
             email,
         } => {
-            println!("\n👤 REGISTER MINI-APP DEVELOPER");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n👤 REGISTER MINI-APP DEVELOPER");
+            out!("══════════════════════════════════════════════════════════════════");
 
             if !keypair.exists() {
                 return Err(Error::validation(format!(
@@ -17701,20 +17715,20 @@ async fn run_miniapp_command(action: MiniAppCommand) -> Result<()> {
             developer.website = website;
             developer.email = email;
 
-            println!("📝 Developer Registration:");
-            println!("   Name:      {}", developer.name);
-            println!("   ID:        {}", developer.id);
-            println!("   Public Key: 0x{}...", &pubkey_hex[..16]);
+            out!("📝 Developer Registration:");
+            out!("   Name:      {}", developer.name);
+            out!("   ID:        {}", developer.id);
+            out!("   Public Key: 0x{}...", &pubkey_hex[..16]);
             if let Some(ref w) = developer.website {
-                println!("   Website:   {}", w);
+                out!("   Website:   {}", w);
             }
             if let Some(ref e) = developer.email {
-                println!("   Email:     {}", e);
+                out!("   Email:     {}", e);
             }
-            println!("   Status:    {:?}", developer.status);
-            println!();
-            println!("💡 In production, this would submit a registration transaction");
-            println!("   to the chat chain for verification.");
+            out!("   Status:    {:?}", developer.status);
+            out!();
+            out!("💡 In production, this would submit a registration transaction");
+            out!("   to the chat chain for verification.");
 
             Ok(())
         }
@@ -17724,8 +17738,8 @@ async fn run_miniapp_command(action: MiniAppCommand) -> Result<()> {
             keypair,
             bundle,
         } => {
-            println!("\n📦 REGISTER MINI-APP");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n📦 REGISTER MINI-APP");
+            out!("══════════════════════════════════════════════════════════════════");
 
             if !manifest.exists() {
                 return Err(Error::validation(format!(
@@ -17752,8 +17766,8 @@ async fn run_miniapp_command(action: MiniAppCommand) -> Result<()> {
                 .validate()
                 .map_err(|e| Error::validation(format!("Manifest validation failed: {:?}", e)))?;
 
-            println!("📱 App: {}", app_manifest.metadata.name);
-            println!("   Version: {}", app_manifest.version);
+            out!("📱 App: {}", app_manifest.metadata.name);
+            out!("   Version: {}", app_manifest.version);
 
             if let Some(bundle_path) = bundle {
                 if !bundle_path.exists() {
@@ -17765,25 +17779,25 @@ async fn run_miniapp_command(action: MiniAppCommand) -> Result<()> {
                 let bundle_size = std::fs::metadata(&bundle_path)
                     .map(|m| m.len())
                     .unwrap_or(0);
-                println!("   Bundle: {:?} ({} KB)", bundle_path, bundle_size / 1024);
+                out!("   Bundle: {:?} ({} KB)", bundle_path, bundle_size / 1024);
             }
 
-            println!();
-            println!("💡 In production, this would:");
-            println!("   1. Upload bundle to IPFS/decentralized storage");
-            println!("   2. Submit registration transaction to chat chain");
-            println!("   3. Await verification from network");
+            out!();
+            out!("💡 In production, this would:");
+            out!("   1. Upload bundle to IPFS/decentralized storage");
+            out!("   2. Submit registration transaction to chat chain");
+            out!("   3. Await verification from network");
 
             Ok(())
         }
 
         MiniAppCommand::Info { app_id } => {
-            println!("\n📱 MINI-APP INFORMATION");
-            println!("══════════════════════════════════════════════════════════════════");
-            println!("App ID: {}", app_id);
-            println!();
-            println!("💡 In production, this would query the on-chain registry");
-            println!("   for app metadata, developer info, and download stats.");
+            out!("\n📱 MINI-APP INFORMATION");
+            out!("══════════════════════════════════════════════════════════════════");
+            out!("App ID: {}", app_id);
+            out!();
+            out!("💡 In production, this would query the on-chain registry");
+            out!("   for app metadata, developer info, and download stats.");
 
             Ok(())
         }
@@ -17792,19 +17806,19 @@ async fn run_miniapp_command(action: MiniAppCommand) -> Result<()> {
             category,
             installed,
         } => {
-            println!("\n📋 MINI-APP LIST");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n📋 MINI-APP LIST");
+            out!("══════════════════════════════════════════════════════════════════");
 
             if let Some(cat) = category {
-                println!("Filter: category = {}", cat);
+                out!("Filter: category = {}", cat);
             }
             if installed {
-                println!("Filter: installed only");
+                out!("Filter: installed only");
             }
 
-            println!();
-            println!("💡 In production, this would query the on-chain registry");
-            println!("   and list available/installed mini-apps.");
+            out!();
+            out!("💡 In production, this would query the on-chain registry");
+            out!("   and list available/installed mini-apps.");
 
             Ok(())
         }
@@ -17814,8 +17828,8 @@ async fn run_miniapp_command(action: MiniAppCommand) -> Result<()> {
             path,
             category,
         } => {
-            println!("\n🆕 CREATE NEW MINI-APP PROJECT");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n🆕 CREATE NEW MINI-APP PROJECT");
+            out!("══════════════════════════════════════════════════════════════════");
 
             let project_dir = path.join(&name);
             std::fs::create_dir_all(&project_dir)
@@ -17969,22 +17983,22 @@ button:hover {
             std::fs::write(project_dir.join("style.css"), style_css)
                 .map_err(|e| Error::storage(format!("Failed to write style.css: {}", e)))?;
 
-            println!("✅ Created mini-app project: {:?}", project_dir);
-            println!();
-            println!("📁 Project structure:");
-            println!("   {:?}/", project_dir);
-            println!("   ├── manifest.json");
-            println!("   ├── index.html");
-            println!("   ├── app.js");
-            println!("   └── style.css");
-            println!();
-            println!("💡 Next steps:");
-            println!("   1. Edit the files to build your app");
-            println!(
+            out!("✅ Created mini-app project: {:?}", project_dir);
+            out!();
+            out!("📁 Project structure:");
+            out!("   {:?}/", project_dir);
+            out!("   ├── manifest.json");
+            out!("   ├── index.html");
+            out!("   ├── app.js");
+            out!("   └── style.css");
+            out!();
+            out!("💡 Next steps:");
+            out!("   1. Edit the files to build your app");
+            out!(
                 "   2. Validate: dchat miniapp validate --manifest {:?}",
                 manifest_path
             );
-            println!(
+            out!(
                 "   3. Launch:   dchat miniapp launch --manifest {:?}",
                 project_dir
             );
@@ -17993,8 +18007,8 @@ button:hover {
         }
 
         MiniAppCommand::Validate { manifest, verbose } => {
-            println!("\n🔍 VALIDATE MINI-APP MANIFEST");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n🔍 VALIDATE MINI-APP MANIFEST");
+            out!("══════════════════════════════════════════════════════════════════");
 
             if !manifest.exists() {
                 return Err(Error::validation(format!(
@@ -18006,17 +18020,17 @@ button:hover {
             let manifest_json = std::fs::read_to_string(&manifest)
                 .map_err(|e| Error::storage(format!("Failed to read manifest: {}", e)))?;
 
-            println!("📄 File: {:?}", manifest);
-            println!("   Size: {} bytes", manifest_json.len());
-            println!();
+            out!("📄 File: {:?}", manifest);
+            out!("   Size: {} bytes", manifest_json.len());
+            out!();
 
             // Parse JSON
             let app_manifest: dchat_miniapps::manifest::AppManifest =
                 match serde_json::from_str(&manifest_json) {
                     Ok(m) => m,
                     Err(e) => {
-                        println!("❌ JSON PARSE ERROR");
-                        println!("   {}", e);
+                        out!("❌ JSON PARSE ERROR");
+                        out!("   {}", e);
                         return Err(Error::validation(format!("JSON parse error: {}", e)));
                     }
                 };
@@ -18024,29 +18038,29 @@ button:hover {
             // Validate manifest
             match app_manifest.validate() {
                 Ok(()) => {
-                    println!("✅ MANIFEST VALID");
-                    println!();
-                    println!("📱 App: {}", app_manifest.metadata.name);
-                    println!("   Version:     {}", app_manifest.version);
-                    println!("   Category:    {:?}", app_manifest.metadata.category);
-                    println!("   Entry Point: {}", app_manifest.resources.entry_point);
-                    println!(
+                    out!("✅ MANIFEST VALID");
+                    out!();
+                    out!("📱 App: {}", app_manifest.metadata.name);
+                    out!("   Version:     {}", app_manifest.version);
+                    out!("   Category:    {:?}", app_manifest.metadata.category);
+                    out!("   Entry Point: {}", app_manifest.resources.entry_point);
+                    out!(
                         "   Permissions: {} requested",
                         app_manifest.permissions.len()
                     );
 
                     if verbose {
-                        println!();
-                        println!("📋 Full Manifest:");
-                        println!(
+                        out!();
+                        out!("📋 Full Manifest:");
+                        out!(
                             "{}",
                             serde_json::to_string_pretty(&app_manifest).unwrap_or_default()
                         );
                     }
                 }
                 Err(e) => {
-                    println!("❌ VALIDATION FAILED");
-                    println!("   {:?}", e);
+                    out!("❌ VALIDATION FAILED");
+                    out!("   {:?}", e);
                     return Err(Error::validation(format!("Validation failed: {:?}", e)));
                 }
             }
@@ -18427,29 +18441,29 @@ async fn run_qge_command(config: Config, action: QgeCommand) -> Result<()> {
             epoch,
             include_expired,
         } => {
-            println!("\n🔐 QGE TOKEN STATUS");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n🔐 QGE TOKEN STATUS");
+            out!("══════════════════════════════════════════════════════════════════");
 
             let current_epoch = current_epoch_id();
-            println!("Current Epoch:     {}", current_epoch);
-            println!("Epoch Duration:    {} seconds", EPOCH_DURATION_SECS);
+            out!("Current Epoch:     {}", current_epoch);
+            out!("Epoch Duration:    {} seconds", EPOCH_DURATION_SECS);
 
             if let Some(ref conv_type) = conversation_type {
-                println!("Filter:            {}", conv_type);
+                out!("Filter:            {}", conv_type);
             }
             if let Some(e) = epoch {
-                println!("Showing Epoch:     {}", e);
+                out!("Showing Epoch:     {}", e);
             }
             if include_expired {
-                println!("Including:         Expired tokens");
+                out!("Including:         Expired tokens");
             }
 
             // In production, this would query the local token store
-            println!();
-            println!("📋 Active Tokens:");
-            println!("   (Token listing requires connection to local QGE state)");
-            println!();
-            println!("💡 Tip: Use 'dchat qge request-token' to request new tokens");
+            out!();
+            out!("📋 Active Tokens:");
+            out!("   (Token listing requires connection to local QGE state)");
+            out!();
+            out!("💡 Tip: Use 'dchat qge request-token' to request new tokens");
 
             Ok(())
         }
@@ -18459,20 +18473,20 @@ async fn run_qge_command(config: Config, action: QgeCommand) -> Result<()> {
             conversation_type,
             force,
         } => {
-            println!("\n🔑 REQUESTING QGE TOKEN");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n🔑 REQUESTING QGE TOKEN");
+            out!("══════════════════════════════════════════════════════════════════");
 
-            println!("Target:            {}", target);
-            println!("Conversation Type: {}", conversation_type);
-            println!("Force Refresh:     {}", force);
-            println!();
+            out!("Target:            {}", target);
+            out!("Conversation Type: {}", conversation_type);
+            out!("Force Refresh:     {}", force);
+            out!();
 
             // In production, this would initiate token request to relay committee
-            println!("📡 Contacting relay committee...");
-            println!("   (Token request requires active network connection)");
-            println!();
-            println!("💡 Token requests are processed by the relay committee using");
-            println!("   threshold signatures to ensure decentralized issuance.");
+            out!("📡 Contacting relay committee...");
+            out!("   (Token request requires active network connection)");
+            out!();
+            out!("💡 Token requests are processed by the relay committee using");
+            out!("   threshold signatures to ensure decentralized issuance.");
 
             Ok(())
         }
@@ -18482,27 +18496,27 @@ async fn run_qge_command(config: Config, action: QgeCommand) -> Result<()> {
             history,
             epochs,
         } => {
-            println!("\n👥 QGE RELAY COMMITTEE");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n👥 QGE RELAY COMMITTEE");
+            out!("══════════════════════════════════════════════════════════════════");
 
             let current_epoch = current_epoch_id();
-            println!("Current Epoch: {}", current_epoch);
-            println!();
+            out!("Current Epoch: {}", current_epoch);
+            out!();
 
             // In production, this would query the committee registry
-            println!("📋 Committee Members:");
-            println!("   (Committee information requires network connection)");
+            out!("📋 Committee Members:");
+            out!("   (Committee information requires network connection)");
 
             if detailed {
-                println!();
-                println!("📊 Detailed View:");
-                println!("   Member performance, stake, and uptime would be shown here");
+                out!();
+                out!("📊 Detailed View:");
+                out!("   Member performance, stake, and uptime would be shown here");
             }
 
             if history {
-                println!();
-                println!("📜 Rotation History (last {} epochs):", epochs);
-                println!("   Historical committee rotations would be shown here");
+                out!();
+                out!("📜 Rotation History (last {} epochs):", epochs);
+                out!("   Historical committee rotations would be shown here");
             }
 
             Ok(())
@@ -18514,40 +18528,40 @@ async fn run_qge_command(config: Config, action: QgeCommand) -> Result<()> {
             metrics,
             rewards,
         } => {
-            println!("\n📡 RELAY STATUS");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n📡 RELAY STATUS");
+            out!("══════════════════════════════════════════════════════════════════");
 
             if let Some(ref id) = relay_id {
-                println!("Relay ID: {}", id);
+                out!("Relay ID: {}", id);
             } else {
-                println!("Relay ID: (local relay)");
+                out!("Relay ID: (local relay)");
             }
-            println!();
+            out!();
 
             if stake {
-                println!("💰 Stake Information:");
-                println!("   Current Stake:     (requires network connection)");
-                println!("   Effective Stake:   (capped at max effective stake)");
-                println!("   Stake Lock Until:  (unlock timestamp)");
+                out!("💰 Stake Information:");
+                out!("   Current Stake:     (requires network connection)");
+                out!("   Effective Stake:   (capped at max effective stake)");
+                out!("   Stake Lock Until:  (unlock timestamp)");
             }
 
             if metrics {
-                println!();
-                println!("📊 Performance Metrics:");
-                println!("   Uptime:            (requires relay connection)");
-                println!("   Tokens Issued:     (this epoch)");
-                println!("   Messages Relayed:  (this epoch)");
-                println!("   Latency (avg):     (milliseconds)");
+                out!();
+                out!("📊 Performance Metrics:");
+                out!("   Uptime:            (requires relay connection)");
+                out!("   Tokens Issued:     (this epoch)");
+                out!("   Messages Relayed:  (this epoch)");
+                out!("   Latency (avg):     (milliseconds)");
             }
 
             if rewards {
-                println!();
-                println!("🎁 Reward History:");
-                println!("   (Reward history requires blockchain connection)");
+                out!();
+                out!("🎁 Reward History:");
+                out!("   (Reward history requires blockchain connection)");
             }
 
             if !stake && !metrics && !rewards {
-                println!("💡 Use --stake, --metrics, or --rewards for detailed info");
+                out!("💡 Use --stake, --metrics, or --rewards for detailed info");
             }
 
             Ok(())
@@ -18563,8 +18577,8 @@ async fn run_qge_command(config: Config, action: QgeCommand) -> Result<()> {
             limit,
             format,
         } => {
-            println!("\n📜 QGE AUDIT LOG");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n📜 QGE AUDIT LOG");
+            out!("══════════════════════════════════════════════════════════════════");
 
             // Parse filters
             let cat_filter = category.as_ref().map(|c| match c.to_lowercase().as_str() {
@@ -18591,91 +18605,91 @@ async fn run_qge_command(config: Config, action: QgeCommand) -> Result<()> {
                     _ => Severity::Info,
                 });
 
-            println!("Filters:");
+            out!("Filters:");
             if let Some(ref cat) = category {
-                println!("  Category:    {}", cat);
+                out!("  Category:    {}", cat);
             }
             if let Some(ref sev) = min_severity {
-                println!("  Min Severity: {}", sev);
+                out!("  Min Severity: {}", sev);
             }
             if let Some(ref f) = from {
-                println!("  From:        {}", f);
+                out!("  From:        {}", f);
             }
             if let Some(ref t) = to {
-                println!("  To:          {}", t);
+                out!("  To:          {}", t);
             }
-            println!("  Limit:       {}", limit);
-            println!("  Format:      {}", format);
-            println!();
+            out!("  Limit:       {}", limit);
+            out!("  Format:      {}", format);
+            out!();
 
             // In production, this would query the audit logger
             let logger = QgeAuditLogger::new();
             let stats = logger.stats().await;
 
-            println!("📊 Audit Log Statistics:");
-            println!("   Total Entries: {}", stats.total_entries);
-            println!("   Chain Valid:   {}", stats.chain_valid);
-            println!();
-            println!("   (Full audit log requires local QGE state)");
+            out!("📊 Audit Log Statistics:");
+            out!("   Total Entries: {}", stats.total_entries);
+            out!("   Chain Valid:   {}", stats.chain_valid);
+            out!();
+            out!("   (Full audit log requires local QGE state)");
 
             Ok(())
         }
 
         QgeCommand::RateLimitStatus { user_id, detailed } => {
-            println!("\n⏱️ RATE LIMIT STATUS");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n⏱️ RATE LIMIT STATUS");
+            out!("══════════════════════════════════════════════════════════════════");
 
             if let Some(ref id) = user_id {
-                println!("User ID: {}", id);
+                out!("User ID: {}", id);
             } else {
-                println!("User ID: (current user)");
+                out!("User ID: (current user)");
             }
-            println!();
+            out!();
 
             // In production, this would query the rate limiter
-            println!("📊 Rate Limit Buckets:");
-            println!("   Token Requests:   (available/capacity)");
-            println!("   Message Relay:    (available/capacity)");
-            println!("   Revocation Check: (available/capacity)");
+            out!("📊 Rate Limit Buckets:");
+            out!("   Token Requests:   (available/capacity)");
+            out!("   Message Relay:    (available/capacity)");
+            out!("   Revocation Check: (available/capacity)");
 
             if detailed {
-                println!();
-                println!("📈 Detailed Statistics:");
-                println!("   Refill Rate:      tokens/second");
-                println!("   Window Size:      seconds");
-                println!("   Reputation Score: (affects limits)");
+                out!();
+                out!("📈 Detailed Statistics:");
+                out!("   Refill Rate:      tokens/second");
+                out!("   Window Size:      seconds");
+                out!("   Reputation Score: (affects limits)");
             }
 
             Ok(())
         }
 
         QgeCommand::Stats { network, detailed } => {
-            println!("\n📊 QGE STATISTICS");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n📊 QGE STATISTICS");
+            out!("══════════════════════════════════════════════════════════════════");
 
             let current_epoch = current_epoch_id();
-            println!("Current Epoch:  {}", current_epoch);
-            println!();
+            out!("Current Epoch:  {}", current_epoch);
+            out!();
 
-            println!("🔐 Local Statistics:");
-            println!("   Active Tokens:     (requires local state)");
-            println!("   Cached Keys:       (sender keys, epoch keys)");
-            println!("   Pending Requests:  (awaiting committee response)");
+            out!("🔐 Local Statistics:");
+            out!("   Active Tokens:     (requires local state)");
+            out!("   Cached Keys:       (sender keys, epoch keys)");
+            out!("   Pending Requests:  (awaiting committee response)");
 
             if network {
-                println!();
-                println!("🌐 Network Statistics:");
-                println!("   Active Relays:     (requires network)");
-                println!("   Committee Size:    (threshold)");
-                println!("   Total Revocations: (network-wide)");
+                out!();
+                out!("🌐 Network Statistics:");
+                out!("   Active Relays:     (requires network)");
+                out!("   Committee Size:    (threshold)");
+                out!("   Total Revocations: (network-wide)");
             }
 
             if detailed {
-                println!();
-                println!("📈 Detailed Breakdown:");
-                println!("   Token request latency (p50/p95/p99)");
-                println!("   Key rotation frequency");
-                println!("   Memory usage by component");
+                out!();
+                out!("📈 Detailed Breakdown:");
+                out!("   Token request latency (p50/p95/p99)");
+                out!("   Key rotation frequency");
+                out!("   Memory usage by component");
             }
 
             Ok(())
@@ -18686,33 +18700,33 @@ async fn run_qge_command(config: Config, action: QgeCommand) -> Result<()> {
             dry_run,
             max_age,
         } => {
-            println!("\n🧹 QGE CLEANUP");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n🧹 QGE CLEANUP");
+            out!("══════════════════════════════════════════════════════════════════");
 
             if dry_run {
-                println!("Mode: DRY RUN (no changes will be made)");
+                out!("Mode: DRY RUN (no changes will be made)");
             } else if force {
-                println!("Mode: FORCE (immediate cleanup)");
+                out!("Mode: FORCE (immediate cleanup)");
             } else {
-                println!("Mode: STANDARD (respects scheduler)");
+                out!("Mode: STANDARD (respects scheduler)");
             }
 
             if let Some(age) = max_age {
-                println!("Max Age: {} seconds", age);
+                out!("Max Age: {} seconds", age);
             }
-            println!();
+            out!();
 
             // In production, this would trigger the cleanup manager
-            println!("🔍 Analyzing cryptographic state...");
-            println!();
-            println!("   Epoch Keys:     (eligible for cleanup)");
-            println!("   Chain Keys:     (eligible for cleanup)");
-            println!("   Skipped Keys:   (eligible for cleanup)");
-            println!("   SUKs:           (eligible for cleanup)");
+            out!("🔍 Analyzing cryptographic state...");
+            out!();
+            out!("   Epoch Keys:     (eligible for cleanup)");
+            out!("   Chain Keys:     (eligible for cleanup)");
+            out!("   Skipped Keys:   (eligible for cleanup)");
+            out!("   SUKs:           (eligible for cleanup)");
 
             if !dry_run {
-                println!();
-                println!("✅ Cleanup scheduled (or completed if --force)");
+                out!();
+                out!("✅ Cleanup scheduled (or completed if --force)");
             }
 
             Ok(())
@@ -18728,22 +18742,22 @@ async fn run_qge_revocation_command(action: QgeRevocationAction) -> Result<()> {
             pending,
             include_expired,
         } => {
-            println!("\n📋 QGE REVOCATIONS");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n📋 QGE REVOCATIONS");
+            out!("══════════════════════════════════════════════════════════════════");
 
             if let Some(ref ch) = channel_id {
-                println!("Channel: {}", ch);
+                out!("Channel: {}", ch);
             }
             if pending {
-                println!("Filter:  Pending only");
+                out!("Filter:  Pending only");
             }
             if include_expired {
-                println!("Include: Expired revocations");
+                out!("Include: Expired revocations");
             }
-            println!();
+            out!();
 
             // In production, this would query the revocation store
-            println!("   (Revocation list requires network connection)");
+            out!("   (Revocation list requires network connection)");
 
             Ok(())
         }
@@ -18752,17 +18766,17 @@ async fn run_qge_revocation_command(action: QgeRevocationAction) -> Result<()> {
             user_id,
             channel_id,
         } => {
-            println!("\n🔍 CHECKING REVOCATION STATUS");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n🔍 CHECKING REVOCATION STATUS");
+            out!("══════════════════════════════════════════════════════════════════");
 
-            println!("User:    {}", user_id);
-            println!("Channel: {}", channel_id);
-            println!();
+            out!("User:    {}", user_id);
+            out!("Channel: {}", channel_id);
+            out!();
 
             // In production, this would check the revocation store
-            println!("Status: (requires network connection)");
-            println!();
-            println!("💡 Revocation checks are cached locally for fast access");
+            out!("Status: (requires network connection)");
+            out!();
+            out!("💡 Revocation checks are cached locally for fast access");
 
             Ok(())
         }
@@ -18774,21 +18788,21 @@ async fn run_qge_revocation_command(action: QgeRevocationAction) -> Result<()> {
             duration,
             reason,
         } => {
-            println!("\n⚠️ CREATING REVOCATION");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n⚠️ CREATING REVOCATION");
+            out!("══════════════════════════════════════════════════════════════════");
 
-            println!("User:     {}", user_id);
-            println!("Channel:  {}", channel_id);
-            println!("Action:   {}", action);
+            out!("User:     {}", user_id);
+            out!("Channel:  {}", channel_id);
+            out!("Action:   {}", action);
             if let Some(d) = duration {
-                println!("Duration: {} seconds", d);
+                out!("Duration: {} seconds", d);
             }
-            println!("Reason:   {}", reason);
-            println!();
+            out!("Reason:   {}", reason);
+            out!();
 
             // In production, this would submit the revocation request
-            println!("📡 Submitting revocation request...");
-            println!("   (Requires admin privileges and network connection)");
+            out!("📡 Submitting revocation request...");
+            out!("   (Requires admin privileges and network connection)");
 
             Ok(())
         }
@@ -18797,18 +18811,18 @@ async fn run_qge_revocation_command(action: QgeRevocationAction) -> Result<()> {
             revocation_id,
             reason,
         } => {
-            println!("\n✅ LIFTING REVOCATION");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n✅ LIFTING REVOCATION");
+            out!("══════════════════════════════════════════════════════════════════");
 
-            println!("Revocation ID: {}", revocation_id);
+            out!("Revocation ID: {}", revocation_id);
             if let Some(ref r) = reason {
-                println!("Reason:        {}", r);
+                out!("Reason:        {}", r);
             }
-            println!();
+            out!();
 
             // In production, this would submit the lift request
-            println!("📡 Submitting lift request...");
-            println!("   (Requires admin privileges and network connection)");
+            out!("📡 Submitting lift request...");
+            out!("   (Requires admin privileges and network connection)");
 
             Ok(())
         }
@@ -18817,16 +18831,16 @@ async fn run_qge_revocation_command(action: QgeRevocationAction) -> Result<()> {
             revocation_id,
             message,
         } => {
-            println!("\n📝 SUBMITTING APPEAL");
-            println!("══════════════════════════════════════════════════════════════════");
+            out!("\n📝 SUBMITTING APPEAL");
+            out!("══════════════════════════════════════════════════════════════════");
 
-            println!("Revocation ID: {}", revocation_id);
-            println!("Message:       {}", message);
-            println!();
+            out!("Revocation ID: {}", revocation_id);
+            out!("Message:       {}", message);
+            out!();
 
             // In production, this would submit the appeal
-            println!("📡 Submitting appeal...");
-            println!("   (Appeals are reviewed by channel administrators)");
+            out!("📡 Submitting appeal...");
+            out!("   (Appeals are reviewed by channel administrators)");
 
             Ok(())
         }
