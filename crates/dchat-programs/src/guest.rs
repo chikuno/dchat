@@ -1030,58 +1030,26 @@ pub mod state {
 ///
 /// These wrap the host syscalls with safe interfaces.
 pub mod log {
-    /// Log a message (calls sol_log_)
-    ///
-    /// In WASM context, this writes to the message buffer and calls the host.
-    /// In native test context, this writes to stderr.
-    pub fn msg(message: &str) {
-        #[cfg(target_arch = "wasm32")]
-        unsafe {
-            extern "C" {
-                fn sol_log_(ptr: *const u8, len: u64);
-            }
-            sol_log_(message.as_ptr(), message.len() as u64);
-        }
+    /// Re-export dchat-log macros and types
+    pub use dchat_log::prelude::*;
 
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            eprintln!("[LOG] {}", message);
-        }
+    /// Log a message
+    pub fn msg(message: &str) {
+        dchat_log::log(message);
     }
 
     /// Log formatted values
     pub fn values(v1: u64, v2: u64, v3: u64, v4: u64, v5: u64) {
-        #[cfg(target_arch = "wasm32")]
-        unsafe {
-            extern "C" {
-                fn sol_log_64_(v1: u64, v2: u64, v3: u64, v4: u64, v5: u64);
-            }
-            sol_log_64_(v1, v2, v3, v4, v5);
-        }
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            eprintln!("[LOG64] {} {} {} {} {}", v1, v2, v3, v4, v5);
-        }
+        dchat_log::log_64(v1, v2, v3, v4, v5);
     }
 
     /// Log remaining compute units
     pub fn compute_units() {
-        #[cfg(target_arch = "wasm32")]
-        unsafe {
-            extern "C" {
-                fn sol_log_compute_units_();
-            }
-            sol_log_compute_units_();
-        }
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            eprintln!("[LOG] Compute units check (native mode)");
-        }
+        dchat_log::log_compute_units();
     }
 }
 
+pub use dchat_log::{log_64, log_compute_units, log_data, log_pubkey, log_slice, msg};
 /// Return data helpers
 pub mod return_data {
     use super::*;

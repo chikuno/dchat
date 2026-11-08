@@ -11,6 +11,7 @@ authors = ["dchat contributors"]
 dchat-core = { path = "../dchat-core" }
 dchat-crypto = { path = "../dchat-crypto" }
 dchat-observability = { path = "../dchat-observability" }
+dchat-log = { path = "../dchat-log" }
 
 # Serialization - pinned versions for reproducibility
 serde = { version = "1", features = ["derive"] }

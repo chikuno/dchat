@@ -4,21 +4,12 @@
 
 /// Log a message
 pub fn log(msg: &str) {
-    // In WASI mode, this uses println! which routes to fd_write
-    // which the VM shim captures for logging
-    #[cfg(feature = "std")]
-    println!("{}", msg);
-
-    #[cfg(not(feature = "std"))]
-    {
-        let _ = msg;
-        // In no_std mode, we would call the raw syscall
-    }
+    dchat_log::log(msg);
 }
 
 /// Log compute units remaining
 pub fn log_compute_units() {
-    log("[compute units remaining]");
+    dchat_log::log_compute_units();
 }
 
 /// Compute SHA-256 hash

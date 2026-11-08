@@ -1,0 +1,25 @@
+[package]
+name = "dchat-log"
+version = "0.1.0"
+edition = "2021"
+description = "Deterministic, metered logging system for Dchat smart contracts, VM runtime, and nodes"
+license = "MIT OR Apache-2.0"
+authors = ["dchat contributors"]
+
+[dependencies]
+# Optional serde support for receipt serialization
+serde = { version = "1.0", default-features = false, optional = true }
+
+# Optional bridge to host tracing subsystem
+tracing = { version = "0.1", optional = true }
+
+[features]
+default = ["std"]
+std = []
+no_std = []
+alloc = []
+serde = ["dep:serde"]
+tracing-compat = ["dep:tracing"]
+solana-compat = []
+
+[dev-dependencies]

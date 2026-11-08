@@ -533,6 +533,57 @@ impl VmInstance {
             )
             .map_err(|e| ProgramError::VmError(e.to_string()))?;
 
+        // dchat_log_ - Dchat log string message
+        linker
+            .func_wrap(
+                "env",
+                "dchat_log_",
+                |mut caller: Caller<\x27_, VmState>, ptr: u32, len: u32| {
+                    let cost = 100u64 + len as u64;
+                    if let Ok(current) = caller.get_fuel() {
+                        if current < cost { return; }
+                        let _ = caller.set_fuel(current - cost);
+                    } else { return; }
+                    if let Some(memory) = caller.get_export("memory").and_then(|e| e.into_memory()) {
+                        let mut buf = vec![0u8; len as usize];
+                        if memory.read(&caller, ptr as usize, &mut buf).is_ok() {
+                            if let Ok(msg) = String::from_utf8(buf) {
+                                caller.data_mut().log(msg);
+                            }
+                        }
+                    }
+                },
+            )
+            .map_err(|e| ProgramError::VmError(e.to_string()))?;
+
+        // dchat_log_64_ - Dchat log 5 u64 values
+        linker
+            .func_wrap(
+                "env",
+                "dchat_log_64_",
+                |mut caller: Caller<\x27_, VmState>, v1: u64, v2: u64, v3: u64, v4: u64, v5: u64| {
+                    if let Ok(current) = caller.get_fuel() {
+                        if current < 100 { return; }
+                        let _ = caller.set_fuel(current - 100);
+                    } else { return; }
+                    let msg = format!("{} {} {} {} {}", v1, v2, v3, v4, v5);
+                    caller.data_mut().log(msg);
+                },
+            )
+            .map_err(|e| ProgramError::VmError(e.to_string()))?;
+
+        // dchat_log_compute_units_ - Dchat log remaining compute units
+        linker
+            .func_wrap(
+                "env",
+                "dchat_log_compute_units_",
+                |caller: Caller<\x27_, VmState>| {
+                    let remaining = caller.get_fuel().unwrap_or(0);
+                    tracing::debug!(target: "dchat_programs::vm", remaining_cu = remaining, "Compute units");
+                },
+            )
+            .map_err(|e| ProgramError::VmError(e.to_string()))?;
+
         // sol_invoke_signed - CPI from guest (currently unsupported; returns error)
         linker
             .func_wrap(

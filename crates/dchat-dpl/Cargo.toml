@@ -25,10 +25,13 @@ hex = { version = "0.4", optional = true }
 # Error handling
 thiserror = { version = "2" }
 
+# Logging
+dchat-log = { path = "../dchat-log", default-features = false }
+
 [features]
 default = ["std"]
-std = ["serde"]
-no_std = []
+std = ["serde", "dchat-log/std"]
+no_std = ["dchat-log/alloc"]
 idl = []                                      # Enable IDL generation
 serde = ["dep:serde"]                         # Enable serde serialization for IDL types
 build = ["std", "serde", "serde_json", "hex"] # Enable build-time helpers

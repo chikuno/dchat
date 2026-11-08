@@ -104,6 +104,9 @@ pub use idl::{Idl, IdlAccountDef, IdlAccountMeta, IdlEvent, IdlField, IdlInstruc
 // Syscall types for program introspection
 pub use syscall::{get_program_manifest, verify_program_schema, ProgramManifest};
 
+// Logging macros and syscall types
+pub use dchat_log::{msg, log_64, log_compute_units, log_data, log_pubkey, log_slice};
+
 /// Convenience Result type alias
 pub type Result<T> = core::result::Result<T, DplError>;
 
@@ -126,6 +129,12 @@ pub mod prelude {
     pub use crate::event::emit_event;
     pub use crate::pda::derive_pda;
     pub use crate::serde::{DplDeserialize, DplSerialize};
+
+    // Logging macros and functions
+    pub use dchat_log::{
+        msg, log_64, log_compute_units, log_data, log_pubkey, log_slice,
+        sol_log, sol_log_64, sol_log_compute_units,
+    };
 
     // Convenience type alias
     pub type Result<T> = core::result::Result<T, DplError>;

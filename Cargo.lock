@@ -2711,6 +2711,7 @@ dependencies = [
  "blake3",
  "borsh",
  "dchat-dpl-macros",
+ "dchat-log",
  "hex",
  "serde",
  "serde_json",
@@ -2793,6 +2794,14 @@ dependencies = [
  "uuid",
  "x509-parser",
  "zeroize",
+]
+
+[[package]]
+name = "dchat-log"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tracing",
 ]
 
 [[package]]
@@ -2997,6 +3006,7 @@ dependencies = [
  "dchat-core",
  "dchat-crypto",
  "dchat-dpl",
+ "dchat-log",
  "dchat-observability",
  "ed25519-dalek",
  "hex",

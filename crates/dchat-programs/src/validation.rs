@@ -143,6 +143,11 @@ impl Default for ValidationConfig {
         allowed_imports.insert("sol_log_64_".to_string());
         allowed_imports.insert("sol_log_compute_units_".to_string());
         allowed_imports.insert("sol_log_pubkey".to_string());
+        allowed_imports.insert("dchat_log_".to_string());
+        allowed_imports.insert("dchat_log_64_".to_string());
+        allowed_imports.insert("dchat_log_compute_units_".to_string());
+        allowed_imports.insert("dchat_log_pubkey_".to_string());
+        allowed_imports.insert("dchat_log_data_".to_string());
         allowed_imports.insert("sol_invoke_signed_c".to_string());
         allowed_imports.insert("sol_invoke_signed_rust".to_string());
         allowed_imports.insert("sol_alloc_free_".to_string());
