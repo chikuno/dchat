@@ -8693,11 +8693,49 @@ async fn run_validator_node(
         .as_slice()
         .try_into()
         .map_err(|_| Error::validation("Currency genesis hash must be 32 bytes"))?;
+    let currency_validator_id = validator_key.public_key_bytes();
+    let currency_quorum =
+        2 * (authorized_validators.len().saturating_sub(1) / 3) + 1;
+    if currency_quorum == 0 || currency_quorum > authorized_validators.len() {
+        return Err(Error::validation(
+            "Currency genesis has an invalid BFT validator set",
+        ));
+    }
+    let currency_journal_path = config
+        .storage
+        .data_dir
+        .join("currency-chain")
+        .join(format!(
+            "{}-{}.journal",
+            currency_chain_id,
+            hex::encode(currency_validator_id)
+        ));
+    let (currency_journal, currency_recovery) =
+        dchat_blockchain::CurrencyChainJournal::open(
+            &currency_journal_path,
+            currency_genesis_hash,
+            currency_chain_id,
+            currency_validator_id,
+            authorized_validators.as_ref().clone(),
+            currency_quorum,
+            currency_initial_state,
+        )
+        .await
+        .map_err(|error| {
+            Error::storage(format!("Failed to recover currency-chain journal: {}", error))
+        })?;
+    info!(
+        "Recovered currency chain at height {} from {}",
+        currency_recovery.height,
+        currency_journal_path.display()
+    );
     let currency_execution_state =
-        Arc::new(tokio::sync::Mutex::new(currency_initial_state));
-    let currency_block_height_global = Arc::new(AtomicU64::new(0));
+        Arc::new(tokio::sync::Mutex::new(currency_recovery.state.clone()));
+    let currency_block_height_global =
+        Arc::new(AtomicU64::new(currency_recovery.height));
     let currency_last_block_hash =
-        Arc::new(tokio::sync::Mutex::new(currency_genesis_hash));
+        Arc::new(tokio::sync::Mutex::new(currency_recovery.last_hash));
+    let currency_journal = Arc::new(tokio::sync::Mutex::new(currency_journal));
     let currency_block_acknowledgments: Arc<
         tokio::sync::Mutex<HashMap<u64, HashMap<Vec<u8>, (Vec<u8>, Vec<u8>)>>>,
     > = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
@@ -8714,6 +8752,29 @@ async fn run_validator_node(
             >,
         >,
     > = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    if let Some(pending_block) = currency_recovery.pending_block {
+        let candidate_state = pending_block
+            .verify_and_execute(&currency_recovery.state, currency_chain_id)
+            .map_err(|error| {
+                Error::validation(format!(
+                    "Unable to replay recovered currency proposal: {}",
+                    error
+                ))
+            })?;
+        pending_currency_candidates.lock().await.insert(
+            pending_block.height,
+            (
+                pending_block.hash.to_vec(),
+                candidate_state,
+                pending_block.transaction_ids(),
+                pending_block.hash,
+            ),
+        );
+        info!(
+            "Recovered unfinalized currency proposal at height {}",
+            pending_block.height
+        );
+    }
 
     let execution_state = Arc::new(tokio::sync::Mutex::new(
         dchat_blockchain::WorldState::new(),
@@ -8749,6 +8810,40 @@ async fn run_validator_node(
     // Get public key bytes for signing in consensus (validator_key is moved into Arc for sharing)
     let validator_public_key_bytes = validator_key.public_key_bytes();
     let validator_key_arc = Arc::new(tokio::sync::Mutex::new(validator_key));
+    if let Some(pending_height) = pending_currency_candidates
+        .lock()
+        .await
+        .keys()
+        .next()
+        .copied()
+    {
+        let persisted_vote_hash = currency_journal
+            .lock()
+            .await
+            .local_vote_hash(pending_height);
+        if let Some(hash) = persisted_vote_hash {
+            let signature = validator_key_arc
+                .lock()
+                .await
+                .sign_async(&hash)
+                .await
+                .map_err(|error| {
+                    Error::crypto(format!(
+                        "Failed to restore currency vote signature: {}",
+                        error
+                    ))
+                })?;
+            currency_block_acknowledgments
+                .lock()
+                .await
+                .entry(pending_height)
+                .or_default()
+                .insert(
+                    validator_public_key_bytes.to_vec(),
+                    (hash.to_vec(), signature.to_bytes().to_vec()),
+                );
+        }
+    }
 
     // Initialize relay registry and work event stores for epoch reward distribution
     // These are shared across consensus loop and network event handler
@@ -8864,6 +8959,7 @@ async fn run_validator_node(
         let currency_mempool_consensus = currency_transaction_mempool.clone();
         let execution_state_consensus = Arc::clone(&execution_state);
         let currency_execution_state_consensus = Arc::clone(&currency_execution_state);
+        let currency_journal_consensus = Arc::clone(&currency_journal);
         let pending_candidates_consensus = Arc::clone(&pending_candidate_states);
         let pending_currency_candidates_consensus = Arc::clone(&pending_currency_candidates);
         let staking_manager_consensus = staking_manager.clone();
@@ -8888,6 +8984,7 @@ async fn run_validator_node(
         let staking_enforcer_consensus = staking_enforcer.clone();
         let rpc_chain_id_consensus = rpc_chain_id;
         let currency_chain_id_consensus = currency_chain_id;
+        let currency_quorum_consensus = currency_quorum;
 
         tokio::spawn(async move {
             info!("Starting consensus engine with BFT verification and FULL state validation...");
@@ -9783,20 +9880,50 @@ async fn run_validator_node(
                                     continue;
                                 }
                             };
-                            if !currency_pending.is_empty() {
+                            let recovered_currency_candidate =
+                                pending_currency_candidates_consensus
+                                    .lock()
+                                    .await
+                                    .contains_key(
+                                        &(currency_block_height.load(Ordering::SeqCst) + 1),
+                                    );
+                            if !currency_pending.is_empty() || recovered_currency_candidate {
                                 let currency_height =
                                     currency_block_height.load(Ordering::SeqCst) + 1;
                                 let previous_currency_hash = *currency_last_hash.lock().await;
                                 let currency_base_state =
                                     currency_execution_state_consensus.lock().await.clone();
                                 let (currency_block, candidate_currency_state) =
-                                    match dchat_blockchain::CurrencyBlock::build(
-                                        currency_height,
-                                        previous_currency_hash,
-                                        currency_pending,
-                                        &currency_base_state,
-                                        currency_chain_id_consensus,
-                                    ) {
+                                    if recovered_currency_candidate {
+                                        let journal =
+                                            currency_journal_consensus.lock().await;
+                                        let block = journal
+                                            .pending_block()
+                                            .ok_or_else(|| {
+                                                Error::internal(
+                                                    "Recovered currency candidate missing from journal",
+                                                )
+                                            })?;
+                                        let state = block
+                                            .verify_and_execute(
+                                                &currency_base_state,
+                                                currency_chain_id_consensus,
+                                            )
+                                            .map_err(|error| {
+                                                Error::validation(format!(
+                                                    "Recovered currency candidate replay failed: {}",
+                                                    error
+                                                ))
+                                            })?;
+                                        (block, state)
+                                    } else {
+                                        match dchat_blockchain::CurrencyBlock::build(
+                                            currency_height,
+                                            previous_currency_hash,
+                                            currency_pending,
+                                            &currency_base_state,
+                                            currency_chain_id_consensus,
+                                        ) {
                                         Ok(candidate) => candidate,
                                         Err(error) => {
                                             error!(
@@ -9804,6 +9931,7 @@ async fn run_validator_node(
                                                 currency_height, error
                                             );
                                             continue;
+                                        }
                                         }
                                     };
                                 let currency_hash = currency_block.hash;
@@ -9821,7 +9949,7 @@ async fn run_validator_node(
                                         }
                                     };
                                 {
-                                    let mut candidates =
+                                    let candidates =
                                         pending_currency_candidates_consensus.lock().await;
                                     if let Some((existing_hash, ..)) =
                                         candidates.get(&currency_height)
@@ -9833,18 +9961,38 @@ async fn run_validator_node(
                                             );
                                             continue;
                                         }
-                                    } else {
-                                        candidates.insert(
-                                            currency_height,
-                                            (
-                                                currency_hash_bytes.clone(),
-                                                candidate_currency_state,
-                                                currency_tx_ids,
-                                                currency_hash,
-                                            ),
-                                        );
                                     }
                                 }
+                                {
+                                    let mut journal = currency_journal_consensus.lock().await;
+                                    if let Err(error) = journal.prepare_block(&currency_block).await {
+                                        error!(
+                                            "Unable to persist currency proposal #{}: {}",
+                                            currency_height, error
+                                        );
+                                        continue;
+                                    }
+                                    if let Err(error) = journal
+                                        .record_vote(currency_height, currency_hash)
+                                        .await
+                                    {
+                                        error!(
+                                            "Unable to persist currency vote lock #{}: {}",
+                                            currency_height, error
+                                        );
+                                        continue;
+                                    }
+                                }
+                                pending_currency_candidates_consensus
+                                    .lock()
+                                    .await
+                                    .entry(currency_height)
+                                    .or_insert((
+                                        currency_hash_bytes.clone(),
+                                        candidate_currency_state,
+                                        currency_tx_ids,
+                                        currency_hash,
+                                    ));
                                 let currency_signature_bytes = {
                                     let mut acknowledgments =
                                         currency_block_acks_clone.lock().await;
@@ -9923,15 +10071,52 @@ async fn run_validator_node(
                                                 .count()
                                         })
                                         .unwrap_or(0);
-                                    if currency_ack_count >= required_signatures {
+                                    if currency_ack_count >= currency_quorum_consensus {
                                         break;
                                     }
                                     drop(acknowledgments);
                                     tokio::time::sleep(tokio::time::Duration::from_millis(100))
                                         .await;
                                 }
-                                if currency_ack_count >= required_signatures {
-                                    if let Some((candidate_hash, candidate_state, included_ids, hash)) =
+                                if currency_ack_count >= currency_quorum_consensus {
+                                    let certificate = {
+                                        let acknowledgments =
+                                            currency_block_acks_clone.lock().await;
+                                        acknowledgments
+                                            .get(&currency_height)
+                                            .into_iter()
+                                            .flat_map(|votes| votes.iter())
+                                            .filter(|(_, (hash, _))| {
+                                                hash == &currency_hash_bytes
+                                            })
+                                            .filter_map(|(validator_id, (_, signature))| {
+                                                let validator_id: [u8; 32] =
+                                                    validator_id.as_slice().try_into().ok()?;
+                                                Some(dchat_blockchain::CurrencyFinalityVote {
+                                                    validator_id,
+                                                    signature: signature.clone(),
+                                                })
+                                            })
+                                            .collect::<Vec<_>>()
+                                    };
+                                    let persisted_state = {
+                                        let mut journal =
+                                            currency_journal_consensus.lock().await;
+                                        match journal
+                                            .finalize_pending(currency_hash, certificate)
+                                            .await
+                                        {
+                                            Ok(state) => state,
+                                            Err(error) => {
+                                                error!(
+                                                    "Unable to persist finalized currency block #{}: {}",
+                                                    currency_height, error
+                                                );
+                                                continue;
+                                            }
+                                        }
+                                    };
+                                    if let Some((candidate_hash, _candidate_state, included_ids, hash)) =
                                         pending_currency_candidates_consensus
                                             .lock()
                                             .await
@@ -9939,7 +10124,7 @@ async fn run_validator_node(
                                     {
                                         if candidate_hash == currency_hash_bytes {
                                             *currency_execution_state_consensus.lock().await =
-                                                candidate_state;
+                                                persisted_state;
                                             *currency_last_hash.lock().await = hash;
                                             currency_block_height
                                                 .store(currency_height, Ordering::SeqCst);
@@ -9970,7 +10155,7 @@ async fn run_validator_node(
                                         "Currency block #{} did not reach BFT threshold ({}/{} acks)",
                                         currency_height,
                                         currency_ack_count,
-                                        required_signatures
+                                        currency_quorum_consensus
                                     );
                                 }
                             }
@@ -10039,6 +10224,7 @@ async fn run_validator_node(
         let validator_public_key_bytes_clone = validator_public_key_bytes;
         let block_acks_clone = block_acknowledgments.clone();
         let currency_block_acks_net = currency_block_acknowledgments.clone();
+        let currency_journal_net = Arc::clone(&currency_journal);
         let state_validator_clone2 = state_validator.clone();
         let execution_state_net = Arc::clone(&execution_state);
         let currency_execution_state_net = Arc::clone(&currency_execution_state);
@@ -10049,6 +10235,7 @@ async fn run_validator_node(
         let rpc_chain_id_net = rpc_chain_id;
         let currency_chain_id_net = currency_chain_id;
         let required_signatures_net = required_signatures;
+        let currency_required_signatures_net = currency_quorum;
         let peer_registry_arc_clone = peer_registry_arc.clone();
         let relay_work_store_clone = Arc::clone(&relay_work_store);
         let chain_genesis_timestamp = config.chain.genesis_timestamp;
@@ -10924,6 +11111,27 @@ async fn run_validator_node(
                                     };
                                     let tx_ids = currency_block.transaction_ids();
                                     {
+                                        let mut journal = currency_journal_net.lock().await;
+                                        if let Err(error) =
+                                            journal.prepare_block(&currency_block).await
+                                        {
+                                            warn!(
+                                                "Currency proposal #{} could not be journaled: {}",
+                                                height, error
+                                            );
+                                            continue;
+                                        }
+                                        if let Err(error) =
+                                            journal.record_vote(height, block_hash_array).await
+                                        {
+                                            warn!(
+                                                "Currency proposal #{} vote lock rejected: {}",
+                                                height, error
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                    {
                                         let mut candidates =
                                             pending_currency_candidates_net.lock().await;
                                         if let Some((existing_hash, ..)) = candidates.get(&height) {
@@ -11019,27 +11227,75 @@ async fn run_validator_node(
                                             })
                                             .unwrap_or_default()
                                     };
-                                    if ack_count >= required_signatures_net {
-                                        if let Some((candidate_hash, candidate_state, included_ids, hash)) =
+                                    if ack_count >= currency_required_signatures_net {
+                                        let candidate = {
+                                            let candidates =
+                                                pending_currency_candidates_net.lock().await;
+                                            candidates
+                                                .get(&height)
+                                                .filter(|(candidate_hash, ..)| {
+                                                    candidate_hash == &block_hash
+                                                })
+                                                .cloned()
+                                        };
+                                        if let Some((_, _, included_ids, _)) = candidate {
+                                            let certificate = {
+                                                let acknowledgments =
+                                                    currency_block_acks_net.lock().await;
+                                                acknowledgments
+                                                    .get(&height)
+                                                    .into_iter()
+                                                    .flat_map(|votes| votes.iter())
+                                                    .filter(|(_, (hash, _))| {
+                                                        hash == &block_hash
+                                                    })
+                                                    .filter_map(
+                                                        |(validator_id, (_, signature))| {
+                                                            let validator_id: [u8; 32] =
+                                                                validator_id.as_slice().try_into().ok()?;
+                                                            Some(
+                                                                dchat_blockchain::CurrencyFinalityVote {
+                                                                    validator_id,
+                                                                    signature: signature.clone(),
+                                                                },
+                                                            )
+                                                        },
+                                                    )
+                                                    .collect::<Vec<_>>()
+                                            };
+                                            let persisted_state = {
+                                                let mut journal =
+                                                    currency_journal_net.lock().await;
+                                                match journal
+                                                    .finalize_pending(block_hash_array, certificate)
+                                                    .await
+                                                {
+                                                    Ok(state) => state,
+                                                    Err(error) => {
+                                                        error!(
+                                                            "Unable to persist finalized currency block #{}: {}",
+                                                            height, error
+                                                        );
+                                                        continue;
+                                                    }
+                                                }
+                                            };
                                             pending_currency_candidates_net
                                                 .lock()
                                                 .await
-                                                .remove(&height)
-                                        {
-                                            if candidate_hash == block_hash {
-                                                *currency_execution_state_net.lock().await =
-                                                    candidate_state;
-                                                *currency_last_hash_net.lock().await = hash;
-                                                currency_block_height_net
-                                                    .store(height, Ordering::SeqCst);
-                                                if let Err(error) = currency_mempool_net
-                                                    .remove_transactions(&included_ids)
-                                                {
-                                                    error!(
-                                                        "Currency block #{} finalized but mempool cleanup failed: {}",
-                                                        height, error
-                                                    );
-                                                }
+                                                .remove(&height);
+                                            *currency_execution_state_net.lock().await =
+                                                persisted_state;
+                                            *currency_last_hash_net.lock().await = block_hash_array;
+                                            currency_block_height_net
+                                                .store(height, Ordering::SeqCst);
+                                            if let Err(error) = currency_mempool_net
+                                                .remove_transactions(&included_ids)
+                                            {
+                                                error!(
+                                                    "Currency block #{} finalized but mempool cleanup failed: {}",
+                                                    height, error
+                                                );
                                             }
                                         }
                                     }
@@ -11131,9 +11387,9 @@ async fn run_validator_node(
                                             .filter(|(hash, _)| hash == &block_hash)
                                             .count()
                                     };
-                                    if ack_count >= required_signatures_net {
+                                    if ack_count >= currency_required_signatures_net {
                                         let candidate = {
-                                            let mut candidates =
+                                            let candidates =
                                                 pending_currency_candidates_net.lock().await;
                                             if candidates
                                                 .get(&block_height)
@@ -11141,21 +11397,78 @@ async fn run_validator_node(
                                                     candidate_hash == &block_hash
                                                 })
                                             {
-                                                candidates.remove(&block_height)
+                                                candidates.get(&block_height).cloned()
                                             } else {
                                                 None
                                             }
                                         };
                                         if let Some((
-                                            _candidate_hash,
-                                            candidate_state,
+                                            candidate_hash,
+                                            _candidate_state,
                                             included_ids,
-                                            hash,
+                                            _,
                                         )) = candidate
                                         {
+                                            let expected_hash: [u8; 32] =
+                                                match block_hash.as_slice().try_into() {
+                                                    Ok(hash) => hash,
+                                                    Err(_) => continue,
+                                                };
+                                            let certificate = {
+                                                let acknowledgments =
+                                                    currency_block_acks_net.lock().await;
+                                                acknowledgments
+                                                    .get(&block_height)
+                                                    .into_iter()
+                                                    .flat_map(|votes| votes.iter())
+                                                    .filter(|(_, (hash, _))| {
+                                                        hash == &block_hash
+                                                    })
+                                                    .filter_map(
+                                                        |(validator_id, (_, signature))| {
+                                                            let validator_id: [u8; 32] =
+                                                                validator_id.as_slice().try_into().ok()?;
+                                                            Some(
+                                                                dchat_blockchain::CurrencyFinalityVote {
+                                                                    validator_id,
+                                                                    signature: signature.clone(),
+                                                                },
+                                                            )
+                                                        },
+                                                    )
+                                                    .collect::<Vec<_>>()
+                                            };
+                                            let persisted_state = {
+                                                let mut journal =
+                                                    currency_journal_net.lock().await;
+                                                match journal
+                                                    .finalize_pending(expected_hash, certificate)
+                                                    .await
+                                                {
+                                                    Ok(state) => state,
+                                                    Err(error) => {
+                                                        error!(
+                                                            "Unable to persist finalized currency block #{}: {}",
+                                                            block_height, error
+                                                        );
+                                                        continue;
+                                                    }
+                                                }
+                                            };
+                                            if candidate_hash != block_hash {
+                                                error!(
+                                                    "Currency candidate changed after journal finality at height {}",
+                                                    block_height
+                                                );
+                                                continue;
+                                            }
+                                            pending_currency_candidates_net
+                                                .lock()
+                                                .await
+                                                .remove(&block_height);
                                             *currency_execution_state_net.lock().await =
-                                                candidate_state;
-                                            *currency_last_hash_net.lock().await = hash;
+                                                persisted_state;
+                                            *currency_last_hash_net.lock().await = expected_hash;
                                             currency_block_height_net
                                                 .store(block_height, Ordering::SeqCst);
                                             let minimum_ack_height =

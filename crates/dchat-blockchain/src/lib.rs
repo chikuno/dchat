@@ -9,6 +9,7 @@ pub mod client;
 pub mod consensus_types;
 pub mod cross_chain;
 pub mod currency_chain_consensus;
+pub mod currency_chain_storage;
 pub mod currency_chain;
 pub mod currency_chain_block_sync;
 pub mod hardened_consensus;
@@ -58,6 +59,9 @@ pub use consensus_types::{
 };
 pub use cross_chain::{CrossChainBridge, CrossChainStatus, CrossChainTransaction};
 pub use currency_chain_consensus::CurrencyBlock;
+pub use currency_chain_storage::{
+    CurrencyChainJournal, CurrencyChainRecovery, CurrencyFinalityVote,
+};
 pub use currency_chain::{
     CreateStorageBondResult, CurrencyChainClient, CurrencyChainConfig, StorageBondRecord,
     StorageBondStatus, TransactionDirection, TransactionHistoryEntry, TransactionHistoryStatus,
