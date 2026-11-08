@@ -8701,6 +8701,10 @@ async fn run_validator_node(
             "Currency genesis has an invalid BFT validator set",
         ));
     }
+    // Canonicalize the genesis validator set so every node selects the same proposer.
+    let mut currency_proposer_order: Vec<[u8; 32]> =
+        authorized_validators.iter().copied().collect();
+    currency_proposer_order.sort_unstable();
     let currency_journal_path = config
         .storage
         .data_dir
@@ -9203,960 +9207,976 @@ async fn run_validator_node(
 
                         // Check if we are the designated leader for this slot via VRF
                         let is_leader = slot_leader_selector.is_leader(current_slot, &vrf_public_key) || is_vrf_leader;
+                        let Some(currency_height) =
+                            currency_block_height.load(Ordering::SeqCst).checked_add(1)
+                        else {
+                            error!("Currency chain height exhausted");
+                            continue;
+                        };
+                        let currency_proposer_index =
+                            ((currency_height - 1) % currency_proposer_order.len() as u64)
+                                as usize;
+                        let is_currency_proposer = currency_proposer_order
+                            .get(currency_proposer_index)
+                            == Some(&our_validator_pubkey);
 
-                        if is_producer && is_leader {
-                            // SECURITY: Verify on-chain stake before block production
-                            if let Some(ref enforcer) = staking_enforcer_consensus {
-                                if let Ok(verifying_key) = ed25519_dalek::VerifyingKey::from_bytes(&our_validator_pubkey) {
-                                    match enforcer.can_propose_block(&verifying_key).await {
-                                        Ok(true) => {
-                                            debug!("✓ On-chain stake verified for block production");
-                                        }
-                                        Ok(false) => {
-                                            warn!("⚠️ Insufficient on-chain stake for block production - skipping slot {}", current_slot);
-                                            continue;
-                                        }
-                                        Err(e) => {
-                                            // Log but continue - don't halt block production for RPC errors
-                                            debug!("Stake verification RPC error (continuing): {}", e);
+                        if (is_producer && is_leader) || is_currency_proposer {
+                            if is_producer && is_leader {
+                                // SECURITY: Verify on-chain stake before block production
+                                if let Some(ref enforcer) = staking_enforcer_consensus {
+                                    if let Ok(verifying_key) = ed25519_dalek::VerifyingKey::from_bytes(&our_validator_pubkey) {
+                                        match enforcer.can_propose_block(&verifying_key).await {
+                                            Ok(true) => {
+                                                debug!("✓ On-chain stake verified for block production");
+                                            }
+                                            Ok(false) => {
+                                                warn!("⚠️ Insufficient on-chain stake for block production - skipping slot {}", current_slot);
+                                                continue;
+                                            }
+                                            Err(e) => {
+                                                // Log but continue - don't halt block production for RPC errors
+                                                debug!("Stake verification RPC error (continuing): {}", e);
+                                            }
                                         }
                                     }
                                 }
-                            }
 
-                            let block_height = shared_block_height.load(Ordering::SeqCst) + 1;
-                            info!("📦 Producing block #{} (slot {}) - WE ARE THE LEADER", block_height, current_slot);
+                                let block_height = shared_block_height.load(Ordering::SeqCst) + 1;
+                                info!("📦 Producing block #{} (slot {}) - WE ARE THE LEADER", block_height, current_slot);
 
-                            // Execute against a candidate copy; publish it only after BFT finality.
-                            let mut world_state = execution_state_consensus.lock().await.clone();
+                                // Execute against a candidate copy; publish it only after BFT finality.
+                                let mut world_state = execution_state_consensus.lock().await.clone();
 
-                            // Keep transactions queued until the candidate block is finalized.
-                            let pending_txs = match transaction_mempool_consensus
-                                .pending_transactions_limited(2500, 4 * 1024 * 1024)
-                            {
-                                Ok(txs) => txs,
-                                Err(e) => {
-                                    error!("Unable to snapshot transaction mempool: {}", e);
-                                    continue;
-                                }
-                            };
-                            info!("  • Gathered {} pending transactions from mempool", pending_txs.len());
-
-                            // Create hierarchical block structure
-                            let prev_hash = if block_height == 1 {
-                                BlockHash::from([0u8; 32])
-                            } else {
-                                // In production, get previous block hash from storage
-                                let mut prev_data = Vec::new();
-                                prev_data.extend_from_slice(&(block_height - 1).to_le_bytes());
-                                BlockHash::from(*blake3::hash(&prev_data).as_bytes())
-                            };
-
-                            let mut block = Block::new(block_height, prev_hash);
-
-                            // Create subblock with miniblocks containing transactions
-                            let mut subblock = Subblock::new(block_height, 0);
-                            let mut all_state_transitions: Vec<Vec<u8>> = Vec::new();
-
-                            // Deterministically shard transactions by lane, then build one miniblock per lane.
-                            // NOTE: Subblock currently enforces unique lanes, so we take up to 10 lanes.
-                            let mut txs_by_lane: std::collections::BTreeMap<
-                                u16,
-                                std::collections::VecDeque<dchat_chain::Transaction>,
-                            > = std::collections::BTreeMap::new();
-
-                            for tx in pending_txs.iter() {
-                                match dchat_blockchain::block_hierarchy::lane_for_transaction(tx) {
-                                    Ok(lane) => {
-                                        txs_by_lane.entry(lane.0).or_default().push_back(tx.clone());
-                                    }
+                                // Keep transactions queued until the candidate block is finalized.
+                                let pending_txs = match transaction_mempool_consensus
+                                    .pending_transactions_limited(2500, 4 * 1024 * 1024)
+                                {
+                                    Ok(txs) => txs,
                                     Err(e) => {
-                                        warn!("Dropping invalid tx {:?}: {:?}", tx.tx_id, e);
-                                    }
-                                }
-                            }
-
-                            let mut next_miniblock_index: u16 = 0;
-                            let mut block_execution_failed = false;
-
-                            for (lane_u16, queue) in txs_by_lane.iter_mut() {
-                                if next_miniblock_index >= 10 {
-                                    warn!("Subblock miniblock limit reached; leaving remaining txs for next block");
-                                    break;
-                                }
-                                if queue.is_empty() {
-                                    continue;
-                                }
-
-                                // Keep miniblocks within both count and serialized body bounds.
-                                let mut txs: Vec<dchat_chain::Transaction> = Vec::with_capacity(250);
-                                let mut body_bytes = 0usize;
-                                while txs.len() < 250 {
-                                    let Some(tx) = queue.front() else {
-                                        break;
-                                    };
-                                    let tx_bytes = tx.payload.len() + tx.tx_hash.len() + 64;
-                                    if body_bytes.saturating_add(tx_bytes) > Miniblock::MAX_BODY_BYTES {
-                                        break;
-                                    }
-                                    let Some(tx) = queue.pop_front() else {
-                                        break;
-                                    };
-                                    body_bytes += tx_bytes;
-                                    txs.push(tx);
-                                }
-                                if txs.is_empty() {
-                                    warn!("No transaction in lane {} fits miniblock size limits", lane_u16);
-                                    continue;
-                                }
-
-                                let lane = LaneId(*lane_u16);
-                                let tx_count = txs.len();
-                                let body = MiniblockBody {
-                                    transactions: txs,
-                                    receipts: Vec::new(),
-                                };
-
-                                let mut miniblock = match Miniblock::new(block_height, 0, next_miniblock_index, lane, body) {
-                                    Ok(mb) => mb,
-                                    Err(e) => {
-                                        warn!("Failed to build miniblock lane={}: {:?}", lane_u16, e);
+                                        error!("Unable to snapshot transaction mempool: {}", e);
                                         continue;
                                     }
                                 };
+                                info!("  • Gathered {} pending transactions from mempool", pending_txs.len());
 
-                                // Capture pre-execution state root
-                                let pre_state_hash = world_state.compute_state_root();
-                                miniblock.header.pre_state_hash = pre_state_hash;
-
-                                let mut gas_used = 0u64;
-                                let mut receipts = Vec::with_capacity(tx_count);
-                                let mut execution_failed = false;
-                                let Some(miniblock_txs) = miniblock
-                                    .body
-                                    .as_ref()
-                                    .map(|body| &body.transactions)
-                                else {
-                                    warn!("New miniblock body missing in lane {}", lane_u16);
-                                    block_execution_failed = true;
-                                    break;
+                                // Create hierarchical block structure
+                                let prev_hash = if block_height == 1 {
+                                    BlockHash::from([0u8; 32])
+                                } else {
+                                    // In production, get previous block hash from storage
+                                    let mut prev_data = Vec::new();
+                                    prev_data.extend_from_slice(&(block_height - 1).to_le_bytes());
+                                    BlockHash::from(*blake3::hash(&prev_data).as_bytes())
                                 };
-                                for (tx_index, tx) in miniblock_txs.iter().enumerate() {
-                                    match world_state.execute_chat_transaction(
-                                        tx,
-                                        rpc_chain_id_consensus,
-                                        block_height,
-                                        tx_index as u32,
-                                    ) {
-                                        Ok(receipt) => {
-                                            gas_used = match gas_used.checked_add(receipt.gas_used) {
-                                                Some(total) if total <= miniblock.header.gas_limit => total,
-                                                _ => {
-                                                    warn!("Miniblock gas limit exceeded in lane {}", lane_u16);
-                                                    execution_failed = true;
-                                                    break;
-                                                }
-                                            };
-                                            receipts.push(receipt);
+
+                                let mut block = Block::new(block_height, prev_hash);
+
+                                // Create subblock with miniblocks containing transactions
+                                let mut subblock = Subblock::new(block_height, 0);
+                                let mut all_state_transitions: Vec<Vec<u8>> = Vec::new();
+
+                                // Deterministically shard transactions by lane, then build one miniblock per lane.
+                                // NOTE: Subblock currently enforces unique lanes, so we take up to 10 lanes.
+                                let mut txs_by_lane: std::collections::BTreeMap<
+                                    u16,
+                                    std::collections::VecDeque<dchat_chain::Transaction>,
+                                > = std::collections::BTreeMap::new();
+
+                                for tx in pending_txs.iter() {
+                                    match dchat_blockchain::block_hierarchy::lane_for_transaction(tx) {
+                                        Ok(lane) => {
+                                            txs_by_lane.entry(lane.0).or_default().push_back(tx.clone());
                                         }
                                         Err(e) => {
-                                            warn!("Miniblock execution failed lane={}: {:?}", lane_u16, e);
-                                            execution_failed = true;
+                                            warn!("Dropping invalid tx {:?}: {:?}", tx.tx_id, e);
+                                        }
+                                    }
+                                }
+
+                                let mut next_miniblock_index: u16 = 0;
+                                let mut block_execution_failed = false;
+
+                                for (lane_u16, queue) in txs_by_lane.iter_mut() {
+                                    if next_miniblock_index >= 10 {
+                                        warn!("Subblock miniblock limit reached; leaving remaining txs for next block");
+                                        break;
+                                    }
+                                    if queue.is_empty() {
+                                        continue;
+                                    }
+
+                                    // Keep miniblocks within both count and serialized body bounds.
+                                    let mut txs: Vec<dchat_chain::Transaction> = Vec::with_capacity(250);
+                                    let mut body_bytes = 0usize;
+                                    while txs.len() < 250 {
+                                        let Some(tx) = queue.front() else {
+                                            break;
+                                        };
+                                        let tx_bytes = tx.payload.len() + tx.tx_hash.len() + 64;
+                                        if body_bytes.saturating_add(tx_bytes) > Miniblock::MAX_BODY_BYTES {
+                                            break;
+                                        }
+                                        let Some(tx) = queue.pop_front() else {
+                                            break;
+                                        };
+                                        body_bytes += tx_bytes;
+                                        txs.push(tx);
+                                    }
+                                    if txs.is_empty() {
+                                        warn!("No transaction in lane {} fits miniblock size limits", lane_u16);
+                                        continue;
+                                    }
+
+                                    let lane = LaneId(*lane_u16);
+                                    let tx_count = txs.len();
+                                    let body = MiniblockBody {
+                                        transactions: txs,
+                                        receipts: Vec::new(),
+                                    };
+
+                                    let mut miniblock = match Miniblock::new(block_height, 0, next_miniblock_index, lane, body) {
+                                        Ok(mb) => mb,
+                                        Err(e) => {
+                                            warn!("Failed to build miniblock lane={}: {:?}", lane_u16, e);
+                                            continue;
+                                        }
+                                    };
+
+                                    // Capture pre-execution state root
+                                    let pre_state_hash = world_state.compute_state_root();
+                                    miniblock.header.pre_state_hash = pre_state_hash;
+
+                                    let mut gas_used = 0u64;
+                                    let mut receipts = Vec::with_capacity(tx_count);
+                                    let mut execution_failed = false;
+                                    let Some(miniblock_txs) = miniblock
+                                        .body
+                                        .as_ref()
+                                        .map(|body| &body.transactions)
+                                    else {
+                                        warn!("New miniblock body missing in lane {}", lane_u16);
+                                        block_execution_failed = true;
+                                        break;
+                                    };
+                                    for (tx_index, tx) in miniblock_txs.iter().enumerate() {
+                                        match world_state.execute_chat_transaction(
+                                            tx,
+                                            rpc_chain_id_consensus,
+                                            block_height,
+                                            tx_index as u32,
+                                        ) {
+                                            Ok(receipt) => {
+                                                gas_used = match gas_used.checked_add(receipt.gas_used) {
+                                                    Some(total) if total <= miniblock.header.gas_limit => total,
+                                                    _ => {
+                                                        warn!("Miniblock gas limit exceeded in lane {}", lane_u16);
+                                                        execution_failed = true;
+                                                        break;
+                                                    }
+                                                };
+                                                receipts.push(receipt);
+                                            }
+                                            Err(e) => {
+                                                warn!("Miniblock execution failed lane={}: {:?}", lane_u16, e);
+                                                execution_failed = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if execution_failed {
+                                        block_execution_failed = true;
+                                        break;
+                                    }
+
+                                    // Update miniblock with execution results
+                                    let post_state_hash = world_state.compute_state_root();
+                                    miniblock.header.post_state_hash = post_state_hash;
+                                    miniblock.header.gas_used = gas_used;
+
+                                    // Store receipts in body
+                                    if let Some(ref mut body) = miniblock.body {
+                                        body.receipts = receipts;
+                                    }
+                                    let commitments = match miniblock.body.as_ref() {
+                                        Some(body) => dchat_blockchain::block_hierarchy::compute_body_commitments(
+                                            lane,
+                                            body,
+                                        ),
+                                        None => {
+                                            warn!("Miniblock body missing after execution in lane {}", lane_u16);
+                                            block_execution_failed = true;
+                                            break;
+                                        }
+                                    };
+                                    match commitments {
+                                        Ok(commitments) => {
+                                            miniblock.header.receipts_root = commitments.receipts_root;
+                                        }
+                                        Err(error) => {
+                                            warn!("Failed to commit miniblock receipts in lane {}: {:?}", lane_u16, error);
+                                            block_execution_failed = true;
+                                            break;
+                                        }
+                                    }
+
+                                    // Collect state transition for Merkle tree
+                                    let mut transition = Vec::new();
+                                    transition.extend_from_slice(&miniblock.header.index.to_le_bytes());
+                                    transition.extend_from_slice(miniblock.header.pre_state_hash.as_bytes());
+                                    transition.extend_from_slice(miniblock.header.post_state_hash.as_bytes());
+                                    transition.extend_from_slice(&miniblock.header.gas_used.to_le_bytes());
+                                    all_state_transitions.push(transition);
+
+                                    match subblock.add_miniblock(miniblock) {
+                                        Ok(()) => next_miniblock_index += 1,
+                                        Err(e) => {
+                                            warn!("Failed to add miniblock to subblock: {:?}", e);
                                             break;
                                         }
                                     }
                                 }
-                                if execution_failed {
-                                    block_execution_failed = true;
-                                    break;
-                                }
 
-                                // Update miniblock with execution results
-                                let post_state_hash = world_state.compute_state_root();
-                                miniblock.header.post_state_hash = post_state_hash;
-                                miniblock.header.gas_used = gas_used;
-
-                                // Store receipts in body
-                                if let Some(ref mut body) = miniblock.body {
-                                    body.receipts = receipts;
-                                }
-                                let commitments = match miniblock.body.as_ref() {
-                                    Some(body) => dchat_blockchain::block_hierarchy::compute_body_commitments(
-                                        lane,
-                                        body,
-                                    ),
-                                    None => {
-                                        warn!("Miniblock body missing after execution in lane {}", lane_u16);
-                                        block_execution_failed = true;
-                                        break;
-                                    }
-                                };
-                                match commitments {
-                                    Ok(commitments) => {
-                                        miniblock.header.receipts_root = commitments.receipts_root;
-                                    }
-                                    Err(error) => {
-                                        warn!("Failed to commit miniblock receipts in lane {}: {:?}", lane_u16, error);
-                                        block_execution_failed = true;
-                                        break;
-                                    }
-                                }
-
-                                // Collect state transition for Merkle tree
-                                let mut transition = Vec::new();
-                                transition.extend_from_slice(&miniblock.header.index.to_le_bytes());
-                                transition.extend_from_slice(miniblock.header.pre_state_hash.as_bytes());
-                                transition.extend_from_slice(miniblock.header.post_state_hash.as_bytes());
-                                transition.extend_from_slice(&miniblock.header.gas_used.to_le_bytes());
-                                all_state_transitions.push(transition);
-
-                                match subblock.add_miniblock(miniblock) {
-                                    Ok(()) => next_miniblock_index += 1,
-                                    Err(e) => {
-                                        warn!("Failed to add miniblock to subblock: {:?}", e);
-                                        break;
-                                    }
-                                }
-                            }
-
-                            if block_execution_failed {
-                                continue;
-                            }
-
-                            // If no transactions, create an empty miniblock (keeps state_root deterministic).
-                            if subblock.miniblocks.is_empty() {
-                                let body = MiniblockBody {
-                                    transactions: Vec::new(),
-                                    receipts: Vec::new(),
-                                };
-                                let mut miniblock = match Miniblock::new(block_height, 0, 0, LaneId(0), body) {
-                                    Ok(mb) => mb,
-                                    Err(e) => {
-                                        warn!("Failed to build empty miniblock: {:?}", e);
-                                        continue;
-                                    }
-                                };
-
-                                // Capture pre-execution state root (even for empty miniblock)
-                                let pre_state_hash = world_state.compute_state_root();
-                                miniblock.header.pre_state_hash = pre_state_hash;
-
-                                // Update miniblock with execution results
-                                let post_state_hash = world_state.compute_state_root();
-                                miniblock.header.post_state_hash = post_state_hash;
-                                miniblock.header.gas_used = 0;
-
-                                // Store receipts in body
-                                if let Some(ref mut body) = miniblock.body {
-                                    body.receipts = Vec::new();
-                                }
-
-                                let mut transition = Vec::new();
-                                transition.extend_from_slice(&0u16.to_le_bytes());
-                                transition.extend_from_slice(miniblock.header.pre_state_hash.as_bytes());
-                                transition.extend_from_slice(miniblock.header.post_state_hash.as_bytes());
-                                transition.extend_from_slice(&0u64.to_le_bytes());
-                                all_state_transitions.push(transition);
-
-                                let _ = subblock.add_miniblock(miniblock);
-                            }
-
-                            // Calculate Merkle root from all state transitions
-                            let merkle_tree = MerkleTree::from_state_transitions(all_state_transitions);
-                            let state_root = merkle_tree.root_hash()
-                                .unwrap_or_else(|| vec![0u8; 32]);
-
-                            // Set block state root
-                            let mut state_root_bytes = [0u8; 32];
-                            state_root_bytes.copy_from_slice(&state_root[..32.min(state_root.len())]);
-                            block.state_root = BlockHash::from(state_root_bytes);
-
-                            if let Err(error) = block.add_subblock(subblock) {
-                                warn!("Failed to add produced subblock to block #{}: {:?}", block_height, error);
-                                continue;
-                            }
-
-                            let mut tx_bytes = Vec::new();
-                            for miniblock in block.subblocks.iter().flat_map(|subblock| &subblock.miniblocks) {
-                                let Some(body) = miniblock.body.as_ref() else {
-                                    warn!("Cannot commit DA for block #{}: miniblock body is missing", block_height);
+                                if block_execution_failed {
                                     continue;
-                                };
-                                for tx in &body.transactions {
-                                    match bincode::serialize(tx) {
-                                        Ok(bytes) => tx_bytes.push(bytes),
-                                        Err(error) => {
-                                            warn!("Cannot serialize transaction for block #{} DA: {}", block_height, error);
+                                }
+
+                                // If no transactions, create an empty miniblock (keeps state_root deterministic).
+                                if subblock.miniblocks.is_empty() {
+                                    let body = MiniblockBody {
+                                        transactions: Vec::new(),
+                                        receipts: Vec::new(),
+                                    };
+                                    let mut miniblock = match Miniblock::new(block_height, 0, 0, LaneId(0), body) {
+                                        Ok(mb) => mb,
+                                        Err(e) => {
+                                            warn!("Failed to build empty miniblock: {:?}", e);
                                             continue;
                                         }
-                                    }
-                                }
-                            }
-                            if tx_bytes.len() != block.transaction_count() {
-                                warn!(
-                                    "Block #{} transaction bodies do not match header count ({} bodies, {} declared)",
-                                    block_height,
-                                    tx_bytes.len(),
-                                    block.transaction_count()
-                                );
-                                continue;
-                            }
+                                    };
 
-                            let subblock_metadata: Vec<(u16, u64, u16)> = block.subblocks.iter()
-                                .map(|sb| {
-                                    let timestamp = sb.timestamp
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_else(|_| std::time::Duration::from_secs(0))
-                                        .as_secs();
-                                    (sb.index, timestamp, sb.miniblocks.len() as u16)
-                                })
-                                .collect();
-                            let block_bytes = match bincode::serialize(&(
-                                block_height,
-                                block.previous_hash.as_bytes().to_vec(),
-                                state_root.clone(),
-                                tx_bytes.clone(),
-                                subblock_metadata.clone(),
-                            )) {
-                                Ok(bytes) => bytes,
-                                Err(error) => {
-                                    warn!("Failed to serialize block #{} for DA commitment: {}", block_height, error);
+                                    // Capture pre-execution state root (even for empty miniblock)
+                                    let pre_state_hash = world_state.compute_state_root();
+                                    miniblock.header.pre_state_hash = pre_state_hash;
+
+                                    // Update miniblock with execution results
+                                    let post_state_hash = world_state.compute_state_root();
+                                    miniblock.header.post_state_hash = post_state_hash;
+                                    miniblock.header.gas_used = 0;
+
+                                    // Store receipts in body
+                                    if let Some(ref mut body) = miniblock.body {
+                                        body.receipts = Vec::new();
+                                    }
+
+                                    let mut transition = Vec::new();
+                                    transition.extend_from_slice(&0u16.to_le_bytes());
+                                    transition.extend_from_slice(miniblock.header.pre_state_hash.as_bytes());
+                                    transition.extend_from_slice(miniblock.header.post_state_hash.as_bytes());
+                                    transition.extend_from_slice(&0u64.to_le_bytes());
+                                    all_state_transitions.push(transition);
+
+                                    let _ = subblock.add_miniblock(miniblock);
+                                }
+
+                                // Calculate Merkle root from all state transitions
+                                let merkle_tree = MerkleTree::from_state_transitions(all_state_transitions);
+                                let state_root = merkle_tree.root_hash()
+                                    .unwrap_or_else(|| vec![0u8; 32]);
+
+                                // Set block state root
+                                let mut state_root_bytes = [0u8; 32];
+                                state_root_bytes.copy_from_slice(&state_root[..32.min(state_root.len())]);
+                                block.state_root = BlockHash::from(state_root_bytes);
+
+                                if let Err(error) = block.add_subblock(subblock) {
+                                    warn!("Failed to add produced subblock to block #{}: {:?}", block_height, error);
                                     continue;
                                 }
-                            };
 
-                            // Generate Data Availability commitment for light client verification
-                            // Commit to the exact transaction bodies and metadata sent to validators.
-                            let da_commitment = match DataAvailabilityCommitment::from_data(
-                                block_height,
-                                &block_bytes,
-                                DA_CHUNK_SIZE,
-                            ) {
-                                Ok(commitment) => {
-                                    debug!("  • DA commitment generated: chunks={}, erasure={}+{}", 
-                                        commitment.chunk_count, 
-                                        commitment.erasure_data_shards,
-                                        commitment.erasure_parity_shards);
-                                    Some(commitment)
-                                }
-                                Err(e) => {
-                                    warn!("  ⚠ DA commitment generation failed: {:?} - light client verification unavailable", e);
-                                    None
-                                }
-                            };
-                            
-                            if let Some(ref commitment) = da_commitment {
-                                block.da_root = Some(*commitment.chunk_root.as_bytes());
-                                block.da_chunk_count = commitment.chunk_count;
-                                block.da_commitment = Some(commitment.clone());
-                            }
-
-                            // 1. Notify Consensus Integration
-                            let block_hash = block.calculate_hash();
-                            match hardened_consensus.process_block(block_height, block_hash) {
-                                Ok(Some(new_epoch)) => {
-                                    info!("🔄 Epoch {} complete. Triggering reward distribution...", new_epoch - 1);
-
-                                    // 2. Advance relay work store to new epoch
-                                    relay_work_store.set_current_epoch(new_epoch);
-
-                                    // 3. Collect relay registry and work events for the completed epoch
-                                    let completed_epoch = new_epoch - 1;
-                                    let relay_registry = relay_registry_store.get_all_relays();
-                                    let work_events = relay_work_store.get_events_for_epoch(completed_epoch);
-
-                                    info!("📊 Epoch {} stats: {} registered relays, {} work events",
-                                        completed_epoch, relay_registry.len(), work_events.len());
-
-                                    // Phase 5: Initialize VRF committee selector with relay data
-                                    // Convert RegisteredRelay data to VRF-compatible RelayEligibility
-                                    if enable_vrf_committees && !relay_registry.is_empty() {
-                                        use dchat_blockchain::hardened_consensus::vrf_committees::{
-                                            RelayEligibility as VrfRelayEligibility,
-                                            RelayId as VrfRelayId,
-                                            GeographicRegion as VrfRegion,
-                                            VrfSeedDeriver,
-                                        };
-                                        use dchat_blockchain::block_hierarchy::Hash as VrfHash;
-
-                                        // Create VRF-compatible relay eligibility from registered relays
-                                        let vrf_relays: Vec<VrfRelayEligibility> = relay_registry
-                                            .iter()
-                                            .filter(|r| !r.is_suspended)
-                                            .enumerate()
-                                            .filter_map(|(idx, relay)| {
-                                                // Derive relay ID from string (hash to [u8; 32])
-                                                let relay_id_hash = blake3::hash(relay.relay_id.as_bytes());
-                                                let relay_id = VrfRelayId(*relay_id_hash.as_bytes());
-
-                                                // Use actual relay public key if registered, otherwise derive from relay_id
-                                                let verifying_key = if let Some(pk) = relay.public_key {
-                                                    ed25519_dalek::VerifyingKey::from_bytes(&pk).ok()?
-                                                } else {
-                                                    // Fallback to derived key for legacy/unregistered relays
-                                                    let key_bytes: [u8; 32] = *relay_id_hash.as_bytes();
-                                                    ed25519_dalek::VerifyingKey::from_bytes(&key_bytes).ok()?
-                                                };
-
-                                                // Use actual region from registration or derive from index
-                                                let region = relay.region.unwrap_or_else(|| {
-                                                    match idx % 6 {
-                                                        0 => VrfRegion::NorthAmerica,
-                                                        1 => VrfRegion::Europe,
-                                                        2 => VrfRegion::Asia,
-                                                        3 => VrfRegion::SouthAmerica,
-                                                        4 => VrfRegion::Africa,
-                                                        _ => VrfRegion::Oceania,
-                                                    }
-                                                });
-
-                                                // Use actual ASN from registration for eclipse attack prevention
-                                                let asn = relay.asn.unwrap_or((idx as u32) % 1000 + 1);
-
-                                                Some(VrfRelayEligibility {
-                                                    relay_id,
-                                                    public_key: verifying_key,
-                                                    stake: relay.stake,
-                                                    uptime_score: 0.95, // Default high uptime for active relays
-                                                    region,
-                                                    asn,
-                                                    ip_prefix: [(idx as u8) % 255, 0, 0],
-                                                    operator_id: VrfHash::from(*blake3::hash(
-                                                        relay.operator.0.as_bytes()
-                                                    ).as_bytes()),
-                                                    raw_weight: relay.stake / 1_000_000, // Normalized stake weight
-                                                })
-                                            })
-                                            .collect();
-
-                                        if vrf_relays.len() >= 3 {
-                                            hardened_consensus.initialize_committee_selector(vrf_relays);
-                                            info!("🎲 VRF committee selector initialized with {} eligible relays", relay_registry.len());
-                                        } else {
-                                            debug!("Skipping VRF init: need at least 3 eligible relays, have {}", vrf_relays.len());
+                                let mut tx_bytes = Vec::new();
+                                for miniblock in block.subblocks.iter().flat_map(|subblock| &subblock.miniblocks) {
+                                    let Some(body) = miniblock.body.as_ref() else {
+                                        warn!("Cannot commit DA for block #{}: miniblock body is missing", block_height);
+                                        continue;
+                                    };
+                                    for tx in &body.transactions {
+                                        match bincode::serialize(tx) {
+                                            Ok(bytes) => tx_bytes.push(bytes),
+                                            Err(error) => {
+                                                warn!("Cannot serialize transaction for block #{} DA: {}", block_height, error);
+                                                continue;
+                                            }
                                         }
                                     }
-
-                                    // 4. Trigger Rewards with actual relay data
-                                    if let Err(e) = perform_epoch_rewards(
-                                        new_epoch,
-                                        &staking_manager_consensus,
-                                        &currency_client,
-                                        &fee_manager,
-                                        &tokenomics_manager,
-                                        if relay_registry.is_empty() { None } else { Some(relay_registry.as_slice()) },
-                                        if work_events.is_empty() { None } else { Some(work_events.as_slice()) },
-                                    ).await {
-                                        error!("Failed to perform epoch rewards: {}", e);
-                                    }
                                 }
-                                Ok(None) => {} // Normal block
-                                Err(e) => error!("Consensus integration failed: {:?}", e),
-                            }
-
-                            info!("  • State root: {}", hex::encode(&state_root[..8]));
-                            info!("  • Block has {} subblocks, {} transactions total",
-                                block.subblocks.len(), block.transaction_count());
-
-                            // Calculate consensus hash for signing and network transmission.
-                            // The DA root and chunk count are included in the signed header.
-                            let block_hash_obj = block.consensus_hash();
-                            let block_hash = block_hash_obj.as_bytes().to_vec();
-
-                            info!("  • Block consensus hash: {}", hex::encode(&block_hash[..8]));
-
-                            // Sign the block with validator key
-                            let signature_result = {
-                                let validator_key = validator_key_arc_clone.lock().await;
-                                validator_key.sign_async(&block_hash).await
-                            };
-
-                            let block_signature = match signature_result {
-                                Ok(sig) => sig,
-                                Err(e) => {
-                                    error!("❌ Failed to sign block: {}", e);
+                                if tx_bytes.len() != block.transaction_count() {
+                                    warn!(
+                                        "Block #{} transaction bodies do not match header count ({} bodies, {} declared)",
+                                        block_height,
+                                        tx_bytes.len(),
+                                        block.transaction_count()
+                                    );
                                     continue;
                                 }
-                            };
 
-                            info!("  • Block signed with Ed25519 signature: {}", hex::encode(&block_signature.to_bytes()[..8]));
-
-                            let included_tx_ids: Vec<_> = block
-                                .subblocks
-                                .iter()
-                                .flat_map(|subblock| &subblock.miniblocks)
-                                .filter_map(|miniblock| miniblock.body.as_ref())
-                                .flat_map(|body| body.transactions.iter())
-                                .map(|tx| tx.tx_id)
-                                .collect();
-                            pending_candidates_consensus.lock().await.insert(
-                                block_height,
-                                (block_hash.clone(), world_state.clone(), included_tx_ids),
-                            );
-
-                            // Validate our own block before broadcasting
-                            {
-                                let mut validator = state_validator_clone.lock().await;
-                                match validator.validate_block(&block) {
-                                    Ok(computed_root) => {
-                                        info!("  ✓ Block self-validation passed, state root verified: {}",
-                                            hex::encode(&computed_root[..8]));
-                                    }
-                                    Err(StateValidationError::StateRootMismatch { expected, actual }) => {
-                                        error!("❌ Block self-validation FAILED: state root mismatch");
-                                        error!("   Expected: {}, Actual: {}", expected, actual);
-                                        continue;
-                                    }
-                                    Err(e) => {
-                                        error!("❌ Block self-validation FAILED: {}", e);
-                                        continue;
-                                    }
-                                }
-                            }
-
-                            // Create ValidatorBlock message (includes full block data)
-                            let validator_id = validator_public_key_bytes.to_vec();
-                            let timestamp = std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_else(|_| std::time::Duration::from_secs(0))
-                                .as_secs();
-
-                            // Prepare VRF proof for transmission (if this validator was leader)
-                            let vrf_proof_option = if let Some(ref proof) = last_vrf_proof {
-                                Some((
-                                    proof.vrf_output.to_vec(),
-                                    proof.vrf_proof.0.to_vec(),
-                                    proof.validator_weight_bps
-                                ))
-                            } else {
-                                None
-                            };
-
-                            // Get current epoch and slot index
-                            // Epoch duration is 6 hours = 21600 seconds, blocks every 6 seconds = 3600 blocks/epoch
-                            let current_epoch = current_epoch_id();
-                            let blocks_per_epoch = EPOCH_DURATION_SECS / 6; // 6 second block time
-                            let epoch_block_count = (block_height - 1) % blocks_per_epoch;
-
-                            let block_message = DchatMessage::ValidatorBlock {
-                                height: block_height,
-                                validator_id: validator_id.clone(),
-                                block_hash: block_hash.clone(),
-                                signature: block_signature.to_bytes().to_vec(),
-                                timestamp,
-                                block_data: match bincode::serialize(&block) {
+                                let subblock_metadata: Vec<(u16, u64, u16)> = block.subblocks.iter()
+                                    .map(|sb| {
+                                        let timestamp = sb.timestamp
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+                                            .as_secs();
+                                        (sb.index, timestamp, sb.miniblocks.len() as u16)
+                                    })
+                                    .collect();
+                                let block_bytes = match bincode::serialize(&(
+                                    block_height,
+                                    block.previous_hash.as_bytes().to_vec(),
+                                    state_root.clone(),
+                                    tx_bytes.clone(),
+                                    subblock_metadata.clone(),
+                                )) {
                                     Ok(bytes) => bytes,
                                     Err(error) => {
-                                        error!("Failed to serialize full block #{}: {}", block_height, error);
+                                        warn!("Failed to serialize block #{} for DA commitment: {}", block_height, error);
                                         continue;
                                     }
-                                },
-                                prev_hash: block.previous_hash.as_bytes().to_vec(),
-                                state_root: state_root.to_vec(),
-                                da_root: block.da_root.map(|root| root.to_vec()),
-                                da_chunk_count: block.da_chunk_count,
-                                subblock_metadata,
-                                vrf_proof: vrf_proof_option,
-                                slot_epoch: current_epoch,
-                                slot_index: epoch_block_count,
-                            };
+                                };
 
-                            // Broadcast block to validator network via gossipsub
-                            let mut net = network_arc_clone.lock().await;
-                            match net.broadcast_validator_block(&block_message) {
-                                Ok(_) => {
-                                    info!("✓ Block #{} broadcast to validator consensus network", block_height);
-                                    info!("  • Waiting for BFT acknowledgments ({} required)...", required_signatures);
-                                    block_acks_clone
-                                        .lock()
-                                        .await
-                                        .entry(block_height)
-                                        .or_default()
-                                        .insert(
-                                            validator_id.clone(),
-                                            (
-                                                block_hash.clone(),
-                                                block_signature.to_bytes().to_vec(),
-                                            ),
-                                        );
-                                }
-                                Err(e) => {
-                                    error!("❌ Failed to broadcast block #{}: {}", block_height, e);
-                                    continue;
-                                }
-                            }
-
-                            // Cleanup old state roots periodically (keep last 1000 blocks)
-                            if block_height % 100 == 0 && block_height > 1000 {
-                                let mut validator = state_validator_clone.lock().await;
-                                validator.cleanup_old_roots(block_height, 1000);
-                                info!("  • Cleaned up state roots for blocks before {}", block_height - 1000);
-                            }
-
-                            // Wait for BFT threshold of acknowledgments (2f+1 signatures)
-                            let ack_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
-                            let mut received_acks = 0;
-
-                            while tokio::time::Instant::now() < ack_deadline {
-                                let acks = block_acks_clone.lock().await;
-                                if let Some(height_acks) = acks.get(&block_height) {
-                                    received_acks = height_acks
-                                        .values()
-                                        .filter(|(ack_hash, _)| ack_hash == &block_hash)
-                                        .count();
-                                    if received_acks >= required_signatures {
-                                        info!("✅ Block #{} finalized with {} acknowledgments (BFT threshold reached)",
-                                            block_height, received_acks);
-                                        break;
+                                // Generate Data Availability commitment for light client verification
+                                // Commit to the exact transaction bodies and metadata sent to validators.
+                                let da_commitment = match DataAvailabilityCommitment::from_data(
+                                    block_height,
+                                    &block_bytes,
+                                    DA_CHUNK_SIZE,
+                                ) {
+                                    Ok(commitment) => {
+                                        debug!("  • DA commitment generated: chunks={}, erasure={}+{}",
+                                            commitment.chunk_count,
+                                            commitment.erasure_data_shards,
+                                            commitment.erasure_parity_shards);
+                                        Some(commitment)
                                     }
-                                }
-                                drop(acks);
-                                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                            }
+                                    Err(e) => {
+                                        warn!("  ⚠ DA commitment generation failed: {:?} - light client verification unavailable", e);
+                                        None
+                                    }
+                                };
 
-                            // If BFT threshold reached and bridge is enabled, initiate cross-chain finality proof
-                            if received_acks >= required_signatures && bridge_config_consensus.enabled {
-                                if let Some(ref bridge_mgr) = bridge_manager_consensus {
-                                    if let Ok(mut mgr) = bridge_mgr.write() {
-                                        // Initiate BLS finality proof aggregation for this block
-                                        let block_hash_hex = hex::encode(&block_hash);
-                                        if let Err(e) = mgr.initiate_bls_finality(
-                                            block_hash_hex.clone(),
-                                            block_height,
-                                            hex::encode(&block_hash),
-                                            received_acks as u32,
-                                        ) {
-                                            debug!("BLS finality initiation skipped for block {}: {}", block_height, e);
-                                        } else {
-                                            debug!("🔗 Initiated BLS finality proof for block #{}", block_height);
+                                if let Some(ref commitment) = da_commitment {
+                                    block.da_root = Some(*commitment.chunk_root.as_bytes());
+                                    block.da_chunk_count = commitment.chunk_count;
+                                    block.da_commitment = Some(commitment.clone());
+                                }
+
+                                // 1. Notify Consensus Integration
+                                let block_hash = block.calculate_hash();
+                                match hardened_consensus.process_block(block_height, block_hash) {
+                                    Ok(Some(new_epoch)) => {
+                                        info!("🔄 Epoch {} complete. Triggering reward distribution...", new_epoch - 1);
+
+                                        // 2. Advance relay work store to new epoch
+                                        relay_work_store.set_current_epoch(new_epoch);
+
+                                        // 3. Collect relay registry and work events for the completed epoch
+                                        let completed_epoch = new_epoch - 1;
+                                        let relay_registry = relay_registry_store.get_all_relays();
+                                        let work_events = relay_work_store.get_events_for_epoch(completed_epoch);
+
+                                        info!("📊 Epoch {} stats: {} registered relays, {} work events",
+                                            completed_epoch, relay_registry.len(), work_events.len());
+
+                                        // Phase 5: Initialize VRF committee selector with relay data
+                                        // Convert RegisteredRelay data to VRF-compatible RelayEligibility
+                                        if enable_vrf_committees && !relay_registry.is_empty() {
+                                            use dchat_blockchain::hardened_consensus::vrf_committees::{
+                                                RelayEligibility as VrfRelayEligibility,
+                                                RelayId as VrfRelayId,
+                                                GeographicRegion as VrfRegion,
+                                                VrfSeedDeriver,
+                                            };
+                                            use dchat_blockchain::block_hierarchy::Hash as VrfHash;
+
+                                            // Create VRF-compatible relay eligibility from registered relays
+                                            let vrf_relays: Vec<VrfRelayEligibility> = relay_registry
+                                                .iter()
+                                                .filter(|r| !r.is_suspended)
+                                                .enumerate()
+                                                .filter_map(|(idx, relay)| {
+                                                    // Derive relay ID from string (hash to [u8; 32])
+                                                    let relay_id_hash = blake3::hash(relay.relay_id.as_bytes());
+                                                    let relay_id = VrfRelayId(*relay_id_hash.as_bytes());
+
+                                                    // Use actual relay public key if registered, otherwise derive from relay_id
+                                                    let verifying_key = if let Some(pk) = relay.public_key {
+                                                        ed25519_dalek::VerifyingKey::from_bytes(&pk).ok()?
+                                                    } else {
+                                                        // Fallback to derived key for legacy/unregistered relays
+                                                        let key_bytes: [u8; 32] = *relay_id_hash.as_bytes();
+                                                        ed25519_dalek::VerifyingKey::from_bytes(&key_bytes).ok()?
+                                                    };
+
+                                                    // Use actual region from registration or derive from index
+                                                    let region = relay.region.unwrap_or_else(|| {
+                                                        match idx % 6 {
+                                                            0 => VrfRegion::NorthAmerica,
+                                                            1 => VrfRegion::Europe,
+                                                            2 => VrfRegion::Asia,
+                                                            3 => VrfRegion::SouthAmerica,
+                                                            4 => VrfRegion::Africa,
+                                                            _ => VrfRegion::Oceania,
+                                                        }
+                                                    });
+
+                                                    // Use actual ASN from registration for eclipse attack prevention
+                                                    let asn = relay.asn.unwrap_or((idx as u32) % 1000 + 1);
+
+                                                    Some(VrfRelayEligibility {
+                                                        relay_id,
+                                                        public_key: verifying_key,
+                                                        stake: relay.stake,
+                                                        uptime_score: 0.95, // Default high uptime for active relays
+                                                        region,
+                                                        asn,
+                                                        ip_prefix: [(idx as u8) % 255, 0, 0],
+                                                        operator_id: VrfHash::from(*blake3::hash(
+                                                            relay.operator.0.as_bytes()
+                                                        ).as_bytes()),
+                                                        raw_weight: relay.stake / 1_000_000, // Normalized stake weight
+                                                    })
+                                                })
+                                                .collect();
+
+                                            if vrf_relays.len() >= 3 {
+                                                hardened_consensus.initialize_committee_selector(vrf_relays);
+                                                info!("🎲 VRF committee selector initialized with {} eligible relays", relay_registry.len());
+                                            } else {
+                                                debug!("Skipping VRF init: need at least 3 eligible relays, have {}", vrf_relays.len());
+                                            }
+                                        }
+
+                                        // 4. Trigger Rewards with actual relay data
+                                        if let Err(e) = perform_epoch_rewards(
+                                            new_epoch,
+                                            &staking_manager_consensus,
+                                            &currency_client,
+                                            &fee_manager,
+                                            &tokenomics_manager,
+                                            if relay_registry.is_empty() { None } else { Some(relay_registry.as_slice()) },
+                                            if work_events.is_empty() { None } else { Some(work_events.as_slice()) },
+                                        ).await {
+                                            error!("Failed to perform epoch rewards: {}", e);
                                         }
                                     }
+                                    Ok(None) => {} // Normal block
+                                    Err(e) => error!("Consensus integration failed: {:?}", e),
                                 }
-                            }
 
-                            if received_acks < required_signatures {
-                                warn!("⚠️  Block #{} did not reach BFT threshold ({}/{} acks)",
-                                    block_height, received_acks, required_signatures);
-                                warn!("   Block may not be finalized - potential network partition");
-                            } else {
-                                let candidate = pending_candidates_consensus
-                                    .lock()
-                                    .await
-                                    .remove(&block_height);
-                                if let Some((candidate_hash, candidate_state, included_tx_ids)) =
-                                    candidate
+                                info!("  • State root: {}", hex::encode(&state_root[..8]));
+                                info!("  • Block has {} subblocks, {} transactions total",
+                                    block.subblocks.len(), block.transaction_count());
+
+                                // Calculate consensus hash for signing and network transmission.
+                                // The DA root and chunk count are included in the signed header.
+                                let block_hash_obj = block.consensus_hash();
+                                let block_hash = block_hash_obj.as_bytes().to_vec();
+
+                                info!("  • Block consensus hash: {}", hex::encode(&block_hash[..8]));
+
+                                // Sign the block with validator key
+                                let signature_result = {
+                                    let validator_key = validator_key_arc_clone.lock().await;
+                                    validator_key.sign_async(&block_hash).await
+                                };
+
+                                let block_signature = match signature_result {
+                                    Ok(sig) => sig,
+                                    Err(e) => {
+                                        error!("❌ Failed to sign block: {}", e);
+                                        continue;
+                                    }
+                                };
+
+                                info!("  • Block signed with Ed25519 signature: {}", hex::encode(&block_signature.to_bytes()[..8]));
+
+                                let included_tx_ids: Vec<_> = block
+                                    .subblocks
+                                    .iter()
+                                    .flat_map(|subblock| &subblock.miniblocks)
+                                    .filter_map(|miniblock| miniblock.body.as_ref())
+                                    .flat_map(|body| body.transactions.iter())
+                                    .map(|tx| tx.tx_id)
+                                    .collect();
+                                pending_candidates_consensus.lock().await.insert(
+                                    block_height,
+                                    (block_hash.clone(), world_state.clone(), included_tx_ids),
+                                );
+
+                                // Validate our own block before broadcasting
                                 {
-                                    if candidate_hash == block_hash {
-                                        *execution_state_consensus.lock().await = candidate_state;
-                                        shared_block_height
-                                            .store(block_height, Ordering::SeqCst);
-                                        match transaction_mempool_consensus
-                                            .remove_transactions(&included_tx_ids)
-                                        {
-                                            Ok(removed) => info!(
-                                                "Finalized block #{} and removed {} included transactions from mempool",
-                                                block_height, removed
-                                            ),
-                                            Err(error) => error!(
-                                                "Block #{} finalized but mempool cleanup failed: {}",
-                                                block_height, error
-                                            ),
+                                    let mut validator = state_validator_clone.lock().await;
+                                    match validator.validate_block(&block) {
+                                        Ok(computed_root) => {
+                                            info!("  ✓ Block self-validation passed, state root verified: {}",
+                                                hex::encode(&computed_root[..8]));
                                         }
-                                    } else {
-                                        warn!("Block #{} candidate hash changed before finality", block_height);
-                                    }
-                                }
-                                if let Err(error) = tokenomics_manager.advance_block() {
-                                    warn!("Failed to advance tokenomics block counter: {}", error);
-                                }
-                            }
-
-                            let currency_pending = match currency_mempool_consensus
-                                .pending_transactions_limited(2_500, 3 * 1024 * 1024)
-                            {
-                                Ok(transactions) => transactions,
-                                Err(error) => {
-                                    error!("Unable to snapshot currency mempool: {}", error);
-                                    continue;
-                                }
-                            };
-                            let recovered_currency_candidate =
-                                pending_currency_candidates_consensus
-                                    .lock()
-                                    .await
-                                    .contains_key(
-                                        &(currency_block_height.load(Ordering::SeqCst) + 1),
-                                    );
-                            if !currency_pending.is_empty() || recovered_currency_candidate {
-                                let currency_height =
-                                    currency_block_height.load(Ordering::SeqCst) + 1;
-                                let previous_currency_hash = *currency_last_hash.lock().await;
-                                let currency_base_state =
-                                    currency_execution_state_consensus.lock().await.clone();
-                                let (currency_block, candidate_currency_state) =
-                                    if recovered_currency_candidate {
-                                        let journal =
-                                            currency_journal_consensus.lock().await;
-                                        let block = journal
-                                            .pending_block()
-                                            .ok_or_else(|| {
-                                                Error::internal(
-                                                    "Recovered currency candidate missing from journal",
-                                                )
-                                            })?;
-                                        let state = block
-                                            .verify_and_execute(
-                                                &currency_base_state,
-                                                currency_chain_id_consensus,
-                                            )
-                                            .map_err(|error| {
-                                                Error::validation(format!(
-                                                    "Recovered currency candidate replay failed: {}",
-                                                    error
-                                                ))
-                                            })?;
-                                        (block, state)
-                                    } else {
-                                        match dchat_blockchain::CurrencyBlock::build(
-                                            currency_height,
-                                            previous_currency_hash,
-                                            currency_pending,
-                                            &currency_base_state,
-                                            currency_chain_id_consensus,
-                                        ) {
-                                        Ok(candidate) => candidate,
-                                        Err(error) => {
-                                            error!(
-                                                "Currency block #{} candidate execution failed: {}",
-                                                currency_height, error
-                                            );
+                                        Err(StateValidationError::StateRootMismatch { expected, actual }) => {
+                                            error!("❌ Block self-validation FAILED: state root mismatch");
+                                            error!("   Expected: {}, Actual: {}", expected, actual);
                                             continue;
                                         }
+                                        Err(e) => {
+                                            error!("❌ Block self-validation FAILED: {}", e);
+                                            continue;
                                         }
-                                    };
-                                let currency_hash = currency_block.hash;
-                                let currency_hash_bytes = currency_hash.to_vec();
-                                let currency_tx_ids = currency_block.transaction_ids();
-                                let currency_block_data =
-                                    match bincode::serialize(&currency_block) {
+                                    }
+                                }
+
+                                // Create ValidatorBlock message (includes full block data)
+                                let validator_id = validator_public_key_bytes.to_vec();
+                                let timestamp = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+                                    .as_secs();
+
+                                // Prepare VRF proof for transmission (if this validator was leader)
+                                let vrf_proof_option = if let Some(ref proof) = last_vrf_proof {
+                                    Some((
+                                        proof.vrf_output.to_vec(),
+                                        proof.vrf_proof.0.to_vec(),
+                                        proof.validator_weight_bps
+                                    ))
+                                } else {
+                                    None
+                                };
+
+                                // Get current epoch and slot index
+                                // Epoch duration is 6 hours = 21600 seconds, blocks every 6 seconds = 3600 blocks/epoch
+                                let current_epoch = current_epoch_id();
+                                let blocks_per_epoch = EPOCH_DURATION_SECS / 6; // 6 second block time
+                                let epoch_block_count = (block_height - 1) % blocks_per_epoch;
+
+                                let block_message = DchatMessage::ValidatorBlock {
+                                    height: block_height,
+                                    validator_id: validator_id.clone(),
+                                    block_hash: block_hash.clone(),
+                                    signature: block_signature.to_bytes().to_vec(),
+                                    timestamp,
+                                    block_data: match bincode::serialize(&block) {
                                         Ok(bytes) => bytes,
                                         Err(error) => {
+                                            error!("Failed to serialize full block #{}: {}", block_height, error);
+                                            continue;
+                                        }
+                                    },
+                                    prev_hash: block.previous_hash.as_bytes().to_vec(),
+                                    state_root: state_root.to_vec(),
+                                    da_root: block.da_root.map(|root| root.to_vec()),
+                                    da_chunk_count: block.da_chunk_count,
+                                    subblock_metadata,
+                                    vrf_proof: vrf_proof_option,
+                                    slot_epoch: current_epoch,
+                                    slot_index: epoch_block_count,
+                                };
+
+                                // Broadcast block to validator network via gossipsub
+                                let mut net = network_arc_clone.lock().await;
+                                match net.broadcast_validator_block(&block_message) {
+                                    Ok(_) => {
+                                        info!("✓ Block #{} broadcast to validator consensus network", block_height);
+                                        info!("  • Waiting for BFT acknowledgments ({} required)...", required_signatures);
+                                        block_acks_clone
+                                            .lock()
+                                            .await
+                                            .entry(block_height)
+                                            .or_default()
+                                            .insert(
+                                                validator_id.clone(),
+                                                (
+                                                    block_hash.clone(),
+                                                    block_signature.to_bytes().to_vec(),
+                                                ),
+                                            );
+                                    }
+                                    Err(e) => {
+                                        error!("❌ Failed to broadcast block #{}: {}", block_height, e);
+                                        continue;
+                                    }
+                                }
+
+                                // Cleanup old state roots periodically (keep last 1000 blocks)
+                                if block_height % 100 == 0 && block_height > 1000 {
+                                    let mut validator = state_validator_clone.lock().await;
+                                    validator.cleanup_old_roots(block_height, 1000);
+                                    info!("  • Cleaned up state roots for blocks before {}", block_height - 1000);
+                                }
+
+                                // Wait for BFT threshold of acknowledgments (2f+1 signatures)
+                                let ack_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+                                let mut received_acks = 0;
+
+                                while tokio::time::Instant::now() < ack_deadline {
+                                    let acks = block_acks_clone.lock().await;
+                                    if let Some(height_acks) = acks.get(&block_height) {
+                                        received_acks = height_acks
+                                            .values()
+                                            .filter(|(ack_hash, _)| ack_hash == &block_hash)
+                                            .count();
+                                        if received_acks >= required_signatures {
+                                            info!("✅ Block #{} finalized with {} acknowledgments (BFT threshold reached)",
+                                                block_height, received_acks);
+                                            break;
+                                        }
+                                    }
+                                    drop(acks);
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                                }
+
+                                // If BFT threshold reached and bridge is enabled, initiate cross-chain finality proof
+                                if received_acks >= required_signatures && bridge_config_consensus.enabled {
+                                    if let Some(ref bridge_mgr) = bridge_manager_consensus {
+                                        if let Ok(mut mgr) = bridge_mgr.write() {
+                                            // Initiate BLS finality proof aggregation for this block
+                                            let block_hash_hex = hex::encode(&block_hash);
+                                            if let Err(e) = mgr.initiate_bls_finality(
+                                                block_hash_hex.clone(),
+                                                block_height,
+                                                hex::encode(&block_hash),
+                                                received_acks as u32,
+                                            ) {
+                                                debug!("BLS finality initiation skipped for block {}: {}", block_height, e);
+                                            } else {
+                                                debug!("🔗 Initiated BLS finality proof for block #{}", block_height);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if received_acks < required_signatures {
+                                    warn!("⚠️  Block #{} did not reach BFT threshold ({}/{} acks)",
+                                        block_height, received_acks, required_signatures);
+                                    warn!("   Block may not be finalized - potential network partition");
+                                } else {
+                                    let candidate = pending_candidates_consensus
+                                        .lock()
+                                        .await
+                                        .remove(&block_height);
+                                    if let Some((candidate_hash, candidate_state, included_tx_ids)) =
+                                        candidate
+                                    {
+                                        if candidate_hash == block_hash {
+                                            *execution_state_consensus.lock().await = candidate_state;
+                                            shared_block_height
+                                                .store(block_height, Ordering::SeqCst);
+                                            match transaction_mempool_consensus
+                                                .remove_transactions(&included_tx_ids)
+                                            {
+                                                Ok(removed) => info!(
+                                                    "Finalized block #{} and removed {} included transactions from mempool",
+                                                    block_height, removed
+                                                ),
+                                                Err(error) => error!(
+                                                    "Block #{} finalized but mempool cleanup failed: {}",
+                                                    block_height, error
+                                                ),
+                                            }
+                                        } else {
+                                            warn!("Block #{} candidate hash changed before finality", block_height);
+                                        }
+                                    }
+                                    if let Err(error) = tokenomics_manager.advance_block() {
+                                        warn!("Failed to advance tokenomics block counter: {}", error);
+                                    }
+                                }
+                                }
+
+                            if is_currency_proposer {
+                                let currency_pending = match currency_mempool_consensus
+                                    .pending_transactions_limited(2_500, 3 * 1024 * 1024)
+                                {
+                                    Ok(transactions) => transactions,
+                                    Err(error) => {
+                                        error!("Unable to snapshot currency mempool: {}", error);
+                                        continue;
+                                    }
+                                };
+                                let recovered_currency_candidate =
+                                    pending_currency_candidates_consensus
+                                        .lock()
+                                        .await
+                                        .contains_key(
+                                            &(currency_block_height.load(Ordering::SeqCst) + 1),
+                                        );
+                                if !currency_pending.is_empty() || recovered_currency_candidate {
+                                    let currency_height =
+                                        currency_block_height.load(Ordering::SeqCst) + 1;
+                                    let previous_currency_hash = *currency_last_hash.lock().await;
+                                    let currency_base_state =
+                                        currency_execution_state_consensus.lock().await.clone();
+                                    let (currency_block, candidate_currency_state) =
+                                        if recovered_currency_candidate {
+                                            let journal =
+                                                currency_journal_consensus.lock().await;
+                                            let block = journal
+                                                .pending_block()
+                                                .ok_or_else(|| {
+                                                    Error::internal(
+                                                        "Recovered currency candidate missing from journal",
+                                                    )
+                                                })?;
+                                            let state = block
+                                                .verify_and_execute(
+                                                    &currency_base_state,
+                                                    currency_chain_id_consensus,
+                                                )
+                                                .map_err(|error| {
+                                                    Error::validation(format!(
+                                                        "Recovered currency candidate replay failed: {}",
+                                                        error
+                                                    ))
+                                                })?;
+                                            (block, state)
+                                        } else {
+                                            match dchat_blockchain::CurrencyBlock::build(
+                                                currency_height,
+                                                previous_currency_hash,
+                                                currency_pending,
+                                                &currency_base_state,
+                                                currency_chain_id_consensus,
+                                            ) {
+                                            Ok(candidate) => candidate,
+                                            Err(error) => {
+                                                error!(
+                                                    "Currency block #{} candidate execution failed: {}",
+                                                    currency_height, error
+                                                );
+                                                continue;
+                                            }
+                                            }
+                                        };
+                                    let currency_hash = currency_block.hash;
+                                    let currency_hash_bytes = currency_hash.to_vec();
+                                    let currency_tx_ids = currency_block.transaction_ids();
+                                    let currency_block_data =
+                                        match bincode::serialize(&currency_block) {
+                                            Ok(bytes) => bytes,
+                                            Err(error) => {
+                                                error!(
+                                                    "Failed to serialize currency block #{}: {}",
+                                                    currency_height, error
+                                                );
+                                                continue;
+                                            }
+                                        };
+                                    {
+                                        let candidates =
+                                            pending_currency_candidates_consensus.lock().await;
+                                        if let Some((existing_hash, ..)) =
+                                            candidates.get(&currency_height)
+                                        {
+                                            if existing_hash != &currency_hash_bytes {
+                                                warn!(
+                                                    "Refusing conflicting currency candidate at height {}",
+                                                    currency_height
+                                                );
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                    {
+                                        let mut journal = currency_journal_consensus.lock().await;
+                                        if let Err(error) = journal.prepare_block(&currency_block).await {
                                             error!(
-                                                "Failed to serialize currency block #{}: {}",
+                                                "Unable to persist currency proposal #{}: {}",
                                                 currency_height, error
                                             );
                                             continue;
                                         }
-                                    };
-                                {
-                                    let candidates =
-                                        pending_currency_candidates_consensus.lock().await;
-                                    if let Some((existing_hash, ..)) =
-                                        candidates.get(&currency_height)
-                                    {
-                                        if existing_hash != &currency_hash_bytes {
-                                            warn!(
-                                                "Refusing conflicting currency candidate at height {}",
-                                                currency_height
+                                        if let Err(error) = journal
+                                            .record_vote(currency_height, currency_hash)
+                                            .await
+                                        {
+                                            error!(
+                                                "Unable to persist currency vote lock #{}: {}",
+                                                currency_height, error
                                             );
                                             continue;
                                         }
                                     }
-                                }
-                                {
-                                    let mut journal = currency_journal_consensus.lock().await;
-                                    if let Err(error) = journal.prepare_block(&currency_block).await {
-                                        error!(
-                                            "Unable to persist currency proposal #{}: {}",
-                                            currency_height, error
-                                        );
-                                        continue;
-                                    }
-                                    if let Err(error) = journal
-                                        .record_vote(currency_height, currency_hash)
+                                    pending_currency_candidates_consensus
+                                        .lock()
                                         .await
-                                    {
-                                        error!(
-                                            "Unable to persist currency vote lock #{}: {}",
-                                            currency_height, error
-                                        );
-                                        continue;
-                                    }
-                                }
-                                pending_currency_candidates_consensus
-                                    .lock()
-                                    .await
-                                    .entry(currency_height)
-                                    .or_insert((
-                                        currency_hash_bytes.clone(),
-                                        candidate_currency_state,
-                                        currency_tx_ids,
-                                        currency_hash,
-                                    ));
-                                let currency_signature_bytes = {
-                                    let mut acknowledgments =
-                                        currency_block_acks_clone.lock().await;
-                                    let votes = acknowledgments
                                         .entry(currency_height)
-                                        .or_default();
-                                    if let Some((voted_hash, signature)) =
-                                        votes.get(validator_public_key_bytes.as_slice())
-                                    {
-                                        if voted_hash != &currency_hash_bytes {
-                                            warn!(
-                                                "Refusing to double-vote on currency block height {}",
-                                                currency_height
+                                        .or_insert((
+                                            currency_hash_bytes.clone(),
+                                            candidate_currency_state,
+                                            currency_tx_ids,
+                                            currency_hash,
+                                        ));
+                                    let currency_signature_bytes = {
+                                        let mut acknowledgments =
+                                            currency_block_acks_clone.lock().await;
+                                        let votes = acknowledgments
+                                            .entry(currency_height)
+                                            .or_default();
+                                        if let Some((voted_hash, signature)) =
+                                            votes.get(validator_public_key_bytes.as_slice())
+                                        {
+                                            if voted_hash != &currency_hash_bytes {
+                                                warn!(
+                                                    "Refusing to double-vote on currency block height {}",
+                                                    currency_height
+                                                );
+                                                continue;
+                                            }
+                                            signature.clone()
+                                        } else {
+                                            let signature = {
+                                                let validator_key = validator_key_arc_clone.lock().await;
+                                                match validator_key
+                                                    .sign_async(&currency_hash_bytes)
+                                                    .await
+                                                {
+                                                    Ok(signature) => signature.to_bytes().to_vec(),
+                                                    Err(error) => {
+                                                        error!(
+                                                            "Failed to sign currency block #{}: {}",
+                                                            currency_height, error
+                                                        );
+                                                        continue;
+                                                    }
+                                                }
+                                            };
+                                            votes.insert(
+                                                validator_public_key_bytes.to_vec(),
+                                                (
+                                                    currency_hash_bytes.clone(),
+                                                    signature.clone(),
+                                                ),
+                                            );
+                                            signature
+                                        }
+                                    };
+                                    let currency_message = DchatMessage::CurrencyValidatorBlock {
+                                        height: currency_height,
+                                        validator_id: validator_public_key_bytes.to_vec(),
+                                        block_hash: currency_hash_bytes.clone(),
+                                        signature: currency_signature_bytes,
+                                        block_data: currency_block_data,
+                                    };
+                                    let mut network = network_arc_clone.lock().await;
+                                    match network.broadcast_validator_block(&currency_message) {
+                                        Ok(_) => drop(network),
+                                        Err(error) => {
+                                            error!(
+                                                "Failed to broadcast currency block #{}: {}",
+                                                currency_height, error
                                             );
                                             continue;
                                         }
-                                        signature.clone()
-                                    } else {
-                                        let signature = {
-                                            let validator_key = validator_key_arc_clone.lock().await;
-                                            match validator_key
-                                                .sign_async(&currency_hash_bytes)
+                                    }
+
+                                    let deadline = tokio::time::Instant::now()
+                                        + tokio::time::Duration::from_secs(10);
+                                    let mut currency_ack_count = 0;
+                                    while tokio::time::Instant::now() < deadline {
+                                        let acknowledgments =
+                                            currency_block_acks_clone.lock().await;
+                                        currency_ack_count = acknowledgments
+                                            .get(&currency_height)
+                                            .map(|height_acks| {
+                                                height_acks
+                                                    .values()
+                                                    .filter(|(hash, _)| hash == &currency_hash_bytes)
+                                                    .count()
+                                            })
+                                            .unwrap_or(0);
+                                        if currency_ack_count >= currency_quorum_consensus {
+                                            break;
+                                        }
+                                        drop(acknowledgments);
+                                        tokio::time::sleep(tokio::time::Duration::from_millis(100))
+                                            .await;
+                                    }
+                                    if currency_ack_count >= currency_quorum_consensus {
+                                        let certificate = {
+                                            let acknowledgments =
+                                                currency_block_acks_clone.lock().await;
+                                            acknowledgments
+                                                .get(&currency_height)
+                                                .into_iter()
+                                                .flat_map(|votes| votes.iter())
+                                                .filter(|(_, (hash, _))| {
+                                                    hash == &currency_hash_bytes
+                                                })
+                                                .filter_map(|(validator_id, (_, signature))| {
+                                                    let validator_id: [u8; 32] =
+                                                        validator_id.as_slice().try_into().ok()?;
+                                                    Some(dchat_blockchain::CurrencyFinalityVote {
+                                                        validator_id,
+                                                        signature: signature.clone(),
+                                                    })
+                                                })
+                                                .collect::<Vec<_>>()
+                                        };
+                                        let persisted_state = {
+                                            let mut journal =
+                                                currency_journal_consensus.lock().await;
+                                            match journal
+                                                .finalize_pending(currency_hash, certificate)
                                                 .await
                                             {
-                                                Ok(signature) => signature.to_bytes().to_vec(),
+                                                Ok(state) => state,
                                                 Err(error) => {
                                                     error!(
-                                                        "Failed to sign currency block #{}: {}",
+                                                        "Unable to persist finalized currency block #{}: {}",
                                                         currency_height, error
                                                     );
                                                     continue;
                                                 }
                                             }
                                         };
-                                        votes.insert(
-                                            validator_public_key_bytes.to_vec(),
-                                            (
-                                                currency_hash_bytes.clone(),
-                                                signature.clone(),
-                                            ),
-                                        );
-                                        signature
-                                    }
-                                };
-                                let currency_message = DchatMessage::CurrencyValidatorBlock {
-                                    height: currency_height,
-                                    validator_id: validator_public_key_bytes.to_vec(),
-                                    block_hash: currency_hash_bytes.clone(),
-                                    signature: currency_signature_bytes,
-                                    block_data: currency_block_data,
-                                };
-                                let mut network = network_arc_clone.lock().await;
-                                match network.broadcast_validator_block(&currency_message) {
-                                    Ok(_) => drop(network),
-                                    Err(error) => {
-                                        error!(
-                                            "Failed to broadcast currency block #{}: {}",
-                                            currency_height, error
-                                        );
-                                        continue;
-                                    }
-                                }
-
-                                let deadline = tokio::time::Instant::now()
-                                    + tokio::time::Duration::from_secs(10);
-                                let mut currency_ack_count = 0;
-                                while tokio::time::Instant::now() < deadline {
-                                    let acknowledgments =
-                                        currency_block_acks_clone.lock().await;
-                                    currency_ack_count = acknowledgments
-                                        .get(&currency_height)
-                                        .map(|height_acks| {
-                                            height_acks
-                                                .values()
-                                                .filter(|(hash, _)| hash == &currency_hash_bytes)
-                                                .count()
-                                        })
-                                        .unwrap_or(0);
-                                    if currency_ack_count >= currency_quorum_consensus {
-                                        break;
-                                    }
-                                    drop(acknowledgments);
-                                    tokio::time::sleep(tokio::time::Duration::from_millis(100))
-                                        .await;
-                                }
-                                if currency_ack_count >= currency_quorum_consensus {
-                                    let certificate = {
-                                        let acknowledgments =
-                                            currency_block_acks_clone.lock().await;
-                                        acknowledgments
-                                            .get(&currency_height)
-                                            .into_iter()
-                                            .flat_map(|votes| votes.iter())
-                                            .filter(|(_, (hash, _))| {
-                                                hash == &currency_hash_bytes
-                                            })
-                                            .filter_map(|(validator_id, (_, signature))| {
-                                                let validator_id: [u8; 32] =
-                                                    validator_id.as_slice().try_into().ok()?;
-                                                Some(dchat_blockchain::CurrencyFinalityVote {
-                                                    validator_id,
-                                                    signature: signature.clone(),
-                                                })
-                                            })
-                                            .collect::<Vec<_>>()
-                                    };
-                                    let persisted_state = {
-                                        let mut journal =
-                                            currency_journal_consensus.lock().await;
-                                        match journal
-                                            .finalize_pending(currency_hash, certificate)
-                                            .await
-                                        {
-                                            Ok(state) => state,
-                                            Err(error) => {
-                                                error!(
-                                                    "Unable to persist finalized currency block #{}: {}",
-                                                    currency_height, error
-                                                );
-                                                continue;
-                                            }
-                                        }
-                                    };
-                                    if let Some((candidate_hash, _candidate_state, included_ids, hash)) =
-                                        pending_currency_candidates_consensus
-                                            .lock()
-                                            .await
-                                            .remove(&currency_height)
-                                    {
-                                        if candidate_hash == currency_hash_bytes {
-                                            *currency_execution_state_consensus.lock().await =
-                                                persisted_state;
-                                            *currency_last_hash.lock().await = hash;
-                                            currency_block_height
-                                                .store(currency_height, Ordering::SeqCst);
-                                            let minimum_ack_height =
-                                                currency_height.saturating_sub(100);
-                                            currency_block_acks_clone
+                                        if let Some((candidate_hash, _candidate_state, included_ids, hash)) =
+                                            pending_currency_candidates_consensus
                                                 .lock()
                                                 .await
-                                                .retain(|height, _| {
-                                                    *height >= minimum_ack_height
-                                                });
-                                            match currency_mempool_consensus
-                                                .remove_transactions(&included_ids)
-                                            {
-                                                Ok(removed) => info!(
-                                                    "Finalized currency block #{} with {} votes; removed {} transfers",
-                                                    currency_height, currency_ack_count, removed
-                                                ),
-                                                Err(error) => error!(
-                                                    "Currency block #{} finalized but mempool cleanup failed: {}",
-                                                    currency_height, error
-                                                ),
+                                                .remove(&currency_height)
+                                        {
+                                            if candidate_hash == currency_hash_bytes {
+                                                *currency_execution_state_consensus.lock().await =
+                                                    persisted_state;
+                                                *currency_last_hash.lock().await = hash;
+                                                currency_block_height
+                                                    .store(currency_height, Ordering::SeqCst);
+                                                let minimum_ack_height =
+                                                    currency_height.saturating_sub(100);
+                                                currency_block_acks_clone
+                                                    .lock()
+                                                    .await
+                                                    .retain(|height, _| {
+                                                        *height >= minimum_ack_height
+                                                    });
+                                                match currency_mempool_consensus
+                                                    .remove_transactions(&included_ids)
+                                                {
+                                                    Ok(removed) => info!(
+                                                        "Finalized currency block #{} with {} votes; removed {} transfers",
+                                                        currency_height, currency_ack_count, removed
+                                                    ),
+                                                    Err(error) => error!(
+                                                        "Currency block #{} finalized but mempool cleanup failed: {}",
+                                                        currency_height, error
+                                                    ),
+                                                }
                                             }
                                         }
+                                    } else {
+                                        warn!(
+                                            "Currency block #{} did not reach BFT threshold ({}/{} acks)",
+                                            currency_height,
+                                            currency_ack_count,
+                                            currency_quorum_consensus
+                                        );
                                     }
-                                } else {
-                                    warn!(
-                                        "Currency block #{} did not reach BFT threshold ({}/{} acks)",
-                                        currency_height,
-                                        currency_ack_count,
-                                        currency_quorum_consensus
-                                    );
                                 }
                             }
                         } else if is_producer {
