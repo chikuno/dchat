@@ -255,7 +255,7 @@ impl GenesisBuilder {
         };
 
         // Compute hash
-        let hash_input = Self::compute_currency_genesis_hash_input(&genesis);
+        let hash_input = Self::compute_currency_genesis_hash_input(&genesis)?;
         genesis.hash = hex::encode(blake3::hash(&hash_input).as_bytes());
 
         // Sign genesis block
@@ -360,18 +360,29 @@ impl GenesisBuilder {
         Ok(())
     }
 
-    /// Verify currency genesis block signature
+    /// Verify currency genesis with a coordinator key trusted outside the genesis file.
     pub fn verify_currency_genesis(
         genesis: &CurrencyGenesisBlock,
         public_key: &VerifyingKey,
     ) -> Result<()> {
+        if genesis.block_number != 0 {
+            return Err(Error::validation(
+                "Currency genesis block number must be zero",
+            ));
+        }
         let initial_balances = genesis.effective_initial_balances()?;
         Self::validate_currency_balances(
             &genesis.initial_validators,
             &initial_balances,
             genesis.initial_supply,
         )?;
-        let hash_input = Self::compute_currency_genesis_hash_input(genesis);
+        let hash_input = Self::compute_currency_genesis_hash_input(genesis)?;
+        let expected_hash = hex::encode(blake3::hash(&hash_input).as_bytes());
+        if genesis.hash != expected_hash {
+            return Err(Error::validation(
+                "Currency genesis hash does not match its contents (tampered or legacy format)",
+            ));
+        }
 
         let signature_bytes: [u8; 64] = genesis
             .signature
@@ -405,32 +416,24 @@ impl GenesisBuilder {
     }
 
     /// Compute hash input for currency genesis
-    fn compute_currency_genesis_hash_input(genesis: &CurrencyGenesisBlock) -> Vec<u8> {
-        let mut input = Vec::new();
-        input.extend_from_slice(&genesis.block_number.to_be_bytes());
-        input.extend_from_slice(&genesis.timestamp.to_be_bytes());
-        input.extend_from_slice(genesis.config.chain_id.as_bytes());
-        input.extend_from_slice(&genesis.config.block_time_secs.to_be_bytes());
-        input.extend_from_slice(&genesis.initial_supply.to_be_bytes());
-
-        for validator in &genesis.initial_validators {
-            input.extend_from_slice(validator.public_key.as_bytes());
-            input.extend_from_slice(&validator.stake_amount.to_be_bytes());
-        }
-
-        if !genesis.initial_balances.is_empty() {
-            input.extend_from_slice(b"dchat/currency-genesis-balances/v1");
-            let mut balances = genesis.initial_balances.clone();
-            balances.sort_by_key(|balance| *balance.account.0.as_bytes());
-            input.extend_from_slice(&(balances.len() as u64).to_be_bytes());
-            for balance in balances {
-                input.extend_from_slice(balance.account.0.as_bytes());
-                input.extend_from_slice(&balance.available.to_be_bytes());
-                input.extend_from_slice(&balance.staked.to_be_bytes());
-            }
-        }
-
-        input
+    fn compute_currency_genesis_hash_input(genesis: &CurrencyGenesisBlock) -> Result<Vec<u8>> {
+        let mut initial_balances = genesis.effective_initial_balances()?;
+        initial_balances.sort_by_key(|balance| *balance.account.0.as_bytes());
+        bincode::serialize(&(
+            b"dchat/currency-genesis/v2".as_slice(),
+            genesis.block_number,
+            genesis.timestamp,
+            &genesis.initial_validators,
+            &genesis.config,
+            genesis.initial_supply,
+            initial_balances,
+        ))
+        .map_err(|error| {
+            Error::serialization(format!(
+                "Failed to serialize currency genesis commitment: {}",
+                error
+            ))
+        })
     }
 }
 
@@ -667,6 +670,33 @@ mod tests {
             &builder.signing_key.verifying_key(),
         )
         .is_err());
+
+        let mut altered_config = genesis.clone();
+        altered_config.config.token_decimals -= 1;
+        assert!(GenesisBuilder::verify_currency_genesis(
+            &altered_config,
+            &builder.signing_key.verifying_key(),
+        )
+        .is_err());
+
+        let mut altered_validator = genesis.clone();
+        altered_validator.initial_validators[0].voting_power += 1;
+        assert!(GenesisBuilder::verify_currency_genesis(
+            &altered_validator,
+            &builder.signing_key.verifying_key(),
+        )
+        .is_err());
+
+        let mut altered_hash = genesis.clone();
+        altered_hash.hash = "invalid".to_string();
+        assert!(GenesisBuilder::verify_currency_genesis(
+            &altered_hash,
+            &builder.signing_key.verifying_key(),
+        )
+        .is_err());
+
+        let wrong_key = SigningKey::generate(&mut OsRng).verifying_key();
+        assert!(GenesisBuilder::verify_currency_genesis(&genesis, &wrong_key).is_err());
     }
 
     #[test]

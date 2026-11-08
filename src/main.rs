@@ -1320,6 +1320,10 @@ enum Commands {
         /// Required genesis directory containing currency_chain_genesis.json and the pre-stake validator set
         #[arg(long)]
         genesis_dir: Option<PathBuf>,
+
+        /// Trusted coordinator Ed25519 public key (32-byte hex) used to verify currency genesis
+        #[arg(long)]
+        trusted_genesis_key: String,
     },
 
     /// Launch full testnet (validators + relays + clients)
@@ -3517,6 +3521,7 @@ async fn main() -> Result<()> {
             tracing,
             genesis_bootstrap,
             genesis_dir,
+            trusted_genesis_key,
         } => {
             // Initialize observability if tracing is enabled
             let _observability = if tracing {
@@ -3541,6 +3546,7 @@ async fn main() -> Result<()> {
                 cli.currency_chain_id,
                 genesis_bootstrap,
                 genesis_dir,
+                trusted_genesis_key,
             )
             .await
         }
@@ -6495,6 +6501,8 @@ async fn run_prestake_genesis_command(action: PreStakeGenesisCommand) -> Result<
             };
 
             let signing_key = ed25519_dalek::SigningKey::from_bytes(&key_bytes);
+            let trusted_genesis_key =
+                hex::encode(signing_key.verifying_key().as_bytes());
 
             // Build and generate genesis
             let builder = PreStakeGenesisBuilder::new(manifest_data, signing_key);
@@ -6504,12 +6512,13 @@ async fn run_prestake_genesis_command(action: PreStakeGenesisCommand) -> Result<
 
             info!("✅ Genesis files generated!");
             info!("   Output directory: {:?}", output);
+            info!("   Trusted coordinator public key: {}", trusted_genesis_key);
             info!("");
             info!("Next steps:");
             info!("  1. Distribute genesis files to all validators");
             info!(
-                "  2. Each validator starts with: dchat --role validator --genesis-dir {:?}",
-                output
+                "  2. Each validator starts with: dchat --role validator --genesis-dir {:?} --trusted-genesis-key {}",
+                output, trusted_genesis_key
             );
             info!("  3. Network starts automatically with pre-staked validators");
 
@@ -7266,6 +7275,7 @@ async fn run_validator_node(
     currency_chain_id: u32,
     genesis_bootstrap: bool,
     genesis_dir: Option<PathBuf>,
+    trusted_genesis_key: String,
 ) -> Result<()> {
     info!("⚙️  Starting validator node...");
 
@@ -7277,6 +7287,15 @@ async fn run_validator_node(
             "The local currency-chain BFT pipeline requires --genesis-dir with currency_chain_genesis.json",
         ));
     }
+    let trusted_genesis_key_bytes = hex::decode(trusted_genesis_key.trim())
+        .map_err(|error| Error::validation(format!("Invalid trusted genesis key hex: {}", error)))?;
+    let trusted_genesis_key_bytes: [u8; 32] = trusted_genesis_key_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| Error::validation("Trusted genesis key must be 32 bytes"))?;
+    let trusted_genesis_key =
+        ed25519_dalek::VerifyingKey::from_bytes(&trusted_genesis_key_bytes)
+            .map_err(|error| Error::validation(format!("Invalid trusted genesis key: {}", error)))?;
 
     let chain_rpc_display = chain_rpc.as_deref().unwrap_or("N/A (using genesis)");
     info!("Chain RPC: {}", chain_rpc_display);
@@ -8426,7 +8445,7 @@ async fn run_validator_node(
     let mut currency_genesis_for_state = None;
     let genesis_stake_amount = if let Some(ref genesis_path) = genesis_dir {
         // Load pre-stake genesis and verify this validator is included
-        use dchat_chain::chain::genesis::CurrencyGenesisBlock;
+        use dchat_chain::chain::genesis::{CurrencyGenesisBlock, GenesisBuilder};
 
         let currency_genesis_path = genesis_path.join("currency_chain_genesis.json");
         if !currency_genesis_path.exists() {
@@ -8440,6 +8459,10 @@ async fn run_validator_node(
             .map_err(|e| Error::io(format!("Failed to read genesis file: {}", e)))?;
         let currency_genesis: CurrencyGenesisBlock = serde_json::from_str(&genesis_json)
             .map_err(|e| Error::serialization(format!("Failed to parse genesis: {}", e)))?;
+        GenesisBuilder::verify_currency_genesis(&currency_genesis, &trusted_genesis_key)
+            .map_err(|error| {
+                Error::validation(format!("Currency genesis authentication failed: {}", error))
+            })?;
         currency_genesis_for_state = Some(currency_genesis.clone());
 
         // Collect all authorized validator public keys from genesis
