@@ -66,7 +66,7 @@ impl TurnClient {
             match self.allocate_on_server(server).await {
                 Ok(relay_addr) => return Ok(relay_addr),
                 Err(e) => {
-                    eprintln!("TURN allocation on {} failed: {}", server.address, e);
+                    dchat_log::warn!("TURN allocation on {} failed: {}", server.address, e);
                     continue;
                 }
             }

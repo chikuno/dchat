@@ -1,4 +1,4 @@
-//! Log entry and severity level definitions
+//! Log entry, severity level, and output domain definitions
 
 #[cfg(all(not(feature = "std"), feature = "alloc"))]
 use alloc::string::String;
@@ -38,6 +38,30 @@ impl core::fmt::Display for LogLevel {
     }
 }
 
+/// The operational domain or kind of log/output entry
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum LogKind {
+    /// Smart contract execution log (msg!, log_64!, etc.)
+    Program = 0,
+    /// System or daemon leveled log (info!, warn!, etc.)
+    System = 1,
+    /// CLI standard user-facing output (out!)
+    CliOut = 2,
+    /// CLI error output (err!)
+    CliErr = 3,
+    /// CLI success banner (success!)
+    CliSuccess = 4,
+    /// CLI failure banner (failure!)
+    CliFailure = 5,
+    /// CLI section header (header!)
+    CliHeader = 6,
+    /// CLI key-value attribute (kv!)
+    CliKv = 7,
+    /// Developer diagnostic trace (dbg!)
+    Debug = 8,
+}
+
 /// A structured log entry recorded during execution
 #[cfg(any(feature = "std", feature = "alloc"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +69,8 @@ impl core::fmt::Display for LogLevel {
 pub struct LogEntry {
     /// Log message content
     pub message: String,
+    /// The domain / origin of this entry
+    pub kind: LogKind,
     /// Program address (32 bytes) that emitted the log, if applicable
     pub program_id: Option<[u8; 32]>,
     /// Call depth for Cross-Program Invocations (0 for root invocation)
@@ -61,6 +87,7 @@ impl LogEntry {
     pub fn new_program_log(program_id: Option<[u8; 32]>, message: String, depth: u8) -> Self {
         Self {
             message,
+            kind: LogKind::Program,
             program_id,
             depth,
             level: LogLevel::Info,
@@ -72,6 +99,24 @@ impl LogEntry {
     pub fn new_leveled(level: LogLevel, message: String) -> Self {
         Self {
             message,
+            kind: LogKind::System,
+            program_id: None,
+            depth: 0,
+            level,
+            timestamp_ms: 0,
+        }
+    }
+
+    /// Create a new CLI / user-facing output entry
+    pub fn new_cli(kind: LogKind, message: String) -> Self {
+        let level = match kind {
+            LogKind::CliErr | LogKind::CliFailure => LogLevel::Error,
+            LogKind::Debug => LogLevel::Debug,
+            _ => LogLevel::Info,
+        };
+        Self {
+            message,
+            kind,
             program_id: None,
             depth: 0,
             level,

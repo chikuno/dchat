@@ -40,7 +40,7 @@ impl StunClient {
             match self.query_server(server).await {
                 Ok(addr) => return Ok(addr),
                 Err(e) => {
-                    eprintln!("STUN query to {} failed: {}", server, e);
+                    dchat_log::warn!("STUN query to {} failed: {}", server, e);
                     continue;
                 }
             }
@@ -300,7 +300,7 @@ mod tests {
         // Either succeeds or fails gracefully
         match result {
             Ok(addr) => assert!(addr.port() > 0),
-            Err(e) => println!("STUN test expected failure: {}", e),
+            Err(e) => dchat_log::debug!("STUN test expected failure: {}", e),
         }
     }
 }

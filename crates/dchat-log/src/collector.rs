@@ -32,11 +32,10 @@ pub fn set_global_sink(sink: Box<dyn LogSink>) {
     }
 }
 
-/// Record a log entry on the host
+/// Check and record to thread-local test buffer if active
 #[cfg(feature = "std")]
-pub fn record_host_entry(entry: LogEntry) {
-    // 1. Priority: Thread-local test capture
-    let captured = TEST_BUFFER.with(|buf| {
+pub fn record_host_test_capture(entry: &LogEntry) -> bool {
+    TEST_BUFFER.with(|buf| {
         let mut b = buf.borrow_mut();
         if let Some(vec) = b.as_mut() {
             vec.push(entry.clone());
@@ -44,9 +43,14 @@ pub fn record_host_entry(entry: LogEntry) {
         } else {
             false
         }
-    });
+    })
+}
 
-    if captured {
+/// Record a log entry on the host
+#[cfg(feature = "std")]
+pub fn record_host_entry(entry: LogEntry) {
+    // 1. Priority: Thread-local test capture
+    if record_host_test_capture(&entry) {
         return;
     }
 

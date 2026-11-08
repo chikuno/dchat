@@ -86,6 +86,7 @@ dchat-bots = { path = "crates/dchat-bots" }
 dchat-sdk-rust = { path = "crates/dchat-sdk-rust" }
 dchat-programs = { path = "crates/dchat-programs" }
 dchat-miniapps = { path = "crates/dchat-miniapps" }
+dchat-log = { path = "crates/dchat-log" }
 dchat-deployment = { path = "crates/dchat-deployment", optional = true }
 
 # WASM runtime for smart contract validation

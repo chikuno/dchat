@@ -188,7 +188,7 @@ impl CliError {
 
     /// Print the error to stderr and return the exit code
     pub fn print_and_exit_code(&self) -> ExitCode {
-        eprintln!("{}", self.format_for_display());
+        dchat_log::err!("{}", self.format_for_display());
         self.exit_code()
     }
 }

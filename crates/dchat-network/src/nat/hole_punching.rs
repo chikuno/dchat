@@ -171,7 +171,7 @@ impl HolePuncher {
             sleep(interval).await;
 
             if let Err(e) = Self::send_keepalive(&socket, peer_addr).await {
-                eprintln!("Keepalive failed: {}", e);
+                dchat_log::debug!("Keepalive failed: {}", e);
                 break;
             }
         }

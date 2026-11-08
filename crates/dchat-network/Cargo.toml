@@ -15,6 +15,7 @@ qge-integration-tests = []
 dchat-core = { path = "../dchat-core" }
 dchat-crypto = { path = "../dchat-crypto" }
 dchat-identity = { path = "../dchat-identity" }
+dchat-log = { path = "../dchat-log" }
 
 # Cryptography
 sha2 = "0.10"

@@ -782,10 +782,10 @@ mod tests {
             Ok(key) => {
                 // Verify the extracted key matches the original
                 assert_eq!(key.to_bytes(), verifying_key.to_bytes());
-                println!("✅ Successfully extracted Ed25519 key from PeerId");
+                dchat_log::success!("Successfully extracted Ed25519 key from PeerId");
             }
             Err(e) => {
-                println!(
+                dchat_log::warn!(
                     "⚠️ Key extraction failed (may need libp2p identity encoding): {}",
                     e
                 );
@@ -825,7 +825,7 @@ mod tests {
         let result = verifying_key.verify_strict(&message_bytes, &signature);
 
         assert!(result.is_ok(), "Signature verification should succeed");
-        println!("✅ Ed25519 signature verification working correctly");
+        dchat_log::success!("Ed25519 signature verification working correctly");
     }
 
     #[tokio::test]

@@ -168,6 +168,116 @@ macro_rules! trace {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// CLI & USER OUTPUT MACROS (REPLACING PRINTLN! & EPRINTLN! ACROSS CLI/COMMANDS)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Emit standard user-facing output (replaces `println!`)
+///
+/// Respects quiet mode (`--quiet`) and JSON mode (`--json`).
+#[macro_export]
+macro_rules! out {
+    () => {
+        $crate::cli::cli_out("");
+    };
+    ($msg:literal) => {
+        $crate::cli::cli_out($msg);
+    };
+    ($($arg:tt)*) => {
+        $crate::cli::cli_out(&$crate::__private::format!($($arg)*));
+    };
+}
+
+/// Emit user-facing error output (replaces `eprintln!`)
+#[macro_export]
+macro_rules! err {
+    () => {
+        $crate::cli::cli_err("");
+    };
+    ($msg:literal) => {
+        $crate::cli::cli_err($msg);
+    };
+    ($($arg:tt)*) => {
+        $crate::cli::cli_err(&$crate::__private::format!($($arg)*));
+    };
+}
+
+/// Emit a success banner (green checkmark or JSON success status)
+#[macro_export]
+macro_rules! success {
+    ($msg:literal) => {
+        $crate::cli::cli_success($msg);
+    };
+    ($($arg:tt)*) => {
+        $crate::cli::cli_success(&$crate::__private::format!($($arg)*));
+    };
+}
+
+/// Emit a failure banner (red cross or JSON error status)
+#[macro_export]
+macro_rules! failure {
+    ($msg:literal) => {
+        $crate::cli::cli_failure($msg);
+    };
+    ($($arg:tt)*) => {
+        $crate::cli::cli_failure(&$crate::__private::format!($($arg)*));
+    };
+}
+
+/// Emit a bold section header banner
+#[macro_export]
+macro_rules! header {
+    ($msg:literal) => {
+        $crate::cli::cli_header($msg);
+    };
+    ($($arg:tt)*) => {
+        $crate::cli::cli_header(&$crate::__private::format!($($arg)*));
+    };
+}
+
+/// Emit an aligned key-value pair
+#[macro_export]
+macro_rules! kv {
+    ($key:expr, $val:expr) => {
+        $crate::cli::cli_kv(&$crate::__private::format!("{}", $key), &$crate::__private::format!("{}", $val));
+    };
+}
+
+/// Safe diagnostic tracing macro (replaces `std::dbg!`)
+///
+/// Prints expression, line, and evaluated value without leaking into production.
+/// Returns the evaluated expression matching `std::dbg!`.
+#[macro_export]
+macro_rules! dchat_dbg {
+    () => {
+        $crate::cli::cli_dbg("", file!(), line!(), "");
+    };
+    ($val:expr $(,)?) => {
+        match $val {
+            tmp => {
+                $crate::cli::cli_dbg(
+                    stringify!($val),
+                    file!(),
+                    line!(),
+                    &$crate::__private::format!("{:?}", &tmp),
+                );
+                tmp
+            }
+        }
+    };
+    ($($val:expr),+ $(,)?) => {
+        ($($crate::dchat_dbg!($val)),+,)
+    };
+}
+
+/// Direct alias for `dchat_dbg!` when explicitly imported
+#[macro_export]
+macro_rules! dbg {
+    ($($arg:tt)*) => {
+        $crate::dchat_dbg!($($arg)*);
+    };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // SOLANA COMPATIBILITY ALIASES
 // ═══════════════════════════════════════════════════════════════════════════════
 

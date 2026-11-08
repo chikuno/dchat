@@ -144,7 +144,7 @@ impl NatTraversal {
             match UpnpClient::new(config.discovery_timeout).await {
                 Ok(client) => Some(client),
                 Err(e) => {
-                    eprintln!("UPnP initialization failed: {}", e);
+                    dchat_log::warn!("UPnP initialization failed: {}", e);
                     None
                 }
             }

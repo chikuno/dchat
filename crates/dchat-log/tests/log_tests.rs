@@ -13,6 +13,7 @@ fn test_msg_formatting_and_capture() {
     assert_eq!(logs.len(), 2);
     assert_eq!(logs[0].message, "Program log: Simple static message");
     assert_eq!(logs[1].message, "Program log: Transferred 1000 motes to alice");
+    assert_eq!(logs[0].kind, LogKind::Program);
 }
 
 #[test]
@@ -75,6 +76,7 @@ fn test_leveled_logging() {
 
     assert_eq!(logs.len(), 5);
     assert_eq!(logs[0].level, LogLevel::Info);
+    assert_eq!(logs[0].kind, LogKind::System);
     assert_eq!(logs[0].message, "[INFO] Server started on port 8080");
     assert_eq!(logs[1].level, LogLevel::Warn);
     assert_eq!(logs[1].message, "[WARN] High memory consumption detected");
@@ -82,6 +84,75 @@ fn test_leveled_logging() {
     assert_eq!(logs[2].message, "[ERROR] Database connection dropped");
     assert_eq!(logs[3].level, LogLevel::Debug);
     assert_eq!(logs[4].level, LogLevel::Trace);
+}
+
+#[test]
+fn test_cli_output_macros() {
+    let logs = capture_logs_only(|| {
+        out!("Welcome to Dchat CLI v{}", "1.0.0");
+        err!("Warning: Config file not found, using defaults");
+        success!("Connected to bootstrap node {}", "127.0.0.1:8000");
+        failure!("Failed to sync block {}", 404);
+        header!("Account Status");
+        kv!("Balance", "1,500.00 DCHAT");
+    });
+
+    assert_eq!(logs.len(), 6);
+    assert_eq!(logs[0].kind, LogKind::CliOut);
+    assert_eq!(logs[0].message, "Welcome to Dchat CLI v1.0.0");
+
+    assert_eq!(logs[1].kind, LogKind::CliErr);
+    assert_eq!(logs[1].message, "Warning: Config file not found, using defaults");
+
+    assert_eq!(logs[2].kind, LogKind::CliSuccess);
+    assert!(logs[2].message.contains("Connected to bootstrap node"));
+
+    assert_eq!(logs[3].kind, LogKind::CliFailure);
+    assert!(logs[3].message.contains("Failed to sync block 404"));
+
+    assert_eq!(logs[4].kind, LogKind::CliHeader);
+    assert_eq!(logs[4].message, "=== Account Status ===");
+
+    assert_eq!(logs[5].kind, LogKind::CliKv);
+    assert_eq!(logs[5].message, "Balance: 1,500.00 DCHAT");
+}
+
+#[test]
+fn test_dbg_macro_passthrough() {
+    let logs = capture_logs_only(|| {
+        let x = 42;
+        let y = dchat_dbg!(x * 2);
+        assert_eq!(y, 84);
+
+        // Also test direct alias
+        let z = dchat_log::dbg!(y + 16);
+        assert_eq!(z, 100);
+    });
+
+    assert_eq!(logs.len(), 2);
+    assert_eq!(logs[0].kind, LogKind::Debug);
+    assert!(logs[0].message.contains("x * 2 = 84"));
+    assert_eq!(logs[1].kind, LogKind::Debug);
+    assert!(logs[1].message.contains("y + 16 = 100"));
+}
+
+#[test]
+fn test_cli_mode_flags() {
+    set_quiet(true);
+    assert!(is_quiet());
+    assert_eq!(get_output_mode(), OutputMode::Quiet);
+
+    set_quiet(false);
+    assert!(!is_quiet());
+    assert_eq!(get_output_mode(), OutputMode::Standard);
+
+    set_json_mode(true);
+    assert!(is_json_mode());
+    assert_eq!(get_output_mode(), OutputMode::Json);
+
+    set_json_mode(false);
+    assert!(!is_json_mode());
+    assert_eq!(get_output_mode(), OutputMode::Standard);
 }
 
 #[test]
