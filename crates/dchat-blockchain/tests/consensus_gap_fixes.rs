@@ -109,6 +109,7 @@ async fn test_vote_persistence_porw() {
     let keypair = SigningKey::generate(&mut OsRng);
     let vote = PoRWVoteRecord {
         id: Uuid::new_v4(),
+        block_height: 1,
         block_hash: "test_block_123".to_string(),
         validator_pubkey: keypair.verifying_key().to_bytes().to_vec(),
         vote_weight: 0.05,

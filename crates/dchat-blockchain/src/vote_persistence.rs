@@ -40,6 +40,7 @@ pub type Result<T> = std::result::Result<T, VotePersistenceError>;
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct PoRWVoteRecord {
     pub id: Uuid,
+    pub block_height: i64,
     pub block_hash: String,
     pub validator_pubkey: Vec<u8>,
     pub vote_weight: f64,
@@ -112,6 +113,7 @@ impl VotePersistence {
             r#"
             CREATE TABLE IF NOT EXISTS porw_votes (
                 id UUID PRIMARY KEY,
+                block_height BIGINT NOT NULL DEFAULT 0,
                 block_hash TEXT NOT NULL,
                 validator_pubkey BYTEA NOT NULL,
                 vote_weight DOUBLE PRECISION NOT NULL,
@@ -130,6 +132,42 @@ impl VotePersistence {
             CREATE INDEX IF NOT EXISTS idx_porw_votes_block_hash ON porw_votes(block_hash);
             CREATE INDEX IF NOT EXISTS idx_porw_votes_timestamp ON porw_votes(timestamp);
             CREATE INDEX IF NOT EXISTS idx_porw_votes_finalized ON porw_votes(is_finalized);
+            "#,
+        )
+        .execute(&*self.pool)
+        .await?;
+
+        sqlx::query("ALTER TABLE porw_votes ADD COLUMN IF NOT EXISTS block_height BIGINT")
+            .execute(&*self.pool)
+            .await?;
+        sqlx::query(
+            r#"
+            UPDATE porw_votes
+            SET block_height = CASE
+                WHEN block_hash ~ '^[0-9]+$' THEN
+                    CASE
+                        WHEN block_hash::numeric BETWEEN 1 AND 9223372036854775807
+                        THEN block_hash::BIGINT
+                        ELSE 0
+                    END
+                ELSE 0
+            END
+            WHERE block_height IS NULL
+            "#,
+        )
+        .execute(&*self.pool)
+        .await?;
+        sqlx::query("ALTER TABLE porw_votes ALTER COLUMN block_height SET DEFAULT 0")
+            .execute(&*self.pool)
+            .await?;
+        sqlx::query("ALTER TABLE porw_votes ALTER COLUMN block_height SET NOT NULL")
+            .execute(&*self.pool)
+            .await?;
+        sqlx::query(
+            r#"
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_porw_votes_height_validator
+            ON porw_votes(block_height, validator_pubkey)
+            WHERE block_height > 0
             "#,
         )
         .execute(&*self.pool)
@@ -192,17 +230,25 @@ impl VotePersistence {
 
     /// Store PoRW vote
     pub async fn store_porw_vote(&self, vote: &PoRWVoteRecord) -> Result<()> {
-        sqlx::query(
+        if vote.block_height <= 0 || vote.validator_pubkey.len() != 32 || vote.signature.len() != 64
+        {
+            return Err(VotePersistenceError::InvalidData(
+                "PoRW vote height, validator key, or signature is invalid".to_string(),
+            ));
+        }
+
+        let result = sqlx::query(
             r#"
             INSERT INTO porw_votes (
-                id, block_hash, validator_pubkey, vote_weight, stake_amount,
+                id, block_height, block_hash, validator_pubkey, vote_weight, stake_amount,
                 delivery_count, uptime_hours, reputation_score, seniority_days,
                 region, signature, timestamp, is_finalized
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-            ON CONFLICT (block_hash, validator_pubkey) DO NOTHING
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            ON CONFLICT DO NOTHING
             "#,
         )
         .bind(vote.id)
+        .bind(vote.block_height)
         .bind(&vote.block_hash)
         .bind(&vote.validator_pubkey)
         .bind(vote.vote_weight)
@@ -218,7 +264,33 @@ impl VotePersistence {
         .execute(&*self.pool)
         .await?;
 
-        Ok(())
+        if result.rows_affected() > 0 {
+            return Ok(());
+        }
+
+        let existing = sqlx::query_as::<_, (String, Vec<u8>)>(
+            r#"
+            SELECT block_hash, signature
+            FROM porw_votes
+            WHERE validator_pubkey = $1 AND block_height = $2
+            "#,
+        )
+        .bind(&vote.validator_pubkey)
+        .bind(vote.block_height)
+        .fetch_optional(&*self.pool)
+        .await?;
+
+        match existing {
+            Some((block_hash, signature))
+                if block_hash == vote.block_hash && signature == vote.signature =>
+            {
+                Ok(())
+            }
+            _ => Err(VotePersistenceError::DuplicateVote(
+                vote.block_height.to_string(),
+                hex::encode(&vote.validator_pubkey),
+            )),
+        }
     }
 
     /// Record PoRW vote (alias for store_porw_vote)
@@ -227,7 +299,10 @@ impl VotePersistence {
     }
 
     /// Query latest votes for a validator to prevent double-signing across process restarts
-    pub async fn get_latest_votes_for_validator(&self, validator_pubkey: &[u8]) -> Result<Vec<PoRWVoteRecord>> {
+    pub async fn get_latest_votes_for_validator(
+        &self,
+        validator_pubkey: &[u8],
+    ) -> Result<Vec<PoRWVoteRecord>> {
         let votes = sqlx::query_as::<_, PoRWVoteRecord>(
             "SELECT * FROM porw_votes WHERE validator_pubkey = $1 ORDER BY timestamp DESC LIMIT 100",
         )

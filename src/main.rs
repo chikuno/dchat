@@ -96,7 +96,9 @@ use dchat_chain::pruning::{NodeType as PruningNodeType, PruningConfig, PruningMa
 
 // Security infrastructure - GeoIP and vote persistence (dchat-blockchain crate)
 use dchat_blockchain::geoip::GeoIPManager;
-use dchat_blockchain::vote_persistence::{PoRWVoteRecord, VotePersistence};
+use dchat_blockchain::vote_persistence::{
+    PoRWVoteRecord, VotePersistence, VotePersistenceError,
+};
 
 // Block hierarchy infrastructure - data availability and fraud proofs
 use dchat_blockchain::block_hierarchy::{
@@ -7273,6 +7275,78 @@ async fn run_testnet(
     Ok(())
 }
 
+fn create_porw_vote_record(
+    block_height: u64,
+    block_hash: &[u8],
+    validator_pubkey: &[u8],
+    signature: &[u8],
+) -> std::result::Result<PoRWVoteRecord, String> {
+    if block_height == 0 {
+        return Err("PoRW vote height must be positive".to_string());
+    }
+    let block_height = i64::try_from(block_height)
+        .map_err(|_| "PoRW vote height exceeds the persistence range".to_string())?;
+    let block_hash: [u8; 32] = block_hash
+        .try_into()
+        .map_err(|_| "PoRW block hash must be 32 bytes".to_string())?;
+    if validator_pubkey.len() != 32 || signature.len() != 64 {
+        return Err("PoRW validator key or signature has an invalid length".to_string());
+    }
+
+    Ok(PoRWVoteRecord {
+        id: uuid::Uuid::new_v4(),
+        block_height,
+        block_hash: hex::encode(block_hash),
+        validator_pubkey: validator_pubkey.to_vec(),
+        vote_weight: 1.0,
+        stake_amount: 0,
+        delivery_count: 0,
+        uptime_hours: 0.0,
+        reputation_score: 1.0,
+        seniority_days: 0,
+        region: "unknown".to_string(),
+        signature: signature.to_vec(),
+        timestamp: chrono::Utc::now(),
+        is_finalized: false,
+    })
+}
+
+fn decode_persisted_porw_hash(block_hash: &str) -> Option<[u8; 32]> {
+    let encoded = block_hash.strip_prefix("0x").unwrap_or(block_hash);
+    hex::decode(encoded).ok()?.try_into().ok()
+}
+
+async fn persist_local_porw_vote(
+    persistence: &Option<Arc<VotePersistence>>,
+    vote_locks: &Arc<
+        tokio::sync::Mutex<std::collections::HashMap<u64, Option<[u8; 32]>>>,
+    >,
+    vote: &PoRWVoteRecord,
+) -> std::result::Result<(), String> {
+    let height = u64::try_from(vote.block_height)
+        .map_err(|_| "PoRW vote height is invalid".to_string())?;
+    let hash = decode_persisted_porw_hash(&vote.block_hash)
+        .ok_or_else(|| "PoRW vote block hash is invalid".to_string())?;
+
+    let mut vote_locks = vote_locks.lock().await;
+    if vote_locks
+        .get(&height)
+        .is_some_and(|existing_hash| *existing_hash != Some(hash))
+    {
+        return Err(format!(
+            "refusing to sign a conflicting chat-chain block at height {height}"
+        ));
+    }
+    if let Some(persistence) = persistence {
+        persistence
+            .record_porw_vote(vote)
+            .await
+            .map_err(|error| format!("failed to persist PoRW vote: {error}"))?;
+    }
+    vote_locks.insert(height, Some(hash));
+    Ok(())
+}
+
 /// Run as validator node
 async fn run_validator_node(
     config: Config,
@@ -8133,28 +8207,22 @@ async fn run_validator_node(
 
     // Initialize VotePersistence for consensus audit trail
     let vote_persistence: Option<Arc<VotePersistence>> = if config.vote_persistence.enabled {
-        if let Some(ref db_url) = config.vote_persistence.database_url {
-            info!("📊 Initializing vote persistence for consensus audit trail...");
-            match VotePersistence::new(db_url).await {
-                Ok(persistence) => {
-                    // Initialize database schema
-                    if let Err(e) = persistence.initialize_schema().await {
-                        warn!("   ⚠ Vote persistence schema init failed: {}", e);
-                        None
-                    } else {
-                        info!("   ✓ Vote persistence ready (retention: {} days)", config.vote_persistence.retention_days);
-                        Some(Arc::new(persistence))
-                    }
-                }
-                Err(e) => {
-                    warn!("   ⚠ Vote persistence connection failed: {} - audit trail disabled", e);
-                    None
-                }
-            }
-        } else {
-            warn!("Vote persistence enabled but no database_url configured");
-            None
-        }
+        let db_url = config
+            .vote_persistence
+            .database_url
+            .as_deref()
+            .filter(|url| !url.trim().is_empty())
+            .ok_or_else(|| Error::storage("Vote persistence is enabled but database_url is missing"))?;
+        info!("📊 Initializing vote persistence for consensus audit trail...");
+        let persistence = VotePersistence::new(db_url)
+            .await
+            .map_err(|error| Error::storage(format!("Vote persistence connection failed: {error}")))?;
+        persistence
+            .initialize_schema()
+            .await
+            .map_err(|error| Error::storage(format!("Vote persistence schema init failed: {error}")))?;
+        info!("   ✓ Vote persistence ready (retention: {} days)", config.vote_persistence.retention_days);
+        Some(Arc::new(persistence))
     } else {
         debug!("Vote persistence disabled (config.vote_persistence.enabled = false)");
         None
@@ -8839,6 +8907,67 @@ async fn run_validator_node(
 
     // Get public key bytes for signing in consensus (validator_key is moved into Arc for sharing)
     let validator_public_key_bytes = validator_key.public_key_bytes();
+    let local_porw_vote_locks = Arc::new(tokio::sync::Mutex::new(
+        std::collections::HashMap::<u64, Option<[u8; 32]>>::new(),
+    ));
+    if let Some(persistence) = &vote_persistence {
+        let persisted_votes = persistence
+            .get_latest_votes_for_validator(&validator_public_key_bytes)
+            .await
+            .map_err(|error| {
+                Error::storage(format!("Failed to recover persisted PoRW vote locks: {error}"))
+            })?;
+        let mut vote_locks = local_porw_vote_locks.lock().await;
+        for vote in persisted_votes {
+            let Ok(height) = u64::try_from(vote.block_height) else {
+                return Err(Error::storage(
+                    "Vote persistence contains an invalid PoRW vote height",
+                ));
+            };
+            if height == 0 {
+                continue;
+            }
+            let hash = decode_persisted_porw_hash(&vote.block_hash);
+            if let Some(hash) = hash {
+                let signature: [u8; 64] = vote.signature.as_slice().try_into().map_err(|_| {
+                    Error::storage(format!(
+                        "Vote persistence contains an invalid signature at height {height}"
+                    ))
+                })?;
+                let verifying_key =
+                    ed25519_dalek::VerifyingKey::from_bytes(&validator_public_key_bytes)
+                        .map_err(|error| {
+                            Error::storage(format!(
+                                "Unable to validate recovered PoRW vote key: {error}"
+                            ))
+                        })?;
+                if ed25519_dalek::Verifier::verify(
+                    &verifying_key,
+                    &hash,
+                    &ed25519_dalek::Signature::from_bytes(&signature),
+                )
+                .is_err()
+                {
+                    return Err(Error::storage(format!(
+                        "Vote persistence contains an invalid local signature at height {height}"
+                    )));
+                }
+            }
+            if vote_locks
+                .get(&height)
+                .is_some_and(|existing_hash| *existing_hash != hash)
+            {
+                return Err(Error::storage(format!(
+                    "Vote persistence contains conflicting local PoRW votes at height {height}"
+                )));
+            }
+            vote_locks.insert(height, hash);
+        }
+        info!(
+            "Recovered {} persisted local PoRW vote locks",
+            vote_locks.len()
+        );
+    }
     let validator_key_arc = Arc::new(tokio::sync::Mutex::new(validator_key));
     if let Some(pending_height) = pending_currency_candidates
         .lock()
@@ -9018,6 +9147,7 @@ async fn run_validator_node(
         let slashing_detector_consensus = Arc::clone(&slashing_detector);
         let balance_tracker_consensus = Arc::clone(&balance_tracker);
         let vote_persistence_consensus = vote_persistence.clone();
+        let local_porw_vote_locks_consensus = Arc::clone(&local_porw_vote_locks);
         let staking_enforcer_consensus = staking_enforcer.clone();
         let rpc_chain_id_consensus = rpc_chain_id;
         let currency_chain_id_consensus = currency_chain_id;
@@ -9931,6 +10061,31 @@ async fn run_validator_node(
                                         continue;
                                     }
                                 };
+                                let vote_record = match create_porw_vote_record(
+                                    block_height,
+                                    &block_hash,
+                                    &validator_public_key_bytes,
+                                    &block_signature.to_bytes(),
+                                ) {
+                                    Ok(record) => record,
+                                    Err(error) => {
+                                        error!("Unable to prepare persistent PoRW vote: {}", error);
+                                        continue;
+                                    }
+                                };
+                                if let Err(error) = persist_local_porw_vote(
+                                    &vote_persistence_consensus,
+                                    &local_porw_vote_locks_consensus,
+                                    &vote_record,
+                                )
+                                .await
+                                {
+                                    error!(
+                                        "Refusing to broadcast block #{} without a safe persisted vote: {}",
+                                        block_height, error
+                                    );
+                                    continue;
+                                }
 
                                 info!("  • Block signed with Ed25519 signature: {}", hex::encode(&block_signature.to_bytes()[..8]));
 
@@ -10092,6 +10247,23 @@ async fn run_validator_node(
                                         block_height, received_acks, required_signatures);
                                     warn!("   Block may not be finalized - potential network partition");
                                 } else {
+                                    if let Some(ref persistence) = vote_persistence_consensus {
+                                        if let Err(error) = persistence
+                                            .mark_finalized(&hex::encode(&block_hash))
+                                            .await
+                                        {
+                                            error!(
+                                                "Unable to mark PoRW votes finalized for block #{}: {}",
+                                                block_height, error
+                                            );
+                                        }
+                                    }
+                                    local_porw_vote_locks_consensus
+                                        .lock()
+                                        .await
+                                        .retain(|height, _| {
+                                            *height >= block_height.saturating_sub(100)
+                                        });
                                     let candidate = pending_candidates_consensus
                                         .lock()
                                         .await
@@ -10584,6 +10756,7 @@ async fn run_validator_node(
         let slashing_detector_net = Arc::clone(&slashing_detector);
         // Clone vote persistence for consensus audit trail
         let vote_persistence_net = vote_persistence.clone();
+        let local_porw_vote_locks_net = Arc::clone(&local_porw_vote_locks);
         let mut shutdown = shutdown_tx.subscribe();
 
         tokio::spawn(async move {
@@ -11327,6 +11500,31 @@ async fn run_validator_node(
                                             continue;
                                         }
                                     };
+                                    let vote_record = match create_porw_vote_record(
+                                        height,
+                                        &block_hash,
+                                        &our_validator_id,
+                                        &ack_signature.to_bytes(),
+                                    ) {
+                                        Ok(record) => record,
+                                        Err(error) => {
+                                            error!("Unable to prepare persistent PoRW acknowledgment: {}", error);
+                                            continue;
+                                        }
+                                    };
+                                    if let Err(error) = persist_local_porw_vote(
+                                        &vote_persistence_net,
+                                        &local_porw_vote_locks_net,
+                                        &vote_record,
+                                    )
+                                    .await
+                                    {
+                                        error!(
+                                            "Refusing to acknowledge block #{} without a safe persisted vote: {}",
+                                            height, error
+                                        );
+                                        continue;
+                                    }
 
                                     let ack_message = DchatMessage::BlockAcknowledgment {
                                         block_height: height,
@@ -11361,6 +11559,23 @@ async fn run_validator_node(
                                                 })
                                                 .unwrap_or(0);
                                             if ack_count >= required_signatures_net {
+                                                if let Some(ref persistence) = vote_persistence_net {
+                                                    if let Err(error) = persistence
+                                                        .mark_finalized(&hex::encode(&block_hash))
+                                                        .await
+                                                    {
+                                                        error!(
+                                                            "Unable to mark PoRW votes finalized for block #{}: {}",
+                                                            height, error
+                                                        );
+                                                    }
+                                                }
+                                                local_porw_vote_locks_net
+                                                    .lock()
+                                                    .await
+                                                    .retain(|vote_height, _| {
+                                                        *vote_height >= height.saturating_sub(100)
+                                                    });
                                                 let candidate = pending_candidates_net
                                                     .lock()
                                                     .await
@@ -11400,7 +11615,11 @@ async fn run_validator_node(
                                         block_height, hex::encode(&validator_id[..4.min(validator_id.len())]));
 
                                     // Verify acknowledgment signature
-                                    if validator_id.len() != 32 || signature.len() != 64 {
+                                    if block_height == 0
+                                        || block_hash.len() != 32
+                                        || validator_id.len() != 32
+                                        || signature.len() != 64
+                                    {
                                         warn!("⚠️  Invalid acknowledgment format");
                                         continue;
                                     }
@@ -11474,6 +11693,45 @@ async fn run_validator_node(
                                         }
                                     }
 
+                                    if let Some(ref persistence) = vote_persistence_net {
+                                        match create_porw_vote_record(
+                                            block_height,
+                                            &block_hash,
+                                            &validator_id,
+                                            &signature,
+                                        ) {
+                                            Ok(vote_record) => {
+                                                match persistence
+                                                    .record_porw_vote(&vote_record)
+                                                    .await
+                                                {
+                                                    Ok(()) => {}
+                                                    Err(VotePersistenceError::DuplicateVote(
+                                                        _, _,
+                                                    )) => {
+                                                        warn!(
+                                                            "Rejected persisted conflicting PoRW vote from {} at height {}",
+                                                            hex::encode(&validator_id[..8]),
+                                                            block_height
+                                                        );
+                                                        continue;
+                                                    }
+                                                    Err(error) => {
+                                                        error!(
+                                                            "Unable to persist PoRW vote from {} at height {}: {}",
+                                                            hex::encode(&validator_id[..8]),
+                                                            block_height,
+                                                            error
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            Err(error) => {
+                                                error!("Invalid PoRW vote record at height {}: {}", block_height, error);
+                                            }
+                                        }
+                                    }
+
                                     // Store valid acknowledgment
                                     let mut acks = block_acks_clone.lock().await;
                                     acks.entry(block_height)
@@ -11496,6 +11754,23 @@ async fn run_validator_node(
                                     drop(acks);
 
                                     if ack_count >= required_signatures_net {
+                                        if let Some(ref persistence) = vote_persistence_net {
+                                            if let Err(error) = persistence
+                                                .mark_finalized(&hex::encode(&block_hash))
+                                                .await
+                                            {
+                                                error!(
+                                                    "Unable to mark PoRW votes finalized for block #{}: {}",
+                                                    block_height, error
+                                                );
+                                            }
+                                        }
+                                        local_porw_vote_locks_net
+                                            .lock()
+                                            .await
+                                            .retain(|vote_height, _| {
+                                                *vote_height >= block_height.saturating_sub(100)
+                                            });
                                         let candidate =
                                             pending_candidates_net.lock().await.remove(&block_height);
                                         if let Some((candidate_hash, candidate_state, included_tx_ids)) =
@@ -11519,37 +11794,6 @@ async fn run_validator_node(
                                                 }
                                             }
                                         }
-                                    }
-
-                                    // AUDIT: Persist vote to database for transparency and slashing evidence
-                                    if let Some(ref persistence) = vote_persistence_net {
-                                        // Create PoRW vote record for database persistence
-                                        let vote_record = PoRWVoteRecord {
-                                            id: uuid::Uuid::new_v4(),
-                                            block_hash: format!("{}", block_height),
-                                            validator_pubkey: validator_id.to_vec(),
-                                            vote_weight: 1.0,
-                                            stake_amount: 0, // Would need stake lookup from enforcer
-                                            delivery_count: ack_count as i64,
-                                            uptime_hours: 0.0,
-                                            reputation_score: 1.0,
-                                            seniority_days: 0,
-                                            region: "unknown".to_string(),
-                                            signature: signature.to_vec(),
-                                            timestamp: chrono::Utc::now(),
-                                            is_finalized: false,
-                                        };
-
-                                        // Store asynchronously to avoid blocking consensus
-                                        let persistence_clone = Arc::clone(persistence);
-                                        tokio::spawn(async move {
-                                            if let Err(e) = persistence_clone.store_porw_vote(&vote_record).await {
-                                                debug!("Vote persistence failed: {}", e);
-                                            } else {
-                                                debug!("📝 Vote persisted: block={}, validator={}",
-                                                    vote_record.block_hash, hex::encode(&vote_record.validator_pubkey[..8]));
-                                            }
-                                        });
                                     }
 
                                     // Cleanup old acknowledgments (keep last 100 blocks)
