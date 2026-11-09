@@ -276,7 +276,7 @@ mod tests {
     use dchat_core::config::constants::{
         SLASH_RATE_CENSORSHIP, SLASH_RATE_DOUBLE_SIGN, SLASH_RATE_INVALID_PROOF,
     };
-    use ed25519_dalek::SigningKey;
+    use ed25519_dalek::{Signer, SigningKey};
     use rand::rngs::OsRng;
 
     #[tokio::test]
@@ -284,12 +284,16 @@ mod tests {
         let signing_key = SigningKey::generate(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
 
+        let message1 = b"block-100-a";
+        let message2 = b"block-100-b";
         let offense = SlashableOffense::DoubleSigning {
             block_height: 100,
-            signature1: vec![1; 64],
-            signature2: vec![2; 64],
-            message1_hash: vec![1; 32],
-            message2_hash: vec![2; 32],
+            signature1: signing_key.sign(message1).to_bytes().to_vec(),
+            signature2: signing_key.sign(message2).to_bytes().to_vec(),
+            message1: message1.to_vec(),
+            message2: message2.to_vec(),
+            message1_hash: blake3::hash(message1).as_bytes().to_vec(),
+            message2_hash: blake3::hash(message2).as_bytes().to_vec(),
         };
 
         let evidence = SlashingEvidence::from_offense(verifying_key, &offense, vec![]);

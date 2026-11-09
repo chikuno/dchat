@@ -11664,31 +11664,16 @@ async fn run_validator_node(
 
                                     // SECURITY: Record signature with slashing detector for double-sign detection
                                     {
-                                        // Create message hash for slashing record
-                                        let message_hash: [u8; 32] = blake3::hash(&block_hash).into();
-
                                         // Record this signature - detector will flag if same validator
                                         // already signed a different block at this height
                                         if let Err(e) = slashing_detector_net.record_signature(
                                             verifying_key.clone(),
                                             block_height,
                                             sig.clone(),
-                                            message_hash,
+                                            &block_hash,
                                         ) {
-                                            // This indicates a potential double-sign (slashable offense)
                                             warn!("🚨 SLASHING: Double-sign detected for validator {} at height {}: {}",
                                                 hex::encode(&validator_id[..8]), block_height, e);
-                                            // Flag for slashing
-                                            let _ = slashing_detector_net.flag_for_slashing(
-                                                verifying_key.clone(),
-                                                dchat_chain::chain::slashing::detector::SlashableOffense::DoubleSigning {
-                                                    block_height,
-                                                    signature1: sig_bytes.to_vec(),
-                                                    signature2: vec![], // Previous signature stored in detector
-                                                    message1_hash: message_hash.to_vec(),
-                                                    message2_hash: vec![],
-                                                },
-                                            );
                                             continue; // Reject this acknowledgment
                                         }
                                     }

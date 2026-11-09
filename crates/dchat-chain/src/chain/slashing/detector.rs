@@ -3,7 +3,7 @@
 // Detects equivocation (double-signing), invalid proofs, censorship,
 // and other slashable offenses by validators and relays.
 
-use ed25519_dalek::{Signature, VerifyingKey};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::{Instant, SystemTime};
@@ -40,6 +40,8 @@ pub enum SlashableOffense {
         block_height: u64,
         signature1: Vec<u8>,
         signature2: Vec<u8>,
+        message1: Vec<u8>,
+        message2: Vec<u8>,
         message1_hash: Vec<u8>,
         message2_hash: Vec<u8>,
     },
@@ -90,6 +92,8 @@ pub struct SignatureRecord {
     pub block_height: u64,
     /// The signature itself
     pub signature: Signature,
+    /// Exact bytes that were signed
+    pub message: Vec<u8>,
     /// Hash of the message that was signed
     pub message_hash: [u8; 32],
     /// When the signature was recorded
@@ -133,8 +137,13 @@ impl SlashingDetector {
         validator: VerifyingKey,
         block_height: u64,
         signature: Signature,
-        message_hash: [u8; 32],
+        message: &[u8],
     ) -> Result<(), SlashingError> {
+        validator
+            .verify(message, &signature)
+            .map_err(|_| SlashingError::InvalidSignature)?;
+
+        let message_hash = *blake3::hash(message).as_bytes();
         let mut signatures = self.seen_signatures.write().unwrap();
         let key = (validator, block_height);
 
@@ -143,33 +152,38 @@ impl SlashingDetector {
             block_height,
             signature,
             message_hash,
+            message: message.to_vec(),
             timestamp: SystemTime::now(),
         };
 
         // Check if we've seen a different signature for this validator/height
         if let Some(existing_records) = signatures.get(&key) {
             for existing in existing_records {
-                // Different message hash = equivocation!
-                if existing.message_hash != message_hash {
-                    tracing::warn!(
-                        "🚨 DOUBLE-SIGN DETECTED: Validator {:?} at height {}",
-                        validator,
-                        block_height
-                    );
-
-                    let offense = SlashableOffense::DoubleSigning {
-                        block_height,
-                        signature1: existing.signature.to_bytes().to_vec(),
-                        signature2: signature.to_bytes().to_vec(),
-                        message1_hash: existing.message_hash.to_vec(),
-                        message2_hash: message_hash.to_vec(),
-                    };
-
-                    self.flag_for_slashing(validator, offense)?;
-                    return Err(SlashingError::VerificationFailed(
-                        "Double-signing detected".to_string(),
-                    ));
+                if existing.message.as_slice() == message {
+                    return Ok(());
                 }
+
+                // Different message hash = equivocation!
+                tracing::warn!(
+                    "🚨 DOUBLE-SIGN DETECTED: Validator {:?} at height {}",
+                    validator,
+                    block_height
+                );
+
+                let offense = SlashableOffense::DoubleSigning {
+                    block_height,
+                    signature1: existing.signature.to_bytes().to_vec(),
+                    signature2: signature.to_bytes().to_vec(),
+                    message1: existing.message.clone(),
+                    message2: message.to_vec(),
+                    message1_hash: existing.message_hash.to_vec(),
+                    message2_hash: message_hash.to_vec(),
+                };
+
+                self.flag_for_slashing(validator, offense)?;
+                return Err(SlashingError::VerificationFailed(
+                    "Double-signing detected".to_string(),
+                ));
             }
         }
 
@@ -193,10 +207,11 @@ impl SlashingDetector {
         drop(slashed);
 
         let mut pending = self.pending_slashes.write().unwrap();
-        pending
-            .entry(validator)
-            .or_insert_with(Vec::new)
-            .push(offense.clone());
+        let offenses = pending.entry(validator).or_default();
+        if offenses.contains(&offense) {
+            return Ok(());
+        }
+        offenses.push(offense.clone());
 
         tracing::warn!(
             "⚠️  Validator {:?} flagged for slashing: {:?}",
@@ -246,13 +261,42 @@ impl SlashingDetector {
         block_height: u64,
         signature1: Vec<u8>,
         signature2: Vec<u8>,
+        message1: Vec<u8>,
+        message2: Vec<u8>,
         message1_hash: Vec<u8>,
         message2_hash: Vec<u8>,
     ) -> Result<(), SlashingError> {
+        let expected_message1_hash = blake3::hash(&message1);
+        let expected_message2_hash = blake3::hash(&message2);
+        if message1 == message2
+            || message1_hash.as_slice() != expected_message1_hash.as_bytes().as_slice()
+            || message2_hash.as_slice() != expected_message2_hash.as_bytes().as_slice()
+        {
+            return Err(SlashingError::VerificationFailed(
+                "Invalid double-sign message hashes".to_string(),
+            ));
+        }
+        let signature1_bytes: [u8; 64] = signature1
+            .as_slice()
+            .try_into()
+            .map_err(|_| SlashingError::InvalidSignature)?;
+        let signature2_bytes: [u8; 64] = signature2
+            .as_slice()
+            .try_into()
+            .map_err(|_| SlashingError::InvalidSignature)?;
+        validator
+            .verify(&message1, &Signature::from_bytes(&signature1_bytes))
+            .map_err(|_| SlashingError::InvalidSignature)?;
+        validator
+            .verify(&message2, &Signature::from_bytes(&signature2_bytes))
+            .map_err(|_| SlashingError::InvalidSignature)?;
+
         let offense = SlashableOffense::DoubleSigning {
             block_height,
             signature1,
             signature2,
+            message1,
+            message2,
             message1_hash,
             message2_hash,
         };
@@ -356,21 +400,72 @@ mod tests {
 
         let hash1 = blake3::hash(message1);
         let hash2 = blake3::hash(message2);
+        let sig1_bytes = sig1.to_bytes();
+        let sig2_bytes = sig2.to_bytes();
 
         // First signature should succeed
         assert!(detector
-            .record_signature(verifying_key, block_height, sig1, *hash1.as_bytes())
+            .record_signature(verifying_key, block_height, sig1, message1)
             .is_ok());
 
         // Second signature with different message hash should fail
-        let result =
-            detector.record_signature(verifying_key, block_height, sig2, *hash2.as_bytes());
+        let result = detector.record_signature(verifying_key, block_height, sig2, message2);
         assert!(result.is_err());
 
         // Should have pending slash
         let pending = detector.get_pending_slashes();
         assert_eq!(pending.len(), 1);
-        assert!(pending.contains_key(&verifying_key));
+        let offenses = pending.get(&verifying_key).unwrap();
+        assert_eq!(offenses.len(), 1);
+        assert!(matches!(
+            &offenses[0],
+            SlashableOffense::DoubleSigning {
+                block_height: 100,
+                signature1,
+                signature2,
+                message1: recorded_message1,
+                message2: recorded_message2,
+                message1_hash,
+                message2_hash,
+            } if signature1.as_slice() == sig1_bytes.as_slice()
+                && signature2.as_slice() == sig2_bytes.as_slice()
+                && recorded_message1 == message1
+                && recorded_message2 == message2
+                && message1_hash.as_slice() == hash1.as_bytes()
+                && message2_hash.as_slice() == hash2.as_bytes()
+        ));
+
+        assert!(detector
+            .record_signature(
+                verifying_key,
+                block_height,
+                signing_key.sign(message2),
+                message2
+            )
+            .is_err());
+        assert_eq!(
+            detector
+                .get_pending_slashes()
+                .get(&verifying_key)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn test_record_signature_rejects_invalid_signature() {
+        let detector = SlashingDetector::new();
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let other_key = SigningKey::generate(&mut OsRng);
+        let message = b"block_data";
+        let invalid_signature = other_key.sign(message);
+
+        assert!(matches!(
+            detector.record_signature(signing_key.verifying_key(), 100, invalid_signature, message),
+            Err(SlashingError::InvalidSignature)
+        ));
+        assert!(detector.get_pending_slashes().is_empty());
     }
 
     #[test]

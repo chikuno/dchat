@@ -3,7 +3,7 @@
 // Collects cryptographic evidence of slashable offenses,
 // verifies validity, and prepares for on-chain submission.
 
-use ed25519_dalek::VerifyingKey;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use thiserror::Error;
@@ -127,6 +127,8 @@ impl SlashingEvidence {
         if let SlashableOffense::DoubleSigning {
             signature1,
             signature2,
+            message1,
+            message2,
             message1_hash,
             message2_hash,
             ..
@@ -145,11 +147,39 @@ impl SlashingEvidence {
                     "Identical message hashes".to_string(),
                 ));
             }
-
-            // Verify signatures are valid (32 bytes for Ed25519)
-            if signature1.len() != 64 || signature2.len() != 64 {
-                return Err(EvidenceError::InvalidSignature);
+            if message1 == message2 {
+                return Err(EvidenceError::VerificationFailed(
+                    "Identical signed messages".to_string(),
+                ));
             }
+
+            let accused_bytes: [u8; 32] = self
+                .accused
+                .as_slice()
+                .try_into()
+                .map_err(|_| EvidenceError::InvalidSignature)?;
+            let accused = VerifyingKey::from_bytes(&accused_bytes)
+                .map_err(|_| EvidenceError::InvalidSignature)?;
+            let signature1_bytes: [u8; 64] = signature1
+                .as_slice()
+                .try_into()
+                .map_err(|_| EvidenceError::InvalidSignature)?;
+            let signature2_bytes: [u8; 64] = signature2
+                .as_slice()
+                .try_into()
+                .map_err(|_| EvidenceError::InvalidSignature)?;
+
+            if blake3::hash(&message1).as_bytes().as_slice() != message1_hash.as_slice()
+                || blake3::hash(&message2).as_bytes().as_slice() != message2_hash.as_slice()
+            {
+                return Err(EvidenceError::CryptoVerificationFailed);
+            }
+            accused
+                .verify(&message1, &Signature::from_bytes(&signature1_bytes))
+                .map_err(|_| EvidenceError::CryptoVerificationFailed)?;
+            accused
+                .verify(&message2, &Signature::from_bytes(&signature2_bytes))
+                .map_err(|_| EvidenceError::CryptoVerificationFailed)?;
 
             Ok(())
         } else {
@@ -193,6 +223,14 @@ impl SlashingEvidence {
         // Check expiration
         if self.is_expired() {
             return Err(EvidenceError::Expired);
+        }
+
+        let mut hash_input = self.accused.clone();
+        hash_input.push(self.evidence_type.clone() as u8);
+        hash_input.extend_from_slice(&self.offense_data);
+        hash_input.extend_from_slice(&self.timestamp.to_le_bytes());
+        if self.evidence_hash.as_slice() != blake3::hash(&hash_input).as_bytes().as_slice() {
+            return Err(EvidenceError::CryptoVerificationFailed);
         }
 
         // Verify type-specific evidence
@@ -294,8 +332,22 @@ impl Default for EvidenceBundle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::SigningKey;
+    use ed25519_dalek::{Signer, SigningKey};
     use rand::rngs::OsRng;
+
+    fn valid_double_signing_offense(signing_key: &SigningKey) -> SlashableOffense {
+        let message1 = b"block-100-a".to_vec();
+        let message2 = b"block-100-b".to_vec();
+        SlashableOffense::DoubleSigning {
+            block_height: 100,
+            signature1: signing_key.sign(&message1).to_bytes().to_vec(),
+            signature2: signing_key.sign(&message2).to_bytes().to_vec(),
+            message1_hash: blake3::hash(&message1).as_bytes().to_vec(),
+            message2_hash: blake3::hash(&message2).as_bytes().to_vec(),
+            message1,
+            message2,
+        }
+    }
 
     #[test]
     fn test_evidence_creation() {
@@ -305,13 +357,7 @@ mod tests {
         let witness1 = SigningKey::generate(&mut OsRng).verifying_key();
         let witness2 = SigningKey::generate(&mut OsRng).verifying_key();
 
-        let offense = SlashableOffense::DoubleSigning {
-            block_height: 100,
-            signature1: vec![1; 64],
-            signature2: vec![2; 64],
-            message1_hash: vec![1; 32],
-            message2_hash: vec![2; 32],
-        };
+        let offense = valid_double_signing_offense(&signing_key);
 
         let evidence =
             SlashingEvidence::from_offense(verifying_key, &offense, vec![witness1, witness2]);
@@ -326,13 +372,7 @@ mod tests {
         let signing_key = SigningKey::generate(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
 
-        let offense = SlashableOffense::DoubleSigning {
-            block_height: 100,
-            signature1: vec![1; 64],
-            signature2: vec![2; 64],
-            message1_hash: vec![1; 32],
-            message2_hash: vec![2; 32],
-        };
+        let offense = valid_double_signing_offense(&signing_key);
 
         let evidence = SlashingEvidence::from_offense(verifying_key, &offense, vec![]);
 
@@ -345,17 +385,49 @@ mod tests {
         let verifying_key = signing_key.verifying_key();
 
         // Same signatures - should fail
-        let offense = SlashableOffense::DoubleSigning {
-            block_height: 100,
-            signature1: vec![1; 64],
-            signature2: vec![1; 64], // Same!
-            message1_hash: vec![1; 32],
-            message2_hash: vec![2; 32],
-        };
+        let mut offense = valid_double_signing_offense(&signing_key);
+        if let SlashableOffense::DoubleSigning {
+            signature1,
+            signature2,
+            ..
+        } = &mut offense
+        {
+            *signature2 = signature1.clone();
+        }
 
         let evidence = SlashingEvidence::from_offense(verifying_key, &offense, vec![]);
 
         assert!(evidence.verify_double_sign_evidence().is_err());
+    }
+
+    #[test]
+    fn test_double_sign_evidence_rejects_unrelated_signature() {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let unrelated_key = SigningKey::generate(&mut OsRng);
+        let verifying_key = signing_key.verifying_key();
+        let mut offense = valid_double_signing_offense(&signing_key);
+        if let SlashableOffense::DoubleSigning {
+            signature2,
+            message2,
+            ..
+        } = &mut offense
+        {
+            *signature2 = unrelated_key.sign(message2).to_bytes().to_vec();
+        }
+
+        let evidence = SlashingEvidence::from_offense(verifying_key, &offense, vec![]);
+        assert!(evidence.verify_double_sign_evidence().is_err());
+    }
+
+    #[test]
+    fn test_evidence_verification_rejects_tampered_payload() {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let offense = valid_double_signing_offense(&signing_key);
+        let mut evidence =
+            SlashingEvidence::from_offense(signing_key.verifying_key(), &offense, vec![]);
+        evidence.offense_data[0] ^= 1;
+
+        assert!(evidence.verify().is_err());
     }
 
     #[test]
@@ -390,13 +462,7 @@ mod tests {
         let signing_key = SigningKey::generate(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
 
-        let offense = SlashableOffense::DoubleSigning {
-            block_height: 100,
-            signature1: vec![1; 64],
-            signature2: vec![2; 64],
-            message1_hash: vec![1; 32],
-            message2_hash: vec![2; 32],
-        };
+        let offense = valid_double_signing_offense(&signing_key);
 
         let witnesses: Vec<VerifyingKey> = (0..3)
             .map(|_| SigningKey::generate(&mut OsRng).verifying_key())
