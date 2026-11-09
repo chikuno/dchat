@@ -8,10 +8,10 @@ pub mod chat_chain;
 pub mod client;
 pub mod consensus_types;
 pub mod cross_chain;
-pub mod currency_chain_consensus;
-pub mod currency_chain_storage;
 pub mod currency_chain;
 pub mod currency_chain_block_sync;
+pub mod currency_chain_consensus;
+pub mod currency_chain_storage;
 pub mod hardened_consensus;
 pub mod hash_merkle;
 pub mod proof_of_relay_work;
@@ -58,10 +58,6 @@ pub use consensus_types::{
     BlockVotes, ConsensusError, DeliveryProof, GeographicRegion, RelayScore, RelayVote,
 };
 pub use cross_chain::{CrossChainBridge, CrossChainStatus, CrossChainTransaction};
-pub use currency_chain_consensus::CurrencyBlock;
-pub use currency_chain_storage::{
-    CurrencyChainJournal, CurrencyChainRecovery, CurrencyFinalityVote,
-};
 pub use currency_chain::{
     CreateStorageBondResult, CurrencyChainClient, CurrencyChainConfig, StorageBondRecord,
     StorageBondStatus, TransactionDirection, TransactionHistoryEntry, TransactionHistoryStatus,
@@ -69,6 +65,12 @@ pub use currency_chain::{
 };
 pub use currency_chain_block_sync::{
     BlockSyncConfig, BlockSyncManager, CurrencyBlock, CurrencyBlockHeader, ForkInfo, SyncStatus,
+};
+pub use currency_chain_consensus::CurrencyBlock;
+pub use currency_chain_storage::{
+    currency_view_change_signing_bytes, currency_view_proposal_signing_bytes,
+    verify_view_change_certificate, CurrencyChainJournal, CurrencyChainRecovery,
+    CurrencyFinalityVote, CurrencyViewChangeVote,
 };
 pub use dchat_chain::{Transaction, TransactionStatus, TransactionType};
 #[cfg(feature = "hardened-consensus")]

@@ -166,6 +166,26 @@ pub enum DchatMessage {
         validator_id: Vec<u8>,
         signature: Vec<u8>,
     },
+    /// Authenticated timeout vote for advancing a currency-chain proposal view.
+    CurrencyViewChange {
+        height: u64,
+        view: u64,
+        validator_id: Vec<u8>,
+        locked_block_hash: Vec<u8>,
+        locked_block_data: Vec<u8>,
+        signature: Vec<u8>,
+    },
+    /// Currency proposal justified by a quorum of view-change votes.
+    CurrencyValidatorBlockWithView {
+        height: u64,
+        view: u64,
+        validator_id: Vec<u8>,
+        block_hash: Vec<u8>,
+        signature: Vec<u8>,
+        view_signature: Vec<u8>,
+        block_data: Vec<u8>,
+        view_change_votes: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)>,
+    },
 }
 
 /// Handshake request/response for peer exchange

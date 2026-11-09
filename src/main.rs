@@ -135,10 +135,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tokio::signal;
 use tokio::sync::{broadcast, RwLock};
-use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use dchat_log::{
-    err, failure, header, kv, out, prompt, success,
+    debug, err, error, failure, header, info, kv, out, prompt, success, warn,
     set_json_mode, set_quiet,
 };
 use uuid::Uuid;
@@ -8757,6 +8756,19 @@ async fn run_validator_node(
     let currency_block_acknowledgments: Arc<
         tokio::sync::Mutex<HashMap<u64, HashMap<Vec<u8>, (Vec<u8>, Vec<u8>)>>>,
     > = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let currency_view = Arc::new(AtomicU64::new(currency_recovery.view));
+    let currency_view_change_votes: Arc<
+        tokio::sync::Mutex<
+            HashMap<
+                (u64, u64),
+                HashMap<[u8; 32], dchat_blockchain::CurrencyViewChangeVote>,
+            >,
+        >,
+    > = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let currency_view_locked_blocks: Arc<
+        tokio::sync::Mutex<HashMap<(u64, [u8; 32]), dchat_blockchain::CurrencyBlock>>,
+    > = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let currency_view_progress = Arc::new(tokio::sync::Mutex::new(tokio::time::Instant::now()));
     let pending_currency_candidates: Arc<
         tokio::sync::Mutex<
             HashMap<
@@ -8966,6 +8978,8 @@ async fn run_validator_node(
     // Create shared block height for synchronization between consensus and network event handlers
     use std::sync::atomic::AtomicU64;
     let shared_block_height_global = Arc::new(AtomicU64::new(0));
+    let currency_proposer_order_consensus = currency_proposer_order.clone();
+    let currency_proposer_order_net = currency_proposer_order.clone();
 
     let consensus_handle = {
         let network_arc_clone = network_arc.clone();
@@ -8984,6 +8998,11 @@ async fn run_validator_node(
         let shared_block_height = Arc::clone(&shared_block_height_global);
         let currency_block_height = Arc::clone(&currency_block_height_global);
         let currency_last_hash = Arc::clone(&currency_last_block_hash);
+        let currency_view_consensus = Arc::clone(&currency_view);
+        let currency_view_votes_consensus = Arc::clone(&currency_view_change_votes);
+        let currency_view_locked_blocks_consensus = Arc::clone(&currency_view_locked_blocks);
+        let currency_view_progress_consensus = Arc::clone(&currency_view_progress);
+        let authorized_validators_consensus = Arc::clone(&authorized_validators);
         let currency_rpc_url_for_consensus = consensus_currency_rpc_url.clone();
         let relay_registry_store = Arc::clone(&relay_registry_store);
         let relay_work_store = Arc::clone(&relay_work_store);
@@ -9165,6 +9184,207 @@ async fn run_validator_node(
                     _ = tokio::time::sleep(tokio::time::Duration::from_secs(6)) => {
                         // Block production interval (6 seconds / 2 second slots = 3 slots)
                         let current_slot = slot_leader_selector.current_slot();
+                        let currency_height_for_timeout =
+                            currency_block_height.load(Ordering::SeqCst).saturating_add(1);
+                        let current_currency_view =
+                            currency_view_consensus.load(Ordering::SeqCst);
+                        let timeout_elapsed = currency_view_progress_consensus
+                            .lock()
+                            .await
+                            .elapsed()
+                            >= tokio::time::Duration::from_secs(10);
+                        if timeout_elapsed {
+                            if let Some(next_view) = current_currency_view.checked_add(1) {
+                                let locked_block = currency_journal_consensus
+                                    .lock()
+                                    .await
+                                    .pending_block();
+                                let locked_hash = locked_block.as_ref().map(|block| block.hash);
+                                let locked_block_data = match locked_block.as_ref() {
+                                    Some(block) => match bincode::serialize(block) {
+                                        Ok(bytes) => bytes,
+                                        Err(error) => {
+                                            error!(
+                                                "Unable to serialize currency view-change lock: {}",
+                                                error
+                                            );
+                                            continue;
+                                        }
+                                    },
+                                    None => Vec::new(),
+                                };
+                                let signing_bytes =
+                                    dchat_blockchain::currency_view_change_signing_bytes(
+                                        currency_chain_id_consensus,
+                                        currency_height_for_timeout,
+                                        next_view,
+                                        locked_hash,
+                                    );
+                                {
+                                    let mut journal = currency_journal_consensus.lock().await;
+                                    if let Err(error) = journal
+                                        .record_view_change(
+                                            currency_height_for_timeout,
+                                            next_view,
+                                            locked_hash,
+                                        )
+                                        .await
+                                    {
+                                        error!("Unable to persist currency view-change vote: {}", error);
+                                        continue;
+                                    }
+                                }
+                                let signature = {
+                                    let validator_key = validator_key_arc_clone.lock().await;
+                                    match validator_key.sign_async(&signing_bytes).await {
+                                        Ok(signature) => signature.to_bytes().to_vec(),
+                                        Err(error) => {
+                                            error!(
+                                                "Unable to sign currency view-change vote: {}",
+                                                error
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                };
+                                let vote = dchat_blockchain::CurrencyViewChangeVote {
+                                    validator_id: our_validator_pubkey,
+                                    locked_block_hash: locked_hash,
+                                    signature: signature.clone(),
+                                };
+                                let local_certificate = {
+                                    let mut votes = currency_view_votes_consensus.lock().await;
+                                    let height_votes = votes
+                                        .entry((currency_height_for_timeout, next_view))
+                                        .or_default();
+                                    height_votes.insert(our_validator_pubkey, vote);
+                                    (height_votes.len() >= currency_quorum_consensus)
+                                        .then(|| height_votes.values().cloned().collect::<Vec<_>>())
+                                };
+                                let message = DchatMessage::CurrencyViewChange {
+                                    height: currency_height_for_timeout,
+                                    view: next_view,
+                                    validator_id: our_validator_pubkey.to_vec(),
+                                    locked_block_hash: locked_hash
+                                        .map(|hash| hash.to_vec())
+                                        .unwrap_or_default(),
+                                    locked_block_data,
+                                    signature,
+                                };
+                                if let Err(error) = network_arc_clone
+                                    .lock()
+                                    .await
+                                    .broadcast_validator_block(&message)
+                                {
+                                    error!("Failed to broadcast currency view-change vote: {}", error);
+                                }
+                                if let Some(certificate) = local_certificate {
+                                    let locked_hash =
+                                        match dchat_blockchain::verify_view_change_certificate(
+                                            currency_chain_id_consensus,
+                                            currency_height_for_timeout,
+                                            next_view,
+                                            &certificate,
+                                            authorized_validators_consensus.as_ref(),
+                                            currency_quorum_consensus,
+                                        ) {
+                                            Ok(hash) => hash,
+                                            Err(error) => {
+                                                warn!("Invalid local currency view-change certificate: {}", error);
+                                                continue;
+                                            }
+                                        };
+                                    let certificate_locked_block = if let Some(hash) = locked_hash {
+                                        match locked_block
+                                            .as_ref()
+                                            .filter(|block| block.hash == hash)
+                                            .cloned()
+                                        {
+                                            Some(block) => Some(block),
+                                            None => {
+                                                currency_view_locked_blocks_consensus
+                                                    .lock()
+                                                    .await
+                                                    .get(&(currency_height_for_timeout, hash))
+                                                    .cloned()
+                                            }
+                                        }
+                                    } else {
+                                        None
+                                    };
+                                    if locked_hash.is_some() && certificate_locked_block.is_none() {
+                                        warn!("Currency view-change quorum is missing its locked proposal");
+                                        continue;
+                                    }
+                                    let locked_candidate = if let Some(block) =
+                                        certificate_locked_block.as_ref()
+                                    {
+                                        let state = match block.verify_and_execute(
+                                            &currency_execution_state_consensus.lock().await,
+                                            currency_chain_id_consensus,
+                                        ) {
+                                            Ok(state) => state,
+                                            Err(error) => {
+                                                warn!("Locked currency proposal failed replay: {}", error);
+                                                continue;
+                                            }
+                                        };
+                                        Some((
+                                            block.hash.to_vec(),
+                                            state,
+                                            block.transaction_ids(),
+                                            block.hash,
+                                        ))
+                                    } else {
+                                        None
+                                    };
+                                    let advance_result = {
+                                        let mut journal =
+                                            currency_journal_consensus.lock().await;
+                                        journal
+                                            .advance_view(
+                                                currency_height_for_timeout,
+                                                next_view,
+                                                certificate,
+                                                certificate_locked_block,
+                                            )
+                                            .await
+                                    };
+                                    match advance_result {
+                                        Ok(_) => {
+                                            currency_view_consensus
+                                                .store(next_view, Ordering::SeqCst);
+                                            if let Some(candidate) = locked_candidate {
+                                                pending_currency_candidates_consensus
+                                                    .lock()
+                                                    .await
+                                                    .entry(currency_height_for_timeout)
+                                                    .or_insert(candidate);
+                                            }
+                                            currency_view_votes_consensus
+                                                .lock()
+                                                .await
+                                                .retain(|(height, view), _| {
+                                                    *height > currency_height_for_timeout
+                                                        || (*height == currency_height_for_timeout
+                                                            && *view > next_view)
+                                                });
+                                            currency_view_locked_blocks_consensus
+                                                .lock()
+                                                .await
+                                                .retain(|(height, _), _| {
+                                                    *height > currency_height_for_timeout
+                                                });
+                                        }
+                                        Err(error) => {
+                                            warn!("Unable to persist local currency view change: {}", error);
+                                        }
+                                    }
+                                }
+                                *currency_view_progress_consensus.lock().await =
+                                    tokio::time::Instant::now();
+                            }
+                        }
 
                         // VRF-based leader selection: Compute our leadership proof for this slot
                         // Each validator computes VRF(slot_seed, private_key) and the lowest score wins
@@ -9227,10 +9447,12 @@ async fn run_validator_node(
                             error!("Currency chain height exhausted");
                             continue;
                         };
-                        let currency_proposer_index =
-                            ((currency_height - 1) % currency_proposer_order.len() as u64)
-                                as usize;
-                        let is_currency_proposer = currency_proposer_order
+                        let currency_order_len = currency_proposer_order_consensus.len() as u64;
+                        let currency_proposer_index = (((currency_height - 1)
+                            % currency_order_len
+                            + currency_view_consensus.load(Ordering::SeqCst) % currency_order_len)
+                            % currency_order_len) as usize;
+                        let is_currency_proposer = currency_proposer_order_consensus
                             .get(currency_proposer_index)
                             == Some(&our_validator_pubkey);
 
@@ -10070,12 +10292,74 @@ async fn run_validator_node(
                                             signature
                                         }
                                     };
-                                    let currency_message = DchatMessage::CurrencyValidatorBlock {
-                                        height: currency_height,
-                                        validator_id: validator_public_key_bytes.to_vec(),
-                                        block_hash: currency_hash_bytes.clone(),
-                                        signature: currency_signature_bytes,
-                                        block_data: currency_block_data,
+                                    let currency_view =
+                                        currency_view_consensus.load(Ordering::SeqCst);
+                                    let currency_message = if currency_view == 0 {
+                                        DchatMessage::CurrencyValidatorBlock {
+                                            height: currency_height,
+                                            validator_id: validator_public_key_bytes.to_vec(),
+                                            block_hash: currency_hash_bytes.clone(),
+                                            signature: currency_signature_bytes,
+                                            block_data: currency_block_data,
+                                        }
+                                    } else {
+                                        let Some(certificate) = currency_journal_consensus
+                                            .lock()
+                                            .await
+                                            .view_change_certificate(
+                                                currency_height,
+                                                currency_view,
+                                            )
+                                        else {
+                                            error!(
+                                                "Missing currency view-change certificate for view {}",
+                                                currency_view
+                                            );
+                                            continue;
+                                        };
+                                        let view_signature = {
+                                            let signing_bytes =
+                                                dchat_blockchain::currency_view_proposal_signing_bytes(
+                                                    currency_chain_id_consensus,
+                                                    currency_height,
+                                                    currency_view,
+                                                    currency_hash,
+                                                );
+                                            let validator_key =
+                                                validator_key_arc_clone.lock().await;
+                                            match validator_key.sign_async(&signing_bytes).await {
+                                                Ok(signature) => signature.to_bytes().to_vec(),
+                                                Err(error) => {
+                                                    error!(
+                                                        "Unable to sign currency proposal view: {}",
+                                                        error
+                                                    );
+                                                    continue;
+                                                }
+                                            }
+                                        };
+                                        let certificate = certificate
+                                            .into_iter()
+                                            .map(|vote| {
+                                                (
+                                                    vote.validator_id.to_vec(),
+                                                    vote.locked_block_hash
+                                                        .map(|hash| hash.to_vec())
+                                                        .unwrap_or_default(),
+                                                    vote.signature,
+                                                )
+                                            })
+                                            .collect();
+                                        DchatMessage::CurrencyValidatorBlockWithView {
+                                            height: currency_height,
+                                            view: currency_view,
+                                            validator_id: validator_public_key_bytes.to_vec(),
+                                            block_hash: currency_hash_bytes.clone(),
+                                            signature: currency_signature_bytes,
+                                            view_signature,
+                                            block_data: currency_block_data,
+                                            view_change_votes: certificate,
+                                        }
                                     };
                                     let mut network = network_arc_clone.lock().await;
                                     match network.broadcast_validator_block(&currency_message) {
@@ -10088,6 +10372,8 @@ async fn run_validator_node(
                                             continue;
                                         }
                                     }
+                                    *currency_view_progress_consensus.lock().await =
+                                        tokio::time::Instant::now();
 
                                     let deadline = tokio::time::Instant::now()
                                         + tokio::time::Duration::from_secs(10);
@@ -10161,6 +10447,17 @@ async fn run_validator_node(
                                                 *currency_last_hash.lock().await = hash;
                                                 currency_block_height
                                                     .store(currency_height, Ordering::SeqCst);
+                                                currency_view_consensus.store(0, Ordering::SeqCst);
+                                                currency_view_votes_consensus
+                                                    .lock()
+                                                    .await
+                                                    .retain(|(height, _), _| *height > currency_height);
+                                                currency_view_locked_blocks_consensus
+                                                    .lock()
+                                                    .await
+                                                    .retain(|(height, _), _| *height > currency_height);
+                                                *currency_view_progress_consensus.lock().await =
+                                                    tokio::time::Instant::now();
                                                 let minimum_ack_height =
                                                     currency_height.saturating_sub(100);
                                                 currency_block_acks_clone
@@ -10277,6 +10574,11 @@ async fn run_validator_node(
         let shared_block_height_clone = Arc::clone(&shared_block_height_global);
         let currency_block_height_net = Arc::clone(&currency_block_height_global);
         let currency_last_hash_net = Arc::clone(&currency_last_block_hash);
+        let currency_view_net = Arc::clone(&currency_view);
+        let currency_view_votes_net = Arc::clone(&currency_view_change_votes);
+        let currency_view_locked_blocks_net = Arc::clone(&currency_view_locked_blocks);
+        let currency_view_progress_net = Arc::clone(&currency_view_progress);
+        let currency_proposer_order_net = currency_proposer_order_net.clone();
         let authorized_validators_clone = Arc::clone(&authorized_validators);
         // Clone slashing detector for double-sign detection in network handler
         let slashing_detector_net = Arc::clone(&slashing_detector);
@@ -10300,6 +10602,223 @@ async fn run_validator_node(
                         network_guard.next_event().await
                     } => {
                         if let Some(NetworkEvent::MessageReceived { from, message }) = event {
+                            let mut view_proposal_validated = false;
+                            let message = match message {
+                                DchatMessage::CurrencyValidatorBlockWithView {
+                                    height,
+                                    view,
+                                    validator_id,
+                                    block_hash,
+                                    signature,
+                                    view_signature,
+                                    block_data,
+                                    view_change_votes,
+                                } => {
+                                    if height == 0
+                                        || view == 0
+                                        || block_hash.len() != 32
+                                        || validator_id.len() != 32
+                                        || signature.len() != 64
+                                        || view_signature.len() != 64
+                                        || block_data.len() > 5 * 1024 * 1024
+                                    {
+                                        continue;
+                                    }
+                                    let expected_height = currency_block_height_net
+                                        .load(Ordering::SeqCst)
+                                        .checked_add(1);
+                                    let current_view = currency_view_net.load(Ordering::SeqCst);
+                                    if expected_height != Some(height)
+                                        || (view != current_view
+                                            && current_view.checked_add(1) != Some(view))
+                                    {
+                                        continue;
+                                    }
+                                    let validator_key_bytes: [u8; 32] =
+                                        match validator_id.as_slice().try_into() {
+                                            Ok(bytes) => bytes,
+                                            Err(_) => continue,
+                                        };
+                                    let order_len = currency_proposer_order_net.len() as u64;
+                                    let proposer_index = (((height - 1) % order_len
+                                        + view % order_len)
+                                        % order_len)
+                                        as usize;
+                                    if currency_proposer_order_net.get(proposer_index)
+                                        != Some(&validator_key_bytes)
+                                    {
+                                        warn!("Rejected currency proposal from a non-proposer for view {}", view);
+                                        continue;
+                                    }
+                                    let certificate = match view_change_votes
+                                        .into_iter()
+                                        .map(|(validator_id, locked_hash, signature)| {
+                                            let validator_id: [u8; 32] = validator_id
+                                                .as_slice()
+                                                .try_into()
+                                                .map_err(|_| "invalid view-change voter key")?;
+                                            let locked_block_hash = match locked_hash.as_slice() {
+                                                [] => None,
+                                                bytes if bytes.len() == 32 => Some(
+                                                    bytes
+                                                        .try_into()
+                                                        .map_err(|_| "invalid locked block hash")?,
+                                                ),
+                                                _ => return Err("invalid locked block hash"),
+                                            };
+                                            Ok(dchat_blockchain::CurrencyViewChangeVote {
+                                                validator_id,
+                                                locked_block_hash,
+                                                signature,
+                                            })
+                                        })
+                                        .collect::<Result<
+                                            Vec<_>,
+                                            &str,
+                                        >>()
+                                    {
+                                        Ok(certificate) => certificate,
+                                        Err(_) => continue,
+                                    };
+                                    let locked_hash =
+                                        match dchat_blockchain::verify_view_change_certificate(
+                                            currency_chain_id_net,
+                                            height,
+                                            view,
+                                            &certificate,
+                                            authorized_validators_clone.as_ref(),
+                                            currency_required_signatures_net,
+                                        ) {
+                                            Ok(hash) => hash,
+                                            Err(error) => {
+                                                warn!("Rejected currency view-change certificate: {}", error);
+                                                continue;
+                                            }
+                                        };
+                                    let block: dchat_blockchain::CurrencyBlock =
+                                        match bincode::DefaultOptions::new()
+                                            .with_fixint_encoding()
+                                            .with_limit((5 * 1024 * 1024) as u64)
+                                            .deserialize(&block_data)
+                                        {
+                                            Ok(block) => block,
+                                            Err(_) => continue,
+                                        };
+                                    let block_hash_array: [u8; 32] =
+                                        match block_hash.as_slice().try_into() {
+                                            Ok(hash) => hash,
+                                            Err(_) => continue,
+                                        };
+                                    if block.height != height
+                                        || block.hash != block_hash_array
+                                        || locked_hash.is_some_and(|hash| hash != block.hash)
+                                    {
+                                        continue;
+                                    }
+                                    let proposer_key =
+                                        match ed25519_dalek::VerifyingKey::from_bytes(
+                                            &validator_key_bytes,
+                                        ) {
+                                            Ok(key) => key,
+                                            Err(_) => continue,
+                                        };
+                                    let proposal_signature: [u8; 64] =
+                                        match signature.as_slice().try_into() {
+                                            Ok(bytes) => bytes,
+                                            Err(_) => continue,
+                                        };
+                                    if proposer_key
+                                        .verify(
+                                            &block_hash_array,
+                                            &ed25519_dalek::Signature::from_bytes(
+                                                &proposal_signature,
+                                            ),
+                                        )
+                                        .is_err()
+                                    {
+                                        continue;
+                                    }
+                                    let view_signature_bytes: [u8; 64] =
+                                        match view_signature.as_slice().try_into() {
+                                            Ok(bytes) => bytes,
+                                            Err(_) => continue,
+                                        };
+                                    let view_signing_bytes =
+                                        dchat_blockchain::currency_view_proposal_signing_bytes(
+                                            currency_chain_id_net,
+                                            height,
+                                            view,
+                                            block_hash_array,
+                                        );
+                                    if proposer_key
+                                        .verify(
+                                            &view_signing_bytes,
+                                            &ed25519_dalek::Signature::from_bytes(
+                                                &view_signature_bytes,
+                                            ),
+                                        )
+                                        .is_err()
+                                    {
+                                        continue;
+                                    }
+                                    if block
+                                        .verify_and_execute(
+                                            &currency_execution_state_net.lock().await,
+                                            currency_chain_id_net,
+                                        )
+                                        .is_err()
+                                    {
+                                        continue;
+                                    }
+                                    {
+                                        let mut journal = currency_journal_net.lock().await;
+                                        if journal.view() > view
+                                            || (journal.view() == view
+                                                && journal.required_lock_hash() != locked_hash)
+                                        {
+                                            warn!("Currency proposal view certificate conflicts with persisted view state");
+                                            continue;
+                                        }
+                                        if journal.view() < view {
+                                            if let Err(error) = journal
+                                                .advance_view(
+                                                    height,
+                                                    view,
+                                                    certificate,
+                                                    locked_hash.map(|_| block.clone()),
+                                                )
+                                                .await
+                                            {
+                                                warn!("Rejected currency view transition: {}", error);
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                    currency_view_net.store(view, Ordering::SeqCst);
+                                    currency_view_votes_net
+                                        .lock()
+                                        .await
+                                        .retain(|(entry_height, vote_view), _| {
+                                            *entry_height > height
+                                                || (*entry_height == height && *vote_view > view)
+                                        });
+                                    currency_view_locked_blocks_net
+                                        .lock()
+                                        .await
+                                        .retain(|(entry_height, _), _| *entry_height > height);
+                                    *currency_view_progress_net.lock().await =
+                                        tokio::time::Instant::now();
+                                    view_proposal_validated = true;
+                                    DchatMessage::CurrencyValidatorBlock {
+                                        height,
+                                        validator_id,
+                                        block_hash,
+                                        signature,
+                                        block_data,
+                                    }
+                                }
+                                message => message,
+                            };
                             match message {
                                 DchatMessage::ValidatorBlock {
                                     height,
@@ -11039,6 +11558,240 @@ async fn run_validator_node(
                                     }
                                 }
 
+                                DchatMessage::CurrencyViewChange {
+                                    height,
+                                    view,
+                                    validator_id,
+                                    locked_block_hash,
+                                    locked_block_data,
+                                    signature,
+                                } => {
+                                    let expected_height = currency_block_height_net
+                                        .load(Ordering::SeqCst)
+                                        .checked_add(1);
+                                    if expected_height != Some(height)
+                                        || currency_view_net
+                                            .load(Ordering::SeqCst)
+                                            .checked_add(1)
+                                            != Some(view)
+                                        || validator_id.len() != 32
+                                        || signature.len() != 64
+                                        || locked_block_data.len() > 5 * 1024 * 1024
+                                    {
+                                        continue;
+                                    }
+                                    let validator_key_bytes: [u8; 32] =
+                                        match validator_id.as_slice().try_into() {
+                                            Ok(bytes) => bytes,
+                                            Err(_) => continue,
+                                        };
+                                    if !authorized_validators_clone.contains(&validator_key_bytes) {
+                                        continue;
+                                    }
+                                    let locked_hash = match locked_block_hash.as_slice() {
+                                        [] => None,
+                                        bytes if bytes.len() == 32 => {
+                                            match bytes.try_into() {
+                                                Ok(hash) => Some(hash),
+                                                Err(_) => continue,
+                                            }
+                                        }
+                                        _ => continue,
+                                    };
+                                    let locked_block = if let Some(hash) = locked_hash {
+                                        if locked_block_data.is_empty() {
+                                            continue;
+                                        }
+                                        let block: dchat_blockchain::CurrencyBlock =
+                                            match bincode::DefaultOptions::new()
+                                                .with_fixint_encoding()
+                                                .with_limit((5 * 1024 * 1024) as u64)
+                                                .deserialize(&locked_block_data)
+                                            {
+                                                Ok(block) => block,
+                                                Err(_) => continue,
+                                            };
+                                        if block.height != height || block.hash != hash {
+                                            continue;
+                                        }
+                                        let state = currency_execution_state_net.lock().await.clone();
+                                        if block
+                                            .verify_and_execute(&state, currency_chain_id_net)
+                                            .is_err()
+                                        {
+                                            continue;
+                                        }
+                                        Some(block)
+                                    } else {
+                                        if !locked_block_data.is_empty() {
+                                            continue;
+                                        }
+                                        None
+                                    };
+                                    let verifying_key =
+                                        match ed25519_dalek::VerifyingKey::from_bytes(
+                                            &validator_key_bytes,
+                                        ) {
+                                            Ok(key) => key,
+                                            Err(_) => continue,
+                                        };
+                                    let signature_bytes: [u8; 64] =
+                                        match signature.as_slice().try_into() {
+                                            Ok(bytes) => bytes,
+                                            Err(_) => continue,
+                                        };
+                                    let signing_bytes =
+                                        dchat_blockchain::currency_view_change_signing_bytes(
+                                            currency_chain_id_net,
+                                            height,
+                                            view,
+                                            locked_hash,
+                                        );
+                                    use ed25519_dalek::Verifier;
+                                    if verifying_key
+                                        .verify(
+                                            &signing_bytes,
+                                            &ed25519_dalek::Signature::from_bytes(
+                                                &signature_bytes,
+                                            ),
+                                        )
+                                        .is_err()
+                                    {
+                                        continue;
+                                    }
+                                    let vote = dchat_blockchain::CurrencyViewChangeVote {
+                                        validator_id: validator_key_bytes,
+                                        locked_block_hash: locked_hash,
+                                        signature,
+                                    };
+                                    let certificate = {
+                                        let mut votes = currency_view_votes_net.lock().await;
+                                        let height_votes =
+                                            votes.entry((height, view)).or_default();
+                                        if height_votes
+                                            .get(&validator_key_bytes)
+                                            .is_some_and(|existing| existing != &vote)
+                                        {
+                                            warn!(
+                                                "Rejected conflicting currency view-change vote from {}",
+                                                hex::encode(validator_key_bytes)
+                                            );
+                                            continue;
+                                        }
+                                        height_votes.insert(validator_key_bytes, vote);
+                                        if height_votes.len() < currency_required_signatures_net {
+                                            None
+                                        } else {
+                                            Some(height_votes.values().cloned().collect::<Vec<_>>())
+                                        }
+                                    };
+                                    if let Some(block) = locked_block {
+                                        currency_view_locked_blocks_net
+                                            .lock()
+                                            .await
+                                            .insert((height, block.hash), block);
+                                    }
+                                    let Some(certificate) = certificate else {
+                                        continue;
+                                    };
+                                    let locked_hash =
+                                        match dchat_blockchain::verify_view_change_certificate(
+                                            currency_chain_id_net,
+                                            height,
+                                            view,
+                                            &certificate,
+                                            authorized_validators_clone.as_ref(),
+                                            currency_required_signatures_net,
+                                        ) {
+                                            Ok(hash) => hash,
+                                            Err(error) => {
+                                                warn!("Invalid currency view-change certificate: {}", error);
+                                                continue;
+                                            }
+                                        };
+                                    let certificate_locked_block = if let Some(hash) = locked_hash {
+                                        let block = currency_view_locked_blocks_net
+                                            .lock()
+                                            .await
+                                            .get(&(height, hash))
+                                            .cloned();
+                                        let Some(block) = block else {
+                                            warn!("Currency view-change certificate is missing its locked block");
+                                            continue;
+                                        };
+                                        Some(block)
+                                    } else {
+                                        None
+                                    };
+                                    let locked_candidate_state =
+                                        if let Some(block) = certificate_locked_block.as_ref() {
+                                            match block.verify_and_execute(
+                                            &currency_execution_state_net.lock().await,
+                                            currency_chain_id_net,
+                                            ) {
+                                                Ok(state) => Some(state),
+                                                Err(error) => {
+                                                    warn!("Locked currency proposal failed replay: {}", error);
+                                                    continue;
+                                                }
+                                            }
+                                        } else {
+                                            None
+                                        };
+                                    {
+                                        let mut journal = currency_journal_net.lock().await;
+                                        if journal.view() > view
+                                            || (journal.view() == view
+                                                && journal.required_lock_hash() != locked_hash)
+                                        {
+                                            warn!("Currency view-change certificate conflicts with persisted view state");
+                                            continue;
+                                        }
+                                        if journal.view() < view {
+                                            if let Err(error) = journal
+                                                .advance_view(
+                                                    height,
+                                                    view,
+                                                    certificate,
+                                                    certificate_locked_block.clone(),
+                                                )
+                                                .await
+                                            {
+                                                warn!("Unable to persist currency view-change certificate: {}", error);
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                    if let (Some(block), Some(candidate_state)) =
+                                        (certificate_locked_block, locked_candidate_state)
+                                    {
+                                        let hash = block.hash;
+                                        pending_currency_candidates_net
+                                            .lock()
+                                            .await
+                                            .entry(height)
+                                            .or_insert((
+                                                hash.to_vec(),
+                                                candidate_state,
+                                                block.transaction_ids(),
+                                                hash,
+                                            ));
+                                    }
+                                    currency_view_net.store(view, Ordering::SeqCst);
+                                    currency_view_votes_net
+                                        .lock()
+                                        .await
+                                        .retain(|(entry_height, vote_view), _| {
+                                            *entry_height > height
+                                                || (*entry_height == height && *vote_view > view)
+                                        });
+                                    currency_view_locked_blocks_net
+                                        .lock()
+                                        .await
+                                        .retain(|(entry_height, _), _| *entry_height > height);
+                                    *currency_view_progress_net.lock().await =
+                                        tokio::time::Instant::now();
+                                }
                                 DchatMessage::CurrencyValidatorBlock {
                                     height,
                                     validator_id,
@@ -11065,6 +11818,21 @@ async fn run_validator_node(
                                     {
                                         warn!(
                                             "Rejected currency block #{} from unauthorized proposer",
+                                            height
+                                        );
+                                        continue;
+                                    }
+                                    let expected_proposer =
+                                        ((height - 1) % currency_proposer_order_net.len() as u64)
+                                            as usize;
+                                    if (!view_proposal_validated
+                                        && currency_view_net.load(Ordering::SeqCst) != 0)
+                                        || (!view_proposal_validated
+                                            && currency_proposer_order_net.get(expected_proposer)
+                                                != Some(&validator_key_bytes))
+                                    {
+                                        warn!(
+                                            "Rejected currency proposal from the wrong proposer or view at height {}",
                                             height
                                         );
                                         continue;
@@ -11188,6 +11956,8 @@ async fn run_validator_node(
                                             );
                                         }
                                     }
+                                    *currency_view_progress_net.lock().await =
+                                        tokio::time::Instant::now();
 
                                     let our_validator_id =
                                         validator_public_key_bytes_clone.to_vec();
@@ -11421,6 +12191,8 @@ async fn run_validator_node(
                                             .filter(|(hash, _)| hash == &block_hash)
                                             .count()
                                     };
+                                    *currency_view_progress_net.lock().await =
+                                        tokio::time::Instant::now();
                                     if ack_count >= currency_required_signatures_net {
                                         let candidate = {
                                             let candidates =
@@ -11505,6 +12277,17 @@ async fn run_validator_node(
                                             *currency_last_hash_net.lock().await = expected_hash;
                                             currency_block_height_net
                                                 .store(block_height, Ordering::SeqCst);
+                                            currency_view_net.store(0, Ordering::SeqCst);
+                                            currency_view_votes_net
+                                                .lock()
+                                                .await
+                                                .retain(|(height, _), _| *height > block_height);
+                                            currency_view_locked_blocks_net
+                                                .lock()
+                                                .await
+                                                .retain(|(height, _), _| *height > block_height);
+                                            *currency_view_progress_net.lock().await =
+                                                tokio::time::Instant::now();
                                             let minimum_ack_height =
                                                 block_height.saturating_sub(100);
                                             currency_block_acks_net
